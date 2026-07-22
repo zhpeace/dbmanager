@@ -125,6 +125,7 @@ export interface TransferOptions {
   foreign_key_action?: 'preserve' | 'disable' | 'skip'
   column_mappings?: ColumnMapping[]
   checkpoint_id?: string | null
+  error_mode?: 'skip' | 'stop' | 'skip_table'
 }
 
 export interface TransferResult {

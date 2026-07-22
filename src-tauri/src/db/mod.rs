@@ -844,7 +844,7 @@ impl DbConnection {
 
                 let columns: Vec<ColumnInfo> = if rows.is_empty() {
                     let col_sql = format!(
-                        "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA \
+                        "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA \
                          FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '{}' AND TABLE_NAME = '{}'",
                         database.replace('\'', "\\'"),
                         table.replace('\'', "\\'")
@@ -1356,7 +1356,7 @@ impl DbConnection {
             DbConnection::MySql(pool) => {
                 let escaped = database.replace('\'', "\\'");
                 let rows = sqlx::raw_sql(&format!(
-                    "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA \
+                    "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA \
                      FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '{}' ORDER BY TABLE_NAME, ORDINAL_POSITION",
                     escaped
                 )).fetch_all(pool).await.map_err(|e| e.to_string())?;
@@ -1868,9 +1868,15 @@ pub async fn bulk_insert(
                             } else {
                                 "NULL".to_string()
                             }
-                                } else if tl.contains("bool") || tl.contains("tinyint") {
+                        } else if tl.contains("bool") || tl.contains("tinyint") {
                             match val {
-                                serde_json::Value::Bool(b) => (if *b { "1" } else { "0" }).to_string(),
+                                serde_json::Value::Bool(b) => {
+                                    if tl.contains("bool") && !tl.contains("tinyint") {
+                                        (if *b { "TRUE" } else { "FALSE" }).to_string()
+                                    } else {
+                                        (if *b { "1" } else { "0" }).to_string()
+                                    }
+                                }
                                 serde_json::Value::Null => "NULL".to_string(),
                                 _ => escape_val(val, target_type),
                             }
@@ -2136,6 +2142,21 @@ fn create_table_sql(table: &str, columns: &[ColumnInfo], source_type: &str, targ
                 if txt.contains("0000-00-00") {
                     default_val = "'1970-01-01'".to_string();
                 }
+            } else if target_type == "mysql" {
+                let dv = default_val.trim();
+                if dv == "," || dv == ",," || dv == "()" {
+                    has_default = false;
+                } else if !dv.starts_with('\'') && !dv.is_empty() {
+                    let is_string_type = mapped.to_lowercase().contains("varchar")
+                        || mapped.to_lowercase().contains("char")
+                        || mapped.to_lowercase().contains("text")
+                        || mapped.to_lowercase().starts_with("enum")
+                        || mapped.to_lowercase().starts_with("set")
+                        || mapped.to_lowercase().contains("json");
+                    if is_string_type {
+                        default_val = format!("'{}'", dv.replace('\'', "\\'"));
+                    }
+                }
             } else if target_type == "postgresql" {
                 let dv = default_val.trim();
                 if dv.starts_with('`') || dv.starts_with('\"') {
@@ -2200,6 +2221,12 @@ fn create_table_sql(table: &str, columns: &[ColumnInfo], source_type: &str, targ
 
     let if_not_exists = if target_type == "oracle" { "" } else { "IF NOT EXISTS " };
     let suffix = if target_type == "oracle" { "" } else { ";" };
+    if col_defs.is_empty() {
+        return format!(
+            "-- Cannot create table {}: no columns defined",
+            qualified_table,
+        );
+    }
     format!(
         "CREATE TABLE {}{} (\n{}\n){}",
         if_not_exists,
@@ -2209,12 +2236,26 @@ fn create_table_sql(table: &str, columns: &[ColumnInfo], source_type: &str, targ
     )
 }
 
-fn create_index_sql(table: &str, idx: &IndexInfo, target_type: &str) -> String {
+fn create_index_sql(table: &str, idx: &IndexInfo, target_type: &str, database: Option<&str>) -> String {
     let unique = if idx.unique { "UNIQUE " } else { "" };
     let cols: Vec<String> = idx.columns.iter()
         .map(|c| escape_identifier(c, target_type))
         .collect();
-    let quoted_table = escape_identifier(table, target_type);
+    let quoted_table = if target_type == "mysql" {
+        if let Some(db) = database {
+            format!("`{}`.{}", db.replace('`', "``"), escape_identifier(table, target_type))
+        } else {
+            escape_identifier(table, target_type)
+        }
+    } else if target_type == "postgresql" || target_type == "oracle" {
+        if let Some(db) = database {
+            format!("\"{}\".{}", db.replace('"', "\"\""), escape_identifier(table, target_type))
+        } else {
+            escape_identifier(table, target_type)
+        }
+    } else {
+        escape_identifier(table, target_type)
+    };
     let if_not_exists = match target_type {
         "postgresql" | "sqlite" => "IF NOT EXISTS ",
         _ => "",
@@ -2442,7 +2483,26 @@ pub async fn transfer_data(
         .map(|cp| cp.split(',').collect())
         .unwrap_or_default();
 
-    for table in &opts.tables {
+    'table_loop: for table in &opts.tables {
+        macro_rules! check_error_mode {
+            () => {
+                match opts.error_mode {
+                    types::ErrorMode::Stop => {
+                        return Ok(types::TransferResult {
+                            tables_transferred,
+                            rows_transferred,
+                            errors,
+                            duration: format!("{:.2}s", start.elapsed().as_secs_f64()),
+                            logs,
+                        });
+                    }
+                    types::ErrorMode::SkipTable => {
+                        break 'table_loop;
+                    }
+                    types::ErrorMode::Skip => {}
+                }
+            };
+        }
         if completed.contains(&table.as_str()) {
             continue;
         }
@@ -2454,6 +2514,7 @@ pub async fn transfer_data(
                     Some(s) => (s.columns.clone(), s.indexes.clone(), s.foreign_keys.clone()),
                     None => {
                         errors.push(format!("Table '{}' not found in source", table));
+                        check_error_mode!();
                         continue;
                     }
                 };
@@ -2470,6 +2531,7 @@ pub async fn transfer_data(
 
                 if mapped_cols.is_empty() {
                     errors.push(format!("Table '{}': all columns were skipped via mappings", table));
+                    check_error_mode!();
                     continue;
                 }
                     { let _msg = format!("Starting table: {}", table); if let Some(ref _tx) = log_tx { let _ = _tx.send(_msg.clone()); } logs.push(_msg); }
@@ -2481,13 +2543,21 @@ pub async fn transfer_data(
                 if opts.mode != types::TransferMode::DataOnly && target_type != "mongodb" {
                     if opts.drop_target {
                     { let _msg = format!("  Dropping table '{}'...", table); if let Some(ref _tx) = log_tx { let _ = _tx.send(_msg.clone()); } logs.push(_msg); }
-                        let drop_ddl = format!("DROP TABLE IF EXISTS {}", escape_identifier(table, target_type));
+                        let qualified_table = if target_type == "mysql" {
+                            format!("`{}`.{}", opts.target_database.replace('`', "``"), escape_identifier(table, target_type))
+                        } else if target_type == "postgresql" || target_type == "oracle" {
+                            format!("\"{}\".{}", opts.target_database.replace('"', "\"\""), escape_identifier(table, target_type))
+                        } else {
+                            escape_identifier(table, target_type)
+                        };
+                        let drop_ddl = format!("DROP TABLE IF EXISTS {}", qualified_table);
                         target.execute_query(&drop_ddl).await.ok();
                     }
                     { let _msg = format!("  Creating table '{}'...", table); if let Some(ref _tx) = log_tx { let _ = _tx.send(_msg.clone()); } logs.push(_msg); }
                     let create_sql = create_table_sql(table, &mapped_cols, source_type, target_type, Some(&opts.target_database));
                     if let Err(e) = target.execute_query(&create_sql).await {
                         errors.push(format!("Failed to create table '{}': {}", table, e));
+                        check_error_mode!();
                         continue;
                     }
                 }
@@ -2496,9 +2566,10 @@ pub async fn transfer_data(
                     if opts.transfer_indexes {
                     logs.push(format!("  Creating indexes for '{}'...", table));
                         for idx in &indexes {
-                            let idx_sql = create_index_sql(table, idx, target_type);
+                            let idx_sql = create_index_sql(table, idx, target_type, Some(&opts.target_database));
                             if let Err(e) = target.execute_query(&idx_sql).await {
                                 errors.push(format!("Failed to create index '{}' on '{}': {}", idx.name, table, e));
+                                check_error_mode!();
                             }
                         }
                     }
@@ -2534,6 +2605,7 @@ pub async fn transfer_data(
                         Ok(d) => d,
                         Err(e) => {
                             errors.push(format!("Failed to read data from '{}': {}", table, e));
+                            check_error_mode!();
                             break;
                         }
                     };
@@ -2577,6 +2649,7 @@ pub async fn transfer_data(
                             if !docs.is_empty() {
                                 if let Err(e) = coll.insert_many(docs).await {
                                     errors.push(format!("MongoDB insert error in '{}': {}", table, e));
+                                    check_error_mode!();
                                 }
                             }
                         }
@@ -2615,6 +2688,7 @@ pub async fn transfer_data(
                                 Ok(_) => { rows_transferred += 1; }
                                 Err(e) => {
                                     errors.push(format!("Insert error in '{}': {}", table, e));
+                                    check_error_mode!();
                                 }
                             }
                         }
@@ -2629,6 +2703,7 @@ pub async fn transfer_data(
                             Ok(n) => { rows_transferred += n as i64; }
                             Err(e) => {
                                 errors.push(format!("Insert error in '{}': {}", table, e));
+                                check_error_mode!();
                             }
                         }
                     }
@@ -2648,9 +2723,10 @@ pub async fn transfer_data(
                 if opts.transfer_indexes && opts.mode != types::TransferMode::StructureOnly {
                     logs.push(format!("  Creating indexes for '{}'...", table));
                     for idx in &indexes {
-                        let idx_sql = create_index_sql(table, idx, target_type);
+                        let idx_sql = create_index_sql(table, idx, target_type, Some(&opts.target_database));
                         if let Err(e) = target.execute_query(&idx_sql).await {
                             errors.push(format!("Failed to create index '{}' on '{}': {}", idx.name, table, e));
+                            check_error_mode!();
                         }
                     }
                 }
@@ -2671,6 +2747,15 @@ pub async fn transfer_data(
                     let fk_sql = create_foreign_key_sql(table, fk, target_type);
                     if let Err(e) = target.execute_query(&fk_sql).await {
                         errors.push(format!("Failed to create FK on '{}': {}", table, e));
+                        if matches!(opts.error_mode, types::ErrorMode::Stop) {
+                            return Ok(types::TransferResult {
+                                tables_transferred,
+                                rows_transferred,
+                                errors,
+                                duration: format!("{:.2}s", start.elapsed().as_secs_f64()),
+                                logs,
+                            });
+                        }
                     }
                 }
             }
@@ -2713,6 +2798,121 @@ pub async fn transfer_data(
         duration: format!("{:.2}s", start.elapsed().as_secs_f64()),
         logs,
     })
+}
+
+pub async fn backup_database(
+    source: &DbConnection,
+    database: &str,
+    tables: &[String],
+    output_path: &str,
+    log_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+) -> Result<(i32, String), String> {
+    use tokio::io::AsyncWriteExt;
+    let start = std::time::Instant::now();
+    let source_type = match source {
+        DbConnection::MySql(_) => "mysql",
+        DbConnection::Pg(_) => "postgresql",
+        DbConnection::Sqlite(_) => "sqlite",
+        DbConnection::Mongo(_, _) => "mongodb",
+        DbConnection::Oracle(_) => "oracle",
+        DbConnection::Redis(_) => "redis",
+    };
+
+    let cache = source.get_schema_cache(database).await?;
+    let mut file = tokio::fs::File::create(output_path).await.map_err(|e| e.to_string())?;
+
+    let header = format!("-- DBManager Backup\n-- Source: {} / {}\n-- Date: {}\n\n", source_type, database, chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+    file.write_all(header.as_bytes()).await.map_err(|e| e.to_string())?;
+
+    let mut table_count = 0i32;
+    for table_name in tables {
+        let schema = cache.tables.iter().find(|t| t.table == *table_name);
+        let cols = match schema {
+            Some(s) => &s.columns,
+            None => {
+                if let Some(ref tx) = log_tx { let _ = tx.send(format!("Table '{}' not found, skipping", table_name)); }
+                continue;
+            }
+        };
+
+        let create_sql = create_table_sql(table_name, cols, source_type, source_type, Some(database));
+        file.write_all(format!("{}\n\n", create_sql).as_bytes()).await.map_err(|e| e.to_string())?;
+
+        if let Some(ref tx) = log_tx { let _ = tx.send(format!("Backing up '{}'...", table_name)); }
+
+        let mut page = 1;
+        let page_size: i64 = 2000;
+        loop {
+            let data = source.get_table_data(database, table_name, page, page_size, None, None, None, None).await?;
+            if data.rows.is_empty() { break; }
+
+            let col_names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
+            for row in &data.rows {
+                let vals: Vec<String> = col_names.iter().map(|c| {
+                    let val = row.get(c).cloned().unwrap_or(serde_json::Value::Null);
+                    escape_val(&val, source_type)
+                }).collect();
+
+                let quoted_cols: Vec<String> = col_names.iter()
+                    .map(|c| escape_identifier(c, source_type))
+                    .collect();
+
+                let insert_sql = format!(
+                    "INSERT INTO {} ({}) VALUES ({});\n",
+                    escape_identifier(table_name, source_type),
+                    quoted_cols.join(", "),
+                    vals.join(", "),
+                );
+                let _ = file.write_all(insert_sql.as_bytes()).await;
+            }
+
+            if data.rows.len() < page_size as usize { break; }
+            page += 1;
+        }
+
+        if let Some(ref tx) = log_tx { let _ = tx.send(format!("  Done: {} rows", page_size)); }
+        table_count += 1;
+    }
+
+    file.flush().await.map_err(|e| e.to_string())?;
+    let duration = format!("{:.2}s", start.elapsed().as_secs_f64());
+    if let Some(ref tx) = log_tx { let _ = tx.send(format!("Backup complete: {} tables in {}", table_count, duration)); }
+
+    Ok((table_count, duration))
+}
+
+pub async fn restore_database(
+    target: &DbConnection,
+    database: &str,
+    input_path: &str,
+    log_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+) -> Result<(i32, Vec<String>), String> {
+    let start = std::time::Instant::now();
+    let content = tokio::fs::read_to_string(input_path).await.map_err(|e| e.to_string())?;
+    let mut errors = Vec::new();
+    let mut count = 0i32;
+
+    for stmt in content.split(';') {
+        let trimmed = stmt.trim();
+        if trimmed.is_empty() || trimmed.starts_with("--") { continue; }
+
+        if let Some(ref tx) = log_tx { let _ = tx.send(format!("Executing: {}...", &trimmed[..trimmed.len().min(80)])); }
+
+        match target.execute_query(trimmed).await {
+            Ok(_) => count += 1,
+            Err(e) => {
+                errors.push(format!("{}", e));
+                if let Some(ref tx) = log_tx { let _ = tx.send(format!("  Error: {}", e)); }
+            }
+        }
+    }
+
+    let duration = format!("{:.2}s", start.elapsed().as_secs_f64());
+    if let Some(ref tx) = log_tx {
+        let _ = tx.send(format!("Restore complete: {} statements in {} ({} errors)", count, duration, errors.len()));
+    }
+
+    Ok((count, errors))
 }
 
 #[cfg(test)]

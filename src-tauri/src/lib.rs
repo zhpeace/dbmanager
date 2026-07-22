@@ -720,6 +720,71 @@ async fn compare_schemas(
     db::compare_schemas(&source_conn, &target_conn, &source_database, &target_database).await
 }
 
+#[tauri::command]
+async fn backup_database(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    source_id: String,
+    database: String,
+    tables: Vec<String>,
+    output_path: String,
+) -> Result<(i32, String), String> {
+    let conn = {
+        let connections = state.connections.lock().await;
+        let c = connections.get(&source_id).ok_or("Connection not found")?;
+        match c {
+            DbConnection::MySql(p) => DbConnection::MySql(p.clone()),
+            DbConnection::Pg(p) => DbConnection::Pg(p.clone()),
+            DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
+            DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
+            DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
+        }
+    };
+
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = log_rx.recv().await {
+            let _ = app_clone.emit("migration-log", msg);
+        }
+    });
+
+    db::backup_database(&conn, &database, &tables, &output_path, Some(log_tx)).await
+}
+
+#[tauri::command]
+async fn restore_database(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    target_id: String,
+    database: String,
+    input_path: String,
+) -> Result<(i32, Vec<String>), String> {
+    let conn = {
+        let connections = state.connections.lock().await;
+        let c = connections.get(&target_id).ok_or("Connection not found")?;
+        match c {
+            DbConnection::MySql(p) => DbConnection::MySql(p.clone()),
+            DbConnection::Pg(p) => DbConnection::Pg(p.clone()),
+            DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
+            DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
+            DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
+        }
+    };
+
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = log_rx.recv().await {
+            let _ = app_clone.emit("migration-log", msg);
+        }
+    });
+
+    db::restore_database(&conn, &database, &input_path, Some(log_tx)).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -759,20 +824,22 @@ pub fn run() {
             alter_table_add_column,
             alter_table_drop_column,
             alter_table_modify_column,
-            alter_table_rename_column,
-            drop_view,
-            drop_routine,
-            drop_trigger,
-            license::activate_license,
-            license::get_license_status,
-            secrets::save_connection_secret,
-            secrets::get_connection_secret,
-            secrets::delete_connection_secret,
-            save_checkpoint,
-            get_checkpoint,
-            clear_checkpoint,
-            compare_schemas,
-        ])
+                    alter_table_rename_column,
+                    drop_view,
+                    drop_routine,
+                    drop_trigger,
+                    license::activate_license,
+                    license::get_license_status,
+                    secrets::save_connection_secret,
+                    secrets::get_connection_secret,
+                    secrets::delete_connection_secret,
+                    save_checkpoint,
+                    get_checkpoint,
+                    clear_checkpoint,
+                    compare_schemas,
+                    backup_database,
+                    restore_database,
+                ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

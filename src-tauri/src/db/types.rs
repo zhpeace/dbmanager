@@ -156,6 +156,22 @@ impl Default for ForeignKeyAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ErrorMode {
+    #[serde(rename = "skip")]
+    Skip,
+    #[serde(rename = "stop")]
+    Stop,
+    #[serde(rename = "skip_table")]
+    SkipTable,
+}
+
+impl Default for ErrorMode {
+    fn default() -> Self {
+        ErrorMode::Skip
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnMapping {
     pub source_column: String,
     pub target_column: String,
@@ -202,6 +218,8 @@ pub struct TransferOptions {
     pub column_mappings: Vec<ColumnMapping>,
     #[serde(default)]
     pub checkpoint_id: Option<String>,
+    #[serde(default)]
+    pub error_mode: ErrorMode,
 }
 
 fn default_page_size() -> u32 { 2000 }
@@ -231,6 +249,7 @@ impl Default for TransferOptions {
             foreign_key_action: ForeignKeyAction::default(),
             column_mappings: Vec::new(),
             checkpoint_id: None,
+            error_mode: ErrorMode::default(),
         }
     }
 }

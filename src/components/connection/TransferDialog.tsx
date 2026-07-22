@@ -50,6 +50,7 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
   const [selectAll, setSelectAll] = useState(false)
   const [checkpoint, setCheckpoint] = useState<CheckpointState | null>(null)
   const [columnMappings, setColumnMappings] = useState<ColumnMapping[]>([])
+  const [errorMode, setErrorMode] = useState<string>("skip")
 
   useEffect(() => {
     if (!open) {
@@ -174,6 +175,7 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
         transfer_triggers: transferTriggers,
         column_mappings: columnMappings.filter(m => m.source_column),
         checkpoint_id: checkpointId || null,
+        error_mode: errorMode as 'skip' | 'stop' | 'skip_table',
       }
       const res: TransferResult = await invoke("transfer_data", { opts })
 
@@ -199,7 +201,7 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[700px] max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-[800px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{t('transfer.title')}</DialogTitle>
         </DialogHeader>
@@ -217,11 +219,15 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                     <span>{t('transfer.result', { rows: result.rows_transferred, tables: result.tables_transferred.length, duration: result.duration })}</span>
                   </div>
                   {result.errors.length > 0 && (
-                    <div className="space-y-1">
-                      <p className="text-xs font-medium text-destructive">{t('transfer.errors')}</p>
-                      {result.errors.map((e, i) => (
-                        <p key={i} className="text-[10px] text-destructive/80 font-mono">{e}</p>
-                      ))}
+                    <div className="rounded border border-destructive/30 bg-destructive/5 p-2 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-medium text-destructive">{t('transfer.errors')} ({result.errors.length})</p>
+                      </div>
+                      <div className="space-y-0.5 max-h-[200px] overflow-y-auto">
+                        {result.errors.map((e, i) => (
+                          <p key={i} className="text-[10px] text-destructive/80 font-mono">{e}</p>
+                        ))}
+                      </div>
                     </div>
                   )}
                   <div className="flex flex-wrap gap-1">
@@ -353,13 +359,25 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
               )}
 
               {transferring && (
-                <div className="border rounded p-2 bg-muted/20">
-                  <div className="text-xs font-medium mb-1">{t('transfer.log_title')}</div>
-                  <div className="max-h-[150px] overflow-y-auto font-mono text-[10px] space-y-0.5">
-                    {liveLogs.map((line, i) => (
-                      <div key={i} className="text-muted-foreground">{line}</div>
-                    ))}
-                    <div ref={logEndRef} />
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium truncate">
+                      {liveLogs.filter(l => l.startsWith("Starting table:")).pop()?.replace("Starting table:", "").trim() || t('transfer.preparing')}
+                    </span>
+                    <span className="text-muted-foreground shrink-0 ml-2">
+                      {liveLogs.filter(l => l.startsWith("Completed table:")).length}/{selectedTables.length} {t('transfer.tables_done')}
+                    </span>
+                  </div>
+                  <div className="border rounded bg-muted/20">
+                    <div className="text-xs font-medium px-2 pt-1.5 pb-1 text-muted-foreground flex items-center justify-between">
+                      <span>{t('transfer.log_title')} ({liveLogs.length})</span>
+                    </div>
+                    <div className="max-h-[300px] min-h-[100px] overflow-y-auto font-mono text-[10px] space-y-0.5 px-2 pb-1.5">
+                      {liveLogs.map((line, i) => (
+                        <div key={i} className="text-muted-foreground">{line}</div>
+                      ))}
+                      <div ref={logEndRef} />
+                    </div>
                   </div>
                 </div>
               )}
@@ -402,6 +420,17 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">{t('transfer.error_mode')}</Label>
+                        <Select value={errorMode} onValueChange={setErrorMode}>
+                          <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="skip">{t('transfer.error_mode_skip')}</SelectItem>
+                            <SelectItem value="stop">{t('transfer.error_mode_stop')}</SelectItem>
+                            <SelectItem value="skip_table">{t('transfer.error_mode_skip_table')}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
                       <div className="space-y-1.5">
                         <Label className="text-xs">{t('transfer.where')}</Label>
                         <Input
