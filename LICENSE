@@ -1,0 +1,37 @@
+DBManager — Commercial Software License
+=========================================
+
+Copyright (c) 2026 Your Company. All rights reserved.
+
+This software is licensed, not sold. Your use of DBManager is governed by a
+commercial license agreement between you and Your Company.
+
+1. GRANT OF LICENSE
+   Subject to payment of the applicable license fee and activation of a valid
+   license key, Your Company grants you a non-exclusive, non-transferable
+   license to install and use DBManager on the number of devices permitted by
+   your purchased license tier.
+
+2. RESTRICTIONS
+   You may not reverse engineer, decompile, or disassemble the software except
+   to the extent permitted by applicable law. You may not rent, lease, lend,
+   sublicense, or redistribute the software.
+
+3. THIRD-PARTY COMPONENTS
+   The software incorporates third-party open-source components whose licenses
+   are listed in THIRD_PARTY_LICENSES. Such components are provided "AS IS"
+   under their own licenses.
+
+4. ORACLE COMPONENTS
+   Database connectivity to Oracle requires Oracle client libraries governed by
+   the Oracle Technology Network license. Your Company does not grant any
+   rights to Oracle software; you must obtain and license those separately.
+
+5. NO WARRANTY
+   The software is provided "AS IS" without warranty of any kind.
+
+6. LIMITATION OF LIABILITY
+   In no event shall Your Company be liable for any indirect, incidental, or
+   consequential damages arising out of the use of the software.
+
+For license terms, activation, and support, contact: license@your-company.example.com

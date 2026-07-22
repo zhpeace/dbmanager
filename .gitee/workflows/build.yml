@@ -1,0 +1,104 @@
+name: Build & Release
+displayName: 全平台构建
+
+on:
+  push:
+    tags:
+      - v*
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        run: brew install node@20
+
+      - name: Setup Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Build DMG
+        run: npx tauri build --bundles dmg
+        env:
+          DBMANAGER_SKIP_LICENSE: "1"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: DBManager-macOS
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        run: choco install nodejs-lts --version=20.18.0 --no-progress -y
+
+      - name: Setup Rust
+        run: |
+          choco install rustup.install --no-progress -y
+          rustup default stable
+          echo "C:\Users\runneradmin\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Build MSI
+        run: npx tauri build --bundles msi
+        env:
+          DBMANAGER_SKIP_LICENSE: "1"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: DBManager-Windows
+          path: src-tauri/target/release/bundle/msi/*.msi
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
+            libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libdbus-1-dev libssl-dev libaio-dev libclang-dev \
+            curl wget
+
+      - name: Setup Node
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+          sudo apt-get install -y nodejs
+
+      - name: Setup Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install npm deps
+        run: npm ci
+
+      - name: Build DEB + AppImage
+        run: npx tauri build --bundles deb,appimage
+        env:
+          DBMANAGER_SKIP_LICENSE: "1"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: DBManager-Linux
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage

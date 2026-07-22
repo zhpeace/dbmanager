@@ -1,0 +1,72 @@
+DBManager — Third-Party Software Licenses
+==========================================
+
+This product bundles and depends upon the following open-source components.
+Their respective licenses are reproduced or summarized below. This file is
+provided for compliance with the obligations of those licenses.
+
+----------------------------------------------------------------------------
+Rust backend dependencies (crate)
+----------------------------------------------------------------------------
+
+Tauri (MIT OR Apache-2.0)            - app shell / windowing
+tauri-plugin-log, -shell (MIT/Apache)
+sqlx 0.8 (MIT OR Apache-2.0)         - MySQL / PostgreSQL / SQLite drivers
+tokio 1 (MIT)                        - async runtime
+serde / serde_json (MIT OR Apache-2.0)
+chrono (MIT OR Apache-2.0)
+futures-util (MIT OR Apache-2.0)
+oracle 0.6 (MIT)                     - Oracle OCI binding
+    NOTE: This crate links against Oracle Instant Client / OCI libraries
+    which are NOT open source. Distribution of the Oracle client libraries
+    is governed by the Oracle Technology Network (OTN) License Agreement.
+    Review and accept those terms before redistributing Oracle support.
+redis 0.27 (MIT OR Apache-2.0)       - Redis driver
+mongodb 3 (Apache-2.0)               - MongoDB driver
+hmac 0.12 / sha2 0.10 (MIT OR Apache-2.0) - license key verification
+keyring 3 (MIT)                      - OS credential storage
+
+----------------------------------------------------------------------------
+Frontend dependencies (npm)
+----------------------------------------------------------------------------
+
+React 19 (MIT)
+react-dom (MIT)
+Vite (MIT)
+Tauri JS API @tauri-apps/api (MIT/Apache)
+lucide-react (ISC)                   - UI icons
+@radix-ui/react-* (MIT)              - UI primitives
+i18next / react-i18next (MIT)
+@monaco-editor/react (MIT)
+@tanstack/react-table (MIT)
+tailwindcss (MIT)
+clsx / tailwind-merge / class-variance-authority (MIT)
+recharts (MIT)
+
+----------------------------------------------------------------------------
+Fonts
+----------------------------------------------------------------------------
+
+The UI references the "Inter" typeface. Inter is licensed under the SIL Open
+Font License (OFL). The application does NOT bundle the font file by default;
+it falls back to system-ui. If you choose to bundle/distribute Inter, you must
+include the OFL license and comply with its terms (you may not sell the font
+itself, but may use it freely in a product).
+
+----------------------------------------------------------------------------
+Trademark notice
+----------------------------------------------------------------------------
+
+DBManager is an independent product. It is not affiliated with, endorsed by,
+or a replacement for any third-party commercial database tools. Product names
+and logos of Oracle, Microsoft, PostgreSQL, MongoDB, Redis, etc. are trademarks
+of their respective owners and are used here only to describe compatibility.
+
+----------------------------------------------------------------------------
+Full license texts
+----------------------------------------------------------------------------
+
+The complete and authoritative license texts for each dependency are available
+in the source repositories of the respective projects (see Cargo.lock and
+package-lock.json). This summary is provided in good faith; for legal
+obligations refer to the upstream licenses.
