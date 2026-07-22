@@ -1,0 +1,78 @@
+stages:
+  - build
+
+variables:
+  CARGO_NET_RETRY: "3"
+  RUST_BACKTRACE: "1"
+
+before_script:
+  - npm ci
+
+.linux_template: &linux_job
+  stage: build
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq
+      libwebkit2gtk-4.1-dev librsvg2-dev patchelf
+      libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+      libayatana-appindicator3-dev
+      libdbus-1-dev libssl-dev libaio-dev libclang-dev
+      curl wget
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    - source "$HOME/.cargo/env"
+    - npm ci
+  artifacts:
+    paths:
+      - src-tauri/target/release/bundle/
+    expire_in: 30 days
+
+build-linux:
+  <<: *linux_job
+  image: rust:latest
+  tags:
+    - docker
+  script:
+    - npx tauri build --bundles deb,appimage
+  artifacts:
+    name: "DBManager-Linux"
+    paths:
+      - src-tauri/target/release/bundle/deb/*.deb
+      - src-tauri/target/release/bundle/appimage/*.AppImage
+
+build-windows:
+  stage: build
+  image: rust:latest
+  tags:
+    - windows
+  before_script:
+    - choco install nodejs-lts --version=20.18.0 --no-progress -y
+    - rustup default stable
+    - npm ci
+  script:
+    - npx tauri build --bundles msi
+  artifacts:
+    name: "DBManager-Windows"
+    paths:
+      - src-tauri/target/release/bundle/msi/*.msi
+  only:
+    variables:
+      - $CI_RUNNER_TAG == "windows"
+
+build-macos:
+  stage: build
+  image: rust:latest
+  tags:
+    - macos
+  before_script:
+    - brew install node@20
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    - source "$HOME/.cargo/env"
+    - npm ci
+  script:
+    - npx tauri build --bundles dmg
+  artifacts:
+    name: "DBManager-macOS"
+    paths:
+      - src-tauri/target/release/bundle/dmg/*.dmg
+  only:
+    variables:
+      - $CI_RUNNER_TAG == "macos"
