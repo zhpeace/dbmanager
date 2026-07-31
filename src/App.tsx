@@ -11,6 +11,11 @@ import { ErDiagram } from "@/components/dataview/ErDiagram"
 import { ImportDialog } from "@/components/connection/ImportDialog"
 import { TransferDialog } from "@/components/connection/TransferDialog"
 import { CompareDialog } from "@/components/connection/CompareDialog"
+import { BackupDialog } from "@/components/connection/BackupDialog"
+import { RestoreDialog } from "@/components/connection/RestoreDialog"
+import { SchedulerDialog } from "@/components/connection/SchedulerDialog"
+import { NewDatabaseDialog } from "@/components/connection/NewDatabaseDialog"
+import { DuplicateDatabaseDialog } from "@/components/connection/DuplicateDatabaseDialog"
 import { cn } from "@/lib/utils"
 import { CreateTableDialog } from "@/components/connection/CreateTableDialog"
 import { DesignTableDialog } from "@/components/connection/DesignTableDialog"
@@ -76,6 +81,11 @@ function AppContent() {
   const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [compareDialogOpen, setCompareDialogOpen] = useState(false)
+  const [backupDialogOpen, setBackupDialogOpen] = useState(false)
+  const [restoreDialogOpen, setRestoreDialogOpen] = useState(false)
+  const [schedulerDialogOpen, setSchedulerDialogOpen] = useState(false)
+  const [newDatabaseConnId, setNewDatabaseConnId] = useState<string | null>(null)
+  const [duplicateDb, setDuplicateDb] = useState<{ connectionId: string; database: string } | null>(null)
   const [showErDiagram, setShowErDiagram] = useState(false)
   const [errorBanner, setErrorBanner] = useState<string | null>(null)
 
@@ -360,6 +370,32 @@ function AppContent() {
     setCompareDialogOpen(true)
   }
 
+  function handleOpenBackup() {
+    setBackupDialogOpen(true)
+  }
+
+  function handleOpenRestore() {
+    setRestoreDialogOpen(true)
+  }
+
+  function handleOpenSchedule() {
+    setSchedulerDialogOpen(true)
+  }
+
+  function handleNewDatabase(connectionId: string) {
+    setNewDatabaseConnId(connectionId)
+  }
+
+  function handleDuplicateDatabase(connectionId: string, database: string) {
+    setDuplicateDb({ connectionId, database })
+  }
+
+  function handleDatabaseCreated() {
+    if (newDatabaseConnId) {
+      handleRefresh(newDatabaseConnId)
+    }
+  }
+
   function handleOpenErDiagram() {
     setShowErDiagram((prev) => !prev)
   }
@@ -397,6 +433,18 @@ function AppContent() {
     if (!pendingDrop || !activeConnectionId) return
     const { type, name, database } = pendingDrop
     const id = activeConnectionId
+    if (type === "DATABASE") {
+      try {
+        const db = await import("@/lib/db")
+        await db.dropDatabase(id, name)
+        setPendingDrop(null)
+        handleRefresh(id)
+      } catch (e: any) {
+        setErrorBanner(t('dialog.failed', { error: String(e) }))
+        setPendingDrop(null)
+      }
+      return
+    }
     await runDdlAndRefresh(async () => {
       const db = await import("@/lib/db")
       if (type === "TABLE") await db.dropTable(id, database, name)
@@ -404,6 +452,7 @@ function AppContent() {
       else if (type === "FUNCTION") await db.dropRoutine(id, database, name, "FUNCTION")
       else if (type === "PROCEDURE") await db.dropRoutine(id, database, name, "PROCEDURE")
       else if (type === "TRIGGER") await db.dropTrigger(id, database, name)
+      else if (type === "DATABASE") await db.dropDatabase(id, name)
     }, id, database)
     setPendingDrop(null)
   }
@@ -531,6 +580,9 @@ function AppContent() {
         onOpenImport={handleOpenImport}
         onOpenTransfer={handleOpenTransfer}
         onOpenCompare={handleOpenCompare}
+        onOpenBackup={handleOpenBackup}
+        onOpenRestore={handleOpenRestore}
+        onOpenSchedule={handleOpenSchedule}
       />
       <div className="flex flex-1 min-h-0">
         <Sidebar
@@ -556,6 +608,8 @@ function AppContent() {
           tables={tables}
           loading={loading}
           onNewTable={handleNewTable}
+          onNewDatabase={handleNewDatabase}
+          onDuplicateDatabase={handleDuplicateDatabase}
           onDesignTable={handleDesignTable}
           onDropObject={handleDropObject}
           onTruncateTable={handleTruncate}
@@ -663,6 +717,38 @@ function AppContent() {
         onOpenChange={setCompareDialogOpen}
         connections={connections}
       />
+      <BackupDialog
+        open={backupDialogOpen}
+        onOpenChange={setBackupDialogOpen}
+        connections={connections}
+      />
+      <RestoreDialog
+        open={restoreDialogOpen}
+        onOpenChange={setRestoreDialogOpen}
+        connections={connections}
+      />
+      <SchedulerDialog
+        open={schedulerDialogOpen}
+        onOpenChange={setSchedulerDialogOpen}
+        connections={connections}
+      />
+      {newDatabaseConnId && (
+        <NewDatabaseDialog
+          open={true}
+          onOpenChange={() => setNewDatabaseConnId(null)}
+          connectionId={newDatabaseConnId}
+          onCreated={handleDatabaseCreated}
+        />
+      )}
+      {duplicateDb && (
+        <DuplicateDatabaseDialog
+          open={true}
+          onOpenChange={() => setDuplicateDb(null)}
+          connectionId={duplicateDb.connectionId}
+          sourceDb={duplicateDb.database}
+          onDone={() => { handleRefresh(duplicateDb.connectionId); setDuplicateDb(null) }}
+        />
+      )}
       {createDialog && activeConnectionId && (
         <CreateTableDialog
           open={true}
@@ -687,17 +773,17 @@ function AppContent() {
       <Dialog open={!!pendingDrop} onOpenChange={(o) => { if (!o) setPendingDrop(null) }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>{t('sidebar.drop_table')}</DialogTitle>
+            <DialogTitle>{pendingDrop?.type === "DATABASE" ? t('sidebar.drop_database') : t('sidebar.drop_table')}</DialogTitle>
           </DialogHeader>
           {pendingDrop && (
-            <p className="text-sm break-all">{t('dialog.drop_confirm', { type: pendingDrop.type, name: pendingDrop.name })}</p>
+            <p className="text-sm break-all">{t('dialog.drop_confirm', { type: pendingDrop.type === "DATABASE" ? t('dialog.database') : pendingDrop.type.toLowerCase(), name: pendingDrop.name })}</p>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setPendingDrop(null)}>
               {t('datatable.cancel')}
             </Button>
             <Button variant="destructive" onClick={confirmDrop}>
-              {t('sidebar.drop_table')}
+              {pendingDrop?.type === "DATABASE" ? t('sidebar.drop_database') : t('sidebar.drop_table')}
             </Button>
           </DialogFooter>
         </DialogContent>

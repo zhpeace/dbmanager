@@ -161,6 +161,22 @@ export async function createTable(
   return invoke<QueryResult>("create_table", { id, database, table, columns })
 }
 
+export async function createDatabase(id: string, dbName: string): Promise<void> {
+  return invoke("create_database", { id, dbName })
+}
+
+export async function dropDatabase(id: string, dbName: string): Promise<void> {
+  return invoke("drop_database", { id, dbName })
+}
+
+export async function duplicateDatabase(
+  id: string,
+  sourceDb: string,
+  targetDb: string
+): Promise<TransferResult> {
+  return invoke("duplicate_database", { id, sourceDb, targetDb })
+}
+
 export async function dropTable(id: string, database: string, table: string): Promise<QueryResult> {
   return invoke<QueryResult>("drop_table", { id, database, table })
 }
@@ -390,5 +406,64 @@ export async function getConnectionSecret(id: string): Promise<string | null> {
 }
 
 export async function deleteConnectionSecret(id: string): Promise<void> {
-  await invoke("delete_connection_secret", { id })
+  await invoke<string | null>("delete_connection_secret", { id })
+}
+
+export type TaskConfig =
+  | { type: "Backup"; source_id: string; database: string; tables: string[]; output_path: string }
+  | {
+      type: "Transfer"
+      source_id: string
+      source_database: string
+      target_id: string
+      target_database: string
+      tables: string[]
+      mode?: "structure_and_data" | "structure_only" | "data_only"
+      conflict_strategy?: "error" | "ignore" | "replace"
+      drop_target?: boolean
+      truncate_target?: boolean
+      where_clause?: string | null
+      row_limit?: number | null
+      page_size?: number
+      parallelism?: number
+      transfer_indexes?: boolean
+      transfer_foreign_keys?: boolean
+      transfer_views?: boolean
+      transfer_routines?: boolean
+      transfer_triggers?: boolean
+      foreign_key_action?: "preserve" | "disable" | "skip"
+      column_mappings?: { source_column: string; target_column: string; skip: boolean; default_value: unknown | null }[]
+      error_mode?: "skip" | "stop" | "skip_table"
+    }
+
+export interface ScheduledTask {
+  id: string
+  name: string
+  cron_expr: string
+  enabled: boolean
+  config: TaskConfig
+  created_at: string
+  last_run: string | null
+  next_run: string | null
+  last_result: string | null
+}
+
+export async function createScheduledTask(name: string, cronExpr: string, config: TaskConfig): Promise<ScheduledTask> {
+  return invoke<ScheduledTask>("create_scheduled_task", { name, cronExpr, config })
+}
+
+export async function listScheduledTasks(): Promise<ScheduledTask[]> {
+  return invoke<ScheduledTask[]>("list_scheduled_tasks")
+}
+
+export async function updateScheduledTask(id: string, name: string, cronExpr: string, config: TaskConfig, enabled: boolean): Promise<ScheduledTask> {
+  return invoke<ScheduledTask>("update_scheduled_task", { id, name, cronExpr, config, enabled })
+}
+
+export async function deleteScheduledTask(id: string): Promise<void> {
+  return invoke("delete_scheduled_task", { id })
+}
+
+export async function toggleScheduledTask(id: string): Promise<ScheduledTask> {
+  return invoke<ScheduledTask>("toggle_scheduled_task", { id })
 }

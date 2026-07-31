@@ -1,4 +1,4 @@
-import { Database, Plus, Moon, Sun, GitBranch, Upload, ArrowLeftRight, Diff } from "lucide-react"
+import { Database, Plus, Moon, Sun, GitBranch, Upload, ArrowLeftRight, Diff, Download, Upload as RestoreIcon, Clock } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useTheme } from "@/lib/theme"
 import { useTranslation } from "react-i18next"
@@ -12,6 +12,9 @@ interface TopBarProps {
   onOpenImport?: () => void
   onOpenTransfer?: () => void
   onOpenCompare?: () => void
+  onOpenBackup?: () => void
+  onOpenRestore?: () => void
+  onOpenSchedule?: () => void
 }
 
 export function TopBar({
@@ -23,6 +26,9 @@ export function TopBar({
   onOpenImport,
   onOpenTransfer,
   onOpenCompare,
+  onOpenBackup,
+  onOpenRestore,
+  onOpenSchedule,
 }: TopBarProps) {
   const { theme, toggleTheme } = useTheme()
   const { t, i18n } = useTranslation()
@@ -76,6 +82,18 @@ export function TopBar({
             <Button size="sm" variant="ghost" onClick={onOpenCompare}>
               <Diff className="h-4 w-4 mr-1" />
               {t('topbar.compare')}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onOpenBackup}>
+              <Download className="h-4 w-4 mr-1" />
+              {t('topbar.backup')}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onOpenRestore}>
+              <RestoreIcon className="h-4 w-4 mr-1" />
+              {t('topbar.restore')}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onOpenSchedule}>
+              <Clock className="h-4 w-4 mr-1" />
+              {t('topbar.schedule')}
             </Button>
           </>
         )}

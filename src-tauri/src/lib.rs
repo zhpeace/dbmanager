@@ -5,9 +5,117 @@ mod secrets;
 use db::AppState;
 use db::DbConnection;
 use db::types::{CheckpointState, CompareResult, DatabaseInfo, QueryResult, SchemaCache, TableData, TableInfo, TransferOptions, TransferResult};
+use db::scheduler::{ScheduledTask, TaskConfig};
 use tauri::Emitter;
+use tauri::Manager;
 use mongodb::Client as MongoClient;
 use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
+use chrono::Utc;
+
+fn scheduler_file_path() -> PathBuf {
+    let mut path = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    path.push("dbmanager");
+    std::fs::create_dir_all(&path).ok();
+    path.push("scheduled_tasks.json");
+    path
+}
+
+fn load_scheduled_tasks() -> Vec<ScheduledTask> {
+    let path = scheduler_file_path();
+    if let Ok(data) = std::fs::read_to_string(&path) {
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
+fn save_scheduled_tasks(tasks: &[ScheduledTask]) {
+    let path = scheduler_file_path();
+    if let Ok(data) = serde_json::to_string_pretty(tasks) {
+        std::fs::write(path, data).ok();
+    }
+}
+
+#[tauri::command]
+async fn create_scheduled_task(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    cron_expr: String,
+    config: TaskConfig,
+) -> Result<ScheduledTask, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut task = ScheduledTask {
+        id,
+        name,
+        cron_expr,
+        enabled: true,
+        config,
+        created_at: Utc::now().to_rfc3339(),
+        last_run: None,
+        next_run: None,
+        last_result: None,
+    };
+    task.compute_next_run();
+
+    let mut tasks = state.scheduler.tasks.lock().await;
+    tasks.push(task.clone());
+    save_scheduled_tasks(&tasks);
+    Ok(task)
+}
+
+#[tauri::command]
+async fn list_scheduled_tasks(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ScheduledTask>, String> {
+    let tasks = state.scheduler.tasks.lock().await;
+    Ok(tasks.clone())
+}
+
+#[tauri::command]
+async fn update_scheduled_task(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    name: String,
+    cron_expr: String,
+    config: TaskConfig,
+    enabled: bool,
+) -> Result<ScheduledTask, String> {
+    let mut tasks = state.scheduler.tasks.lock().await;
+    let task = tasks.iter_mut().find(|t| t.id == id).ok_or("Task not found")?;
+    task.name = name;
+    task.cron_expr = cron_expr;
+    task.config = config;
+    task.enabled = enabled;
+    task.compute_next_run();
+    let result = task.clone();
+    save_scheduled_tasks(&tasks);
+    Ok(result)
+}
+
+#[tauri::command]
+async fn delete_scheduled_task(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let mut tasks = state.scheduler.tasks.lock().await;
+    tasks.retain(|t| t.id != id);
+    save_scheduled_tasks(&tasks);
+    Ok(())
+}
+
+#[tauri::command]
+async fn toggle_scheduled_task(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<ScheduledTask, String> {
+    let mut tasks = state.scheduler.tasks.lock().await;
+    let task = tasks.iter_mut().find(|t| t.id == id).ok_or("Task not found")?;
+    task.enabled = !task.enabled;
+    let result = task.clone();
+    save_scheduled_tasks(&tasks);
+    Ok(result)
+}
 
 #[tauri::command]
 async fn connect_mysql(
@@ -139,6 +247,46 @@ async fn get_databases(
         })?
     };
     conn.get_databases().await
+}
+
+#[tauri::command]
+async fn create_database(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    db_name: String,
+) -> Result<(), String> {
+    let conn = {
+        let connections = state.connections.lock().await;
+        connections.get(&id).ok_or("Connection not found").map(|c| match c {
+            DbConnection::MySql(p) => DbConnection::MySql(p.clone()),
+            DbConnection::Pg(p) => DbConnection::Pg(p.clone()),
+            DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
+            DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
+            DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
+        })?
+    };
+    conn.create_database(&db_name).await
+}
+
+#[tauri::command]
+async fn drop_database(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    db_name: String,
+) -> Result<(), String> {
+    let conn = {
+        let connections = state.connections.lock().await;
+        connections.get(&id).ok_or("Connection not found").map(|c| match c {
+            DbConnection::MySql(p) => DbConnection::MySql(p.clone()),
+            DbConnection::Pg(p) => DbConnection::Pg(p.clone()),
+            DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
+            DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
+            DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
+        })?
+    };
+    conn.drop_database(&db_name).await
 }
 
 #[tauri::command]
@@ -429,6 +577,61 @@ async fn transfer_data(
         };
         (s, t)
     };
+
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = log_rx.recv().await {
+            let _ = app_clone.emit("migration-log", msg);
+        }
+    });
+
+    db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx)).await
+}
+
+#[tauri::command]
+async fn duplicate_database(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: String,
+    source_db: String,
+    target_db: String,
+) -> Result<TransferResult, String> {
+    let conn = {
+        let connections = state.connections.lock().await;
+        let c = connections.get(&id).ok_or("Connection not found")?;
+        match c {
+            DbConnection::Sqlite(_) => return Err("SQLite does not support duplicate database".to_string()),
+            DbConnection::Redis(_) => return Err("Redis does not support duplicate database".to_string()),
+            _ => c.clone(),
+        }
+    };
+
+    conn.create_database(&target_db).await?;
+
+    let all_objects = conn.get_tables(&source_db).await?;
+    let table_names: Vec<String> = all_objects.iter().filter(|t| {
+        matches!(t.object_type.as_str(), "TABLE" | "BASE TABLE")
+    }).map(|t| t.name.clone()).collect();
+
+    let opts = TransferOptions {
+        source_id: id.clone(),
+        source_database: source_db,
+        target_id: id,
+        target_database: target_db,
+        tables: table_names,
+        mode: db::types::TransferMode::StructureAndData,
+        transfer_indexes: true,
+        transfer_foreign_keys: true,
+        transfer_views: true,
+        transfer_routines: true,
+        transfer_triggers: true,
+        ..Default::default()
+    };
+
+    let source_conn = conn.clone();
+    let target_conn = conn;
 
     let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
@@ -787,8 +990,15 @@ async fn restore_database(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let initial_tasks = load_scheduled_tasks();
+    let app_state = AppState {
+        connections: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        checkpoints: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        scheduler: db::scheduler::SchedulerManager::new(initial_tasks),
+    };
+
     tauri::Builder::default()
-        .manage(AppState::new())
+        .manage(app_state)
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -797,6 +1007,14 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            let handle = app.handle().clone();
+            let cancel_rx = app.state::<AppState>().scheduler.cancel_tx.subscribe();
+
+            tauri::async_runtime::spawn(async move {
+                scheduler_loop(handle, cancel_rx).await;
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -810,6 +1028,8 @@ pub fn run() {
             disconnect,
             switch_database,
             get_databases,
+            create_database,
+            drop_database,
             get_tables,
             get_table_data,
             get_table_ddl,
@@ -817,6 +1037,7 @@ pub fn run() {
             execute_update,
             get_schema_cache,
             transfer_data,
+            duplicate_database,
             create_table,
             drop_table,
             truncate_table,
@@ -839,7 +1060,249 @@ pub fn run() {
                     compare_schemas,
                     backup_database,
                     restore_database,
+                    create_scheduled_task,
+                    list_scheduled_tasks,
+                    update_scheduled_task,
+                    delete_scheduled_task,
+                    toggle_scheduled_task,
                 ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+async fn scheduler_loop(app_handle: tauri::AppHandle, mut cancel_rx: tokio::sync::watch::Receiver<bool>) {
+    use chrono::{DateTime, Utc};
+    use cron::Schedule;
+    use std::str::FromStr;
+
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {},
+            _ = cancel_rx.changed() => {
+                if *cancel_rx.borrow() {
+                    break;
+                }
+            }
+        }
+
+        let state: tauri::State<'_, AppState> = app_handle.state();
+        let mut tasks = state.scheduler.tasks.lock().await;
+        let now = Utc::now();
+
+        for task in tasks.iter_mut() {
+            if !task.enabled { continue; }
+            let Some(ref next_str) = task.next_run.clone() else { continue };
+            let Ok(next_time) = next_str.parse::<DateTime<Utc>>() else { continue };
+            if now < next_time { continue; }
+
+            let config = task.config.clone();
+            let task_id = task.id.clone();
+            let task_name = task.name.clone();
+
+            let result = match config {
+                db::scheduler::TaskConfig::Backup {
+                    source_id,
+                    database,
+                    tables,
+                    output_path,
+                } => {
+                    run_backup_task(&app_handle, &source_id, &database, &tables, &output_path).await
+                }
+                db::scheduler::TaskConfig::Transfer {
+                    source_id,
+                    source_database,
+                    target_id,
+                    target_database,
+                    tables,
+                    mode,
+                    conflict_strategy,
+                    drop_target,
+                    truncate_target,
+                    where_clause,
+                    row_limit,
+                    page_size,
+                    parallelism,
+                    transfer_indexes,
+                    transfer_foreign_keys,
+                    transfer_views,
+                    transfer_routines,
+                    transfer_triggers,
+                    foreign_key_action,
+                    column_mappings,
+                    error_mode,
+                } => {
+                    run_transfer_task(
+                        &app_handle,
+                        &source_id,
+                        &source_database,
+                        &target_id,
+                        &target_database,
+                        &tables,
+                        mode,
+                        conflict_strategy,
+                        drop_target,
+                        truncate_target,
+                        where_clause.as_deref(),
+                        row_limit,
+                        page_size,
+                        parallelism,
+                        transfer_indexes,
+                        transfer_foreign_keys,
+                        transfer_views,
+                        transfer_routines,
+                        transfer_triggers,
+                        foreign_key_action,
+                        column_mappings,
+                        error_mode,
+                    ).await
+                }
+            };
+
+            task.last_run = Some(now.to_rfc3339());
+            task.last_result = Some(match &result {
+                Ok(msg) => format!("OK: {}", msg),
+                Err(e) => format!("FAIL: {}", e),
+            });
+
+            match Schedule::from_str(&task.cron_expr) {
+                Ok(sched) => {
+                    let next = sched.after(&now);
+                    task.next_run = next.into_iter().next().map(|t| t.to_rfc3339());
+                }
+                Err(_) => task.next_run = None,
+            }
+
+            let _ = app_handle.emit("scheduler-task-result", serde_json::json!({
+                "task_id": task_id,
+                "task_name": task_name,
+                "result": match &result {
+                    Ok(msg) => format!("OK: {}", msg),
+                    Err(e) => format!("FAIL: {}", e),
+                },
+                "time": now.to_rfc3339(),
+            }));
+        }
+
+        save_scheduled_tasks(&tasks);
+    }
+}
+
+async fn run_backup_task(
+    app_handle: &tauri::AppHandle,
+    source_id: &str,
+    database: &str,
+    tables: &[String],
+    output_path: &str,
+) -> Result<String, String> {
+    let state: tauri::State<'_, AppState> = app_handle.state();
+    let conn = {
+        let connections = state.connections.lock().await;
+        let c = connections.get(source_id).ok_or("Connection not found")?;
+        match c {
+            DbConnection::MySql(p) => DbConnection::MySql(p.clone()),
+            DbConnection::Pg(p) => DbConnection::Pg(p.clone()),
+            DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
+            DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
+            DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
+        }
+    };
+
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let app_clone = app_handle.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = log_rx.recv().await {
+            let _ = app_clone.emit("migration-log", msg);
+        }
+    });
+
+    let (count, _) = db::backup_database(&conn, database, tables, output_path, Some(log_tx)).await?;
+    Ok(format!("Backup completed: {} tables", count))
+}
+
+async fn run_transfer_task(
+    app_handle: &tauri::AppHandle,
+    source_id: &str,
+    source_database: &str,
+    target_id: &str,
+    target_database: &str,
+    tables: &[String],
+    mode: db::types::TransferMode,
+    conflict_strategy: db::types::ConflictStrategy,
+    drop_target: bool,
+    truncate_target: bool,
+    where_clause: Option<&str>,
+    row_limit: Option<i64>,
+    page_size: u32,
+    parallelism: u32,
+    transfer_indexes: bool,
+    transfer_foreign_keys: bool,
+    transfer_views: bool,
+    transfer_routines: bool,
+    transfer_triggers: bool,
+    foreign_key_action: db::types::ForeignKeyAction,
+    column_mappings: Vec<db::types::ColumnMapping>,
+    error_mode: db::types::ErrorMode,
+) -> Result<String, String> {
+    let state: tauri::State<'_, AppState> = app_handle.state();
+    let (source_conn, target_conn) = {
+        let connections = state.connections.lock().await;
+        let src = connections.get(source_id).ok_or("Source connection not found")?;
+        let tgt = connections.get(target_id).ok_or("Target connection not found")?;
+        let s = match src {
+            DbConnection::MySql(p) => DbConnection::MySql(p.clone()),
+            DbConnection::Pg(p) => DbConnection::Pg(p.clone()),
+            DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
+            DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
+            DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
+        };
+        let t = match tgt {
+            DbConnection::MySql(p) => DbConnection::MySql(p.clone()),
+            DbConnection::Pg(p) => DbConnection::Pg(p.clone()),
+            DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
+            DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
+            DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
+        };
+        (s, t)
+    };
+
+    let opts = TransferOptions {
+        source_id: source_id.to_string(),
+        source_database: source_database.to_string(),
+        target_id: target_id.to_string(),
+        target_database: target_database.to_string(),
+        tables: tables.to_vec(),
+        mode,
+        conflict_strategy,
+        drop_target,
+        truncate_target,
+        where_clause: where_clause.map(|s| s.to_string()),
+        row_limit,
+        page_size,
+        parallelism,
+        transfer_indexes,
+        transfer_foreign_keys,
+        transfer_views,
+        transfer_routines,
+        transfer_triggers,
+        foreign_key_action,
+        column_mappings,
+        checkpoint_id: None,
+        error_mode,
+    };
+
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let app_clone = app_handle.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = log_rx.recv().await {
+            let _ = app_clone.emit("migration-log", msg);
+        }
+    });
+
+    let result = db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx)).await?;
+    Ok(format!("Transfer completed: {} tables, {} rows", result.tables_transferred.len(), result.rows_transferred))
 }

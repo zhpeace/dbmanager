@@ -9,7 +9,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source_host = "192.168.0.156";
     let source_port = "3306";
     let source_user = "root";
-    let source_pass = "hhsj@2021!";
+    let source_pass = std::env::var("MYSQL_SRC_PASSWORD").expect("MYSQL_SRC_PASSWORD env var required");
     let source_db = "apps_beitou";
 
     println!("[连接源库] MySQL {}:{}/{} ...", source_host, source_port, source_db);

@@ -50,7 +50,7 @@ export function ErDiagram({ connectionId, database }: ErDiagramProps) {
   useEffect(() => {
     invoke<SchemaCache>("get_schema_cache", { id: connectionId, database })
       .then(setSchema)
-      .catch(setError)
+      .catch((e: any) => setError(String(e)))
       .finally(() => setLoading(false))
   }, [connectionId, database])
 

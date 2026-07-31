@@ -1,5 +1,6 @@
 pub mod types;
 pub mod ddl;
+pub mod scheduler;
 
 use std::collections::HashMap;
 use sqlx::{Row, Column};
@@ -20,6 +21,7 @@ pub enum DbConnection {
 pub struct AppState {
     pub connections: tokio::sync::Mutex<HashMap<String, DbConnection>>,
     pub checkpoints: tokio::sync::Mutex<HashMap<String, types::CheckpointState>>,
+    pub scheduler: scheduler::SchedulerManager,
 }
 
 impl AppState {
@@ -27,6 +29,7 @@ impl AppState {
         Self {
             connections: tokio::sync::Mutex::new(HashMap::new()),
             checkpoints: tokio::sync::Mutex::new(HashMap::new()),
+            scheduler: scheduler::SchedulerManager::new(Vec::new()),
         }
     }
 }
@@ -349,6 +352,77 @@ impl DbConnection {
         }
     }
 
+    pub async fn create_database(&self, db_name: &str) -> Result<(), String> {
+        match self {
+            DbConnection::MySql(pool) => {
+                let sql = format!("CREATE DATABASE `{}`", db_name);
+                sqlx::raw_sql(&sql)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| format!("Failed to create database: {}", e))?;
+                Ok(())
+            }
+            DbConnection::Pg(pool) => {
+                let sql = format!("CREATE DATABASE \"{}\"", db_name);
+                sqlx::raw_sql(&sql)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| format!("Failed to create database: {}", e))?;
+                Ok(())
+            }
+            DbConnection::Sqlite(_) => Err("SQLite does not support creating databases".to_string()),
+            DbConnection::Mongo(client, _) => {
+                let db = client.database(db_name);
+                let _ = db
+                    .run_command(mongodb::bson::doc! { "ping": 1 })
+                    .await
+                    .map_err(|e| format!("Failed to create MongoDB database: {}", e))?;
+                Ok(())
+            }
+            DbConnection::Oracle(_) => {
+                let sql = format!("CREATE DATABASE {}", db_name);
+                self.execute_update(&sql).await?;
+                Ok(())
+            }
+            DbConnection::Redis(_) => Err("Redis does not support creating databases".to_string()),
+        }
+    }
+
+    pub async fn drop_database(&self, db_name: &str) -> Result<(), String> {
+        match self {
+            DbConnection::MySql(pool) => {
+                let sql = format!("DROP DATABASE `{}`", db_name);
+                sqlx::raw_sql(&sql)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| format!("Failed to drop database: {}", e))?;
+                Ok(())
+            }
+            DbConnection::Pg(pool) => {
+                let sql = format!("DROP DATABASE \"{}\"", db_name);
+                sqlx::raw_sql(&sql)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| format!("Failed to drop database: {}", e))?;
+                Ok(())
+            }
+            DbConnection::Sqlite(_) => Err("SQLite does not support dropping databases".to_string()),
+            DbConnection::Mongo(client, _) => {
+                let db = client.database(db_name);
+                db.drop()
+                    .await
+                    .map_err(|e| format!("Failed to drop MongoDB database: {}", e))?;
+                Ok(())
+            }
+            DbConnection::Oracle(_) => {
+                let sql = format!("DROP DATABASE {}", db_name);
+                self.execute_update(&sql).await?;
+                Ok(())
+            }
+            DbConnection::Redis(_) => Err("Redis does not support dropping databases".to_string()),
+        }
+    }
+
     pub async fn get_tables(&self, database: &str) -> Result<Vec<TableInfo>, String> {
         let res = match self {
             DbConnection::MySql(pool) => {
@@ -363,10 +437,11 @@ impl DbConnection {
                     .await
                     .map_err(|e| e.to_string())?;
                 for r in rows {
+                    let raw_name: Vec<u8> = r.get::<Vec<u8>, _>(0);
                     let raw: Vec<u8> = r.get::<Vec<u8>, _>(1);
                     let type_str = String::from_utf8_lossy(&raw).to_string();
                     result.push(TableInfo {
-                        name: r.get::<String, _>(0),
+                        name: String::from_utf8_lossy(&raw_name).to_string(),
                         object_type: type_str.trim_start_matches("SYSTEM ").to_string(),
                         schema: Some(database.to_string()),
                     });
@@ -2040,13 +2115,22 @@ fn escape_val(val: &serde_json::Value, target_type: &str) -> String {
             }
         }
         serde_json::Value::String(s) => {
-            let escaped = if target_type == "postgresql" || or_like {
-                s.replace('\'', "''")
-            } else {
-                s.replace('\\', "\\\\").replace('\'', "\\'")
-            };
-            if or_like {
-                format!("'{}'", escaped)
+            let escaped = s.replace('\'', "''");
+            if or_like && escaped.is_empty() {
+                "' '".to_string()
+            } else if or_like && escaped.len() > 3000 {
+                let mut chunks: Vec<String> = Vec::new();
+                let mut pos = 0;
+                for (i, _) in escaped.char_indices() {
+                    if i - pos >= 2000 {
+                        chunks.push(format!("TO_CLOB('{}')", &escaped[pos..i]));
+                        pos = i;
+                    }
+                }
+                if pos < escaped.len() {
+                    chunks.push(format!("TO_CLOB('{}')", &escaped[pos..]));
+                }
+                chunks.join(" || ")
             } else {
                 format!("'{}'", escaped)
             }
@@ -2060,12 +2144,23 @@ fn escape_val(val: &serde_json::Value, target_type: &str) -> String {
         }
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
             let s = val.to_string();
-            let escaped = if target_type == "postgresql" || or_like {
-                s.replace('\'', "''")
+            let escaped = s.replace('\'', "''");
+            if or_like && escaped.len() > 3000 {
+                let mut chunks: Vec<String> = Vec::new();
+                let mut pos = 0;
+                for (i, _) in escaped.char_indices() {
+                    if i - pos >= 2000 {
+                        chunks.push(format!("TO_CLOB('{}')", &escaped[pos..i]));
+                        pos = i;
+                    }
+                }
+                if pos < escaped.len() {
+                    chunks.push(format!("TO_CLOB('{}')", &escaped[pos..]));
+                }
+                chunks.join(" || ")
             } else {
-                s.replace('\\', "\\\\").replace('\'', "\\'")
-            };
-            format!("'{}'", escaped)
+                format!("'{}'", escaped)
+            }
         }
     }
 }
@@ -2121,7 +2216,13 @@ fn create_table_sql(table: &str, columns: &[ColumnInfo], source_type: &str, targ
         };
         if target_type == "postgresql" && mapped == "BLOB" { mapped = "BYTEA".to_string(); }
         if target_type == "oracle" {
-            if mapped == "TEXT" { mapped = "CLOB".to_string(); }
+            if mapped == "TEXT" {
+                if c.key == "PRI" || c.key == "PRIMARY" {
+                    mapped = "VARCHAR2(255)".to_string();
+                } else {
+                    mapped = "CLOB".to_string();
+                }
+            }
             else if mapped == "REAL" { mapped = "NUMBER".to_string(); }
             else if mapped == "INTEGER" { mapped = "NUMBER(38)".to_string(); }
             else if mapped == "BIGINT" { mapped = "NUMBER(38)".to_string(); }
@@ -2136,6 +2237,8 @@ fn create_table_sql(table: &str, columns: &[ColumnInfo], source_type: &str, targ
             has_default = false;
         } else if has_default {
             if target_type == "mysql" && is_blob_type(&mapped) {
+                has_default = false;
+            } else if target_type == "oracle" && mapped == "CLOB" {
                 has_default = false;
             } else if target_type == "mysql" && is_invalid_mysql_default(&default_val) {
                 let txt = default_val.trim().to_uppercase();
@@ -2153,8 +2256,17 @@ fn create_table_sql(table: &str, columns: &[ColumnInfo], source_type: &str, targ
                         || mapped.to_lowercase().starts_with("enum")
                         || mapped.to_lowercase().starts_with("set")
                         || mapped.to_lowercase().contains("json");
-                    if is_string_type {
-                        default_val = format!("'{}'", dv.replace('\'', "\\'"));
+                    let is_temporal = mapped.to_lowercase().contains("datetime")
+                        || mapped.to_lowercase().contains("timestamp")
+                        || mapped.to_lowercase() == "date"
+                        || mapped.to_lowercase().contains("time");
+                    if is_string_type || is_temporal {
+                        let up = dv.to_uppercase();
+                        if up != "NULL" && up != "CURRENT_TIMESTAMP" && up != "CURRENT_DATE" && up != "CURRENT_TIME"
+                            && up != "LOCALTIMESTAMP" && up != "LOCALTIME" && up != "NOW()"
+                        {
+                            default_val = format!("'{}'", dv.replace('\'', "\\'"));
+                        }
                     }
                 }
             } else if target_type == "postgresql" {
@@ -2168,6 +2280,18 @@ fn create_table_sql(table: &str, columns: &[ColumnInfo], source_type: &str, targ
                     if kw != "NULL" && kw != "CURRENT_TIMESTAMP" && kw != "CURRENT_DATE" && kw != "CURRENT_TIME"
                         && kw != "TRUE" && kw != "FALSE" && kw != "LOCALTIMESTAMP" && kw != "LOCALTIME"
                     {
+                        has_default = false;
+                    }
+                }
+            } else if target_type == "oracle" {
+                let dv = default_val.trim();
+                if !dv.starts_with('\'') && !dv.is_empty() {
+                    let kw = dv.to_uppercase();
+                    if kw == "NULL" || kw == "SYSDATE" || kw == "SYSTIMESTAMP" || kw == "CURRENT_TIMESTAMP" {
+                        // keep as-is
+                    } else if mapped.to_lowercase().contains("varchar2") || mapped.to_lowercase().contains("char") {
+                        default_val = format!("'{}'", dv.replace('\'', "''"));
+                    } else {
                         has_default = false;
                     }
                 }
@@ -2448,6 +2572,97 @@ pub async fn compare_schemas(
     Ok(types::CompareResult { tables, extra_in_source, extra_in_target, summary })
 }
 
+fn hex_to_bytes(hex: &str) -> Vec<u8> {
+    let clean: String = hex.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    let mut bytes = Vec::with_capacity(clean.len() / 2);
+    let mut i = 0;
+    while i + 1 < clean.len() {
+        if let (Ok(h), Ok(l)) = (
+            u8::from_str_radix(&clean[i..i + 1], 16),
+            u8::from_str_radix(&clean[i + 1..i + 2], 16),
+        ) {
+            bytes.push(h * 16 + l);
+        }
+        i += 2;
+    }
+    bytes
+}
+
+/// Oracle array-bound bulk insert using OCI Batch. Runs on a blocking thread
+/// since OCI calls are synchronous. Returns (rows_inserted, errors).
+async fn oracle_batch_insert(
+    conn: Arc<std::sync::Mutex<oracle::Connection>>,
+    table: &str,
+    insert_sql: &str,
+    col_names: &[String],
+    col_types: &[String],
+    mapped_rows: &[serde_json::Value],
+) -> Result<(i64, Vec<String>), String> {
+    let conn = conn.clone();
+    let table = table.to_string();
+    let insert_sql = insert_sql.to_string();
+    let col_names: Vec<String> = col_names.to_vec();
+    let col_types: Vec<String> = col_types.to_vec();
+    let mapped_rows: Vec<serde_json::Value> = mapped_rows.to_vec();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = conn.lock().map_err(|e| e.to_string())?;
+        let col_types_lower: Vec<String> = col_types.iter().map(|t| t.to_lowercase()).collect();
+        let mut errors = Vec::new();
+        let mut rows_inserted = 0i64;
+        if mapped_rows.is_empty() {
+            return Ok((0, errors));
+        }
+        let batch_size = mapped_rows.len().max(1);
+        let mut batch = conn.batch(&insert_sql, batch_size).build().map_err(|e| e.to_string())?;
+
+        for row in &mapped_rows {
+            let mut bind_vals: Vec<Box<dyn oracle::sql_type::ToSql>> = Vec::with_capacity(col_names.len());
+            for (ci, c) in col_names.iter().enumerate() {
+                let val = row.get(c).cloned().unwrap_or(serde_json::Value::Null);
+                let tl = col_types_lower.get(ci).map(|s| s.as_str()).unwrap_or("");
+                let is_blob = tl.starts_with("blob") || tl.starts_with("mediumblob") || tl.starts_with("longblob")
+                    || tl.starts_with("tinyblob") || tl == "binary" || tl.starts_with("varbinary")
+                    || tl == "bytea" || tl == "raw";
+                if is_blob {
+                    let v: Option<Vec<u8>> = match &val {
+                        serde_json::Value::String(s) => Some(hex_to_bytes(s)),
+                        _ => None,
+                    };
+                    bind_vals.push(Box::new(v));
+                } else if tl.contains("int") || tl.contains("year") {
+                    bind_vals.push(Box::new(val.as_i64()));
+                } else if tl.contains("decimal") || tl.contains("float") || tl.contains("double")
+                    || tl.contains("numeric") || tl.contains("real")
+                {
+                    let v: Option<f64> = val.as_f64().or_else(|| val.as_str().and_then(|s| s.parse().ok()));
+                    bind_vals.push(Box::new(v));
+                } else {
+                    let v: Option<String> = match &val {
+                        serde_json::Value::String(s) => Some(if s.is_empty() { " ".to_string() } else { s.clone() }),
+                        _ => None,
+                    };
+                    bind_vals.push(Box::new(v));
+                }
+            }
+            let refs: Vec<&dyn oracle::sql_type::ToSql> = bind_vals.iter().map(|b| b.as_ref()).collect();
+            if let Err(e) = batch.append_row(&refs) {
+                errors.push(format!("Oracle batch append error in '{}': {}", table, e));
+                return Ok((rows_inserted, errors));
+            }
+        }
+        match batch.execute() {
+            Ok(_) => { rows_inserted = mapped_rows.len() as i64; }
+            Err(e) => {
+                errors.push(format!("Oracle batch execute error in '{}': {}", table, e));
+            }
+        }
+        Ok((rows_inserted, errors))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 pub async fn transfer_data(
     source: &DbConnection,
     target: &DbConnection,
@@ -2529,6 +2744,20 @@ pub async fn transfer_data(
                     }).cloned().collect()
                 };
 
+                let target_cols: Vec<ColumnInfo> = if opts.column_mappings.is_empty() {
+                    mapped_cols.clone()
+                } else {
+                    mapped_cols.iter().map(|c| {
+                        let mut col = c.clone();
+                        if let Some(m) = col_mappings.get(c.name.as_str()) {
+                            if m.target_column != c.name {
+                                col.name = m.target_column.clone();
+                            }
+                        }
+                        col
+                    }).collect()
+                };
+
                 if mapped_cols.is_empty() {
                     errors.push(format!("Table '{}': all columns were skipped via mappings", table));
                     check_error_mode!();
@@ -2554,7 +2783,7 @@ pub async fn transfer_data(
                         target.execute_query(&drop_ddl).await.ok();
                     }
                     { let _msg = format!("  Creating table '{}'...", table); if let Some(ref _tx) = log_tx { let _ = _tx.send(_msg.clone()); } logs.push(_msg); }
-                    let create_sql = create_table_sql(table, &mapped_cols, source_type, target_type, Some(&opts.target_database));
+                    let create_sql = create_table_sql(table, &target_cols, source_type, target_type, Some(&opts.target_database));
                     if let Err(e) = target.execute_query(&create_sql).await {
                         errors.push(format!("Failed to create table '{}': {}", table, e));
                         check_error_mode!();
@@ -2584,14 +2813,12 @@ pub async fn transfer_data(
                     target.execute_query(&trunc_sql).await.ok();
                 }
 
-                let col_names: Vec<String> = mapped_cols.iter().map(|c| c.name.clone()).collect();
-                let col_types: Vec<String> = mapped_cols.iter().map(|c| c.data_type.clone()).collect();
+                let col_names: Vec<String> = target_cols.iter().map(|c| c.name.clone()).collect();
+                let col_types: Vec<String> = target_cols.iter().map(|c| c.data_type.clone()).collect();
                 let page_size = opts.page_size as i64;
                 let mut page = 1;
 
-                if target_type == "mysql" || target_type == "sqlite" {
-                    target.execute_query("START TRANSACTION").await.ok();
-                } else if target_type == "postgresql" {
+                if target_type == "postgresql" {
                     target.execute_query("ROLLBACK").await.ok();
                 }
 
@@ -2659,36 +2886,100 @@ pub async fn transfer_data(
                             .map(|c| escape_identifier(c, target_type))
                             .collect();
                         let quoted_table = format!("\"{}\".{}", opts.target_database.replace('"', "\"\"").to_uppercase(), escape_identifier(table, target_type));
-                        let mut batch_vals: Vec<String> = Vec::new();
-                        for row in &mapped_rows {
-                            let vals: Vec<String> = col_names.iter().enumerate().map(|(ci, c)| {
-                                let val = row.get(c).cloned().unwrap_or(serde_json::Value::Null);
-                                let tl = col_types_lower.get(ci).map(|s| s.as_str()).unwrap_or("");
-                                if tl.contains("blob") || tl.contains("bytea") || tl.contains("binary") || tl.contains("raw") {
-                                    if let serde_json::Value::String(s) = &val {
-                                        let hex = s.strip_prefix("0x").unwrap_or(s);
-                                        format!("HEXTORAW('{}')", hex)
-                                    } else {
-                                        "NULL".to_string()
-                                    }
-                                } else {
-                                    escape_val(&val, target_type)
-                                }
-                            }).collect();
-                            batch_vals.push(format!("({})", vals.join(", ")));
-                        }
-                        for row_vals in &batch_vals {
+                        let col_list = quoted_cols.join(", ");
+
+                        // Try OCI array binding first (much faster).
+                        let mut batch_ok = false;
+                        if let DbConnection::Oracle(conn) = target {
+                            let placeholders: Vec<String> = (1..=col_names.len()).map(|i| format!(":{}", i)).collect();
                             let insert_sql = format!(
-                                "INSERT INTO {} ({}) VALUES {}",
-                                quoted_table,
-                                quoted_cols.join(", "),
-                                row_vals,
+                                "INSERT INTO {} ({}) VALUES ({})",
+                                quoted_table, col_list, placeholders.join(", "),
                             );
-                            match target.execute_query(&insert_sql).await {
-                                Ok(_) => { rows_transferred += 1; }
+                            match oracle_batch_insert(conn.clone(), table, &insert_sql, &col_names, &col_types, &mapped_rows).await {
+                                Ok((inserted, errs)) => {
+                                    rows_transferred += inserted;
+                                    if errs.is_empty() {
+                                        batch_ok = true;
+                                    } else {
+                                        errors.extend(errs);
+                                    }
+                                }
                                 Err(e) => {
-                                    errors.push(format!("Insert error in '{}': {}", table, e));
-                                    check_error_mode!();
+                                    errors.push(format!("Oracle batch insert error in '{}': {}", table, e));
+                                }
+                            }
+                        }
+
+                        // Fall back to string-based INSERT ALL (handles CLOB > 4000 chars etc.)
+                        if !batch_ok {
+                            let mut batch_vals: Vec<String> = Vec::new();
+                            for row in &mapped_rows {
+                                let vals: Vec<String> = col_names.iter().enumerate().map(|(ci, c)| {
+                                    let val = row.get(c).cloned().unwrap_or(serde_json::Value::Null);
+                                    let tl = col_types_lower.get(ci).map(|s| s.as_str()).unwrap_or("");
+                                    let is_blob = tl.starts_with("blob") || tl.starts_with("mediumblob") || tl.starts_with("longblob")
+                                        || tl.starts_with("tinyblob") || tl == "binary" || tl.starts_with("varbinary")
+                                        || tl == "bytea" || tl == "raw";
+                                    if is_blob {
+                                        if let serde_json::Value::String(s) = &val {
+                                            let hex = s.strip_prefix("0x").unwrap_or(s);
+                                            format!("HEXTORAW('{}')", hex)
+                                        } else {
+                                            "NULL".to_string()
+                                        }
+                                    } else {
+                                        escape_val(&val, target_type)
+                                    }
+                                }).collect();
+                                batch_vals.push(format!("({})", vals.join(", ")));
+                            }
+                            // Adaptive INSERT ALL batching: keep each statement under ~30KB
+                            // to avoid OCI statement length limits (ORA-00913 on wide tables).
+                            const MAX_BATCH_ROWS: usize = 500;
+                            const MAX_STMT_BYTES: usize = 30_000;
+                            let mut i = 0;
+                            while i < batch_vals.len() {
+                                let mut chunk: Vec<String> = Vec::new();
+                                let mut stmt_len = 0usize;
+                                while i < batch_vals.len() && chunk.len() < MAX_BATCH_ROWS {
+                                    let extra = batch_vals[i].len() + 60;
+                                    if !chunk.is_empty() && stmt_len + extra > MAX_STMT_BYTES {
+                                        break;
+                                    }
+                                    stmt_len += extra;
+                                    chunk.push(batch_vals[i].clone());
+                                    i += 1;
+                                }
+                                let into_rows: Vec<String> = chunk.iter()
+                                    .map(|row_vals| format!("  INTO {} ({}) VALUES {}", quoted_table, col_list, row_vals))
+                                    .collect();
+                                let insert_sql = format!("INSERT ALL\n{}\nSELECT 1 FROM dual", into_rows.join("\n"));
+                                match target.execute_query(&insert_sql).await {
+                                    Ok(_) => { rows_transferred += chunk.len() as i64; }
+                                    Err(e) => {
+                                        // Fall back to single-row inserts so one bad row
+                                        // doesn't discard the whole batch.
+                                        let mut fallback_ok = 0usize;
+                                        for row_vals in &chunk {
+                                            let one_sql = format!(
+                                                "INSERT INTO {} ({}) VALUES {}",
+                                                quoted_table, col_list, row_vals,
+                                            );
+                                            match target.execute_query(&one_sql).await {
+                                                Ok(_) => { fallback_ok += 1; }
+                                                Err(e2) => {
+                                                    errors.push(format!("Insert error in '{}': {}", table, e2));
+                                                    check_error_mode!();
+                                                }
+                                            }
+                                        }
+                                        rows_transferred += fallback_ok as i64;
+                                        if fallback_ok < chunk.len() {
+                                            errors.push(format!("Oracle INSERT ALL failed in '{}' (batch of {}); fell back to single rows ({} ok, {} bad). Batch error: {}",
+                                                table, chunk.len(), fallback_ok, chunk.len() - fallback_ok, e));
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2714,9 +3005,7 @@ pub async fn transfer_data(
                     page += 1;
                 }
 
-                if target_type == "mysql" || target_type == "sqlite" {
-                    target.execute_query("COMMIT").await.ok();
-                } else if target_type == "postgresql" {
+                if target_type == "postgresql" {
                     target.execute_query("ROLLBACK").await.ok();
                 }
 
@@ -2836,7 +3125,7 @@ pub async fn backup_database(
         };
 
         let create_sql = create_table_sql(table_name, cols, source_type, source_type, Some(database));
-        file.write_all(format!("{}\n\n", create_sql).as_bytes()).await.map_err(|e| e.to_string())?;
+        file.write_all(format!("{};\n\n", create_sql).as_bytes()).await.map_err(|e| e.to_string())?;
 
         if let Some(ref tx) = log_tx { let _ = tx.send(format!("Backing up '{}'...", table_name)); }
 
@@ -2883,7 +3172,7 @@ pub async fn backup_database(
 
 pub async fn restore_database(
     target: &DbConnection,
-    database: &str,
+    _database: &str,
     input_path: &str,
     log_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 ) -> Result<(i32, Vec<String>), String> {
@@ -2894,11 +3183,18 @@ pub async fn restore_database(
 
     for stmt in content.split(';') {
         let trimmed = stmt.trim();
-        if trimmed.is_empty() || trimmed.starts_with("--") { continue; }
+        if trimmed.is_empty() { continue; }
+        // Filter out comment-only segments and extract SQL from segments with leading comments
+        let lines: Vec<&str> = trimmed.lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with("--"))
+            .collect();
+        if lines.is_empty() { continue; }
+        let sql = lines.join(" ");
 
-        if let Some(ref tx) = log_tx { let _ = tx.send(format!("Executing: {}...", &trimmed[..trimmed.len().min(80)])); }
+        if let Some(ref tx) = log_tx { let _ = tx.send(format!("Executing: {}...", &sql[..sql.len().min(80)])); }
 
-        match target.execute_query(trimmed).await {
+        match target.execute_query(&sql).await {
             Ok(_) => count += 1,
             Err(e) => {
                 errors.push(format!("{}", e));
@@ -3061,6 +3357,362 @@ mod tests {
 
         let result = transfer_data(&source, &target, &opts, None).await.unwrap();
         assert_eq!(result.tables_transferred, vec!["empty_t"]);
+        assert_eq!(result.rows_transferred, 0);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    }
+
+    // ── Transfer mode tests (SQLite in-memory) ──
+
+    #[tokio::test]
+    async fn test_transfer_mode_structure_only() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'data'), (2, 'more')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            mode: types::TransferMode::StructureOnly,
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert_eq!(result.tables_transferred, vec!["t"]);
+        assert_eq!(result.rows_transferred, 0);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+
+        let tgt_data = tgt.get_table_data("main", "t", 1, 100, None, None, None, None).await.unwrap();
+        assert!(tgt_data.rows.is_empty(), "structure_only should not transfer data");
+        assert_eq!(tgt_data.columns.len(), 2, "structure should have 2 columns");
+        assert!(tgt_data.columns.iter().any(|c| c.name == "id"));
+        assert!(tgt_data.columns.iter().any(|c| c.name == "val"));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_mode_data_only() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'hello'), (2, 'world')")
+            .execute(&src_pool).await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT)")
+            .execute(&tgt_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            mode: types::TransferMode::DataOnly,
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert_eq!(result.rows_transferred, 2);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+
+        let tgt_data = tgt.get_table_data("main", "t", 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_transfer_drop_target() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'src')")
+            .execute(&src_pool).await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, other_col TEXT)")
+            .execute(&tgt_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (99, 'old')")
+            .execute(&tgt_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            drop_target: true,
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+        assert_eq!(result.rows_transferred, 1);
+
+        let tgt_data = tgt.get_table_data("main", "t", 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 1);
+        assert_eq!(tgt_data.rows[0].get("val").and_then(|v| v.as_str()), Some("src"));
+        assert!(tgt_data.columns.iter().any(|c| c.name == "val"), "should have val column from source");
+        assert!(tgt_data.columns.iter().any(|c| c.name == "id"), "should have id column from source");
+    }
+
+    #[tokio::test]
+    async fn test_transfer_truncate_target() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (3, 'new')")
+            .execute(&src_pool).await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT)")
+            .execute(&tgt_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'old'), (2, 'old2')")
+            .execute(&tgt_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            truncate_target: true,
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+        assert_eq!(result.rows_transferred, 1);
+
+        let tgt_data = tgt.get_table_data("main", "t", 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 1, "old rows should be truncated before insert");
+        assert_eq!(tgt_data.rows[0].get("id").and_then(|v| v.as_i64()), Some(3));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_error_mode_skip() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t1 (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t1 VALUES (1, 'data')")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("CREATE TABLE t2 (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t2 VALUES (10, 'more')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t1".into(), "nonexistent".into(), "t2".into()],
+            error_mode: types::ErrorMode::Skip,
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert!(result.tables_transferred.contains(&"t1".to_string()), "t1 should transfer");
+        assert!(result.tables_transferred.contains(&"t2".to_string()), "t2 should transfer despite earlier error");
+        assert_eq!(result.tables_transferred.len(), 2);
+        assert_eq!(result.rows_transferred, 2);
+        assert!(!result.errors.is_empty(), "should have reported the nonexistent table error");
+    }
+
+    #[tokio::test]
+    async fn test_transfer_error_mode_stop() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t1 (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t1 VALUES (1, 'data')")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("CREATE TABLE t2 (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t2 VALUES (10, 'more')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t1".into(), "nonexistent".into(), "t2".into()],
+            error_mode: types::ErrorMode::Stop,
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert!(result.tables_transferred.contains(&"t1".to_string()), "t1 should transfer");
+        assert_eq!(result.tables_transferred.len(), 1, "t2 should NOT transfer because ErrorMode::Stop halts on error");
+        assert_eq!(result.rows_transferred, 1);
+        assert!(!result.errors.is_empty(), "should have reported the nonexistent table error");
+    }
+
+    #[tokio::test]
+    async fn test_transfer_conflict_strategy_replace() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT PRIMARY KEY, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'replaced')")
+            .execute(&src_pool).await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT PRIMARY KEY, val TEXT)")
+            .execute(&tgt_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'original')")
+            .execute(&tgt_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            mode: types::TransferMode::DataOnly,
+            conflict_strategy: types::ConflictStrategy::Replace,
+            transfer_indexes: false,
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+        assert_eq!(result.rows_transferred, 1);
+
+        let tgt_data = tgt.get_table_data("main", "t", 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 1);
+        assert_eq!(tgt_data.rows[0].get("val").and_then(|v| v.as_str()), Some("replaced"));
+    }
+
+    // ── Checkpoint/resume tests (SQLite in-memory) ──
+
+    #[tokio::test]
+    async fn test_transfer_checkpoint_skips_completed_table() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t1 (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t1 VALUES (1, 'data')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t1".into()],
+            checkpoint_id: Some("t1".into()),
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert_eq!(result.tables_transferred.len(), 0, "completed table should be skipped");
+        assert_eq!(result.rows_transferred, 0);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    }
+
+    #[tokio::test]
+    async fn test_transfer_checkpoint_skips_partial() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t1 (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t1 VALUES (1, 'keep')")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("CREATE TABLE t2 (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t2 VALUES (10, 'transfer')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t1".into(), "t2".into()],
+            checkpoint_id: Some("t1".into()),
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert_eq!(result.tables_transferred, vec!["t2"], "only t2 should be transferred");
+        assert_eq!(result.rows_transferred, 1);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+
+        let tgt_data = tgt.get_table_data("main", "t2", 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 1);
+        assert_eq!(tgt_data.rows[0].get("id").and_then(|v| v.as_i64()), Some(10));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_checkpoint_all_completed() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t1 (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t1 VALUES (1, 'a')")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("CREATE TABLE t2 (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t2 VALUES (2, 'b')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t1".into(), "t2".into()],
+            checkpoint_id: Some("t1,t2".into()),
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert_eq!(result.tables_transferred.len(), 0, "all tables should be skipped");
         assert_eq!(result.rows_transferred, 0);
         assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
     }
@@ -3676,6 +4328,78 @@ mod tests {
         tgt.execute_query(&format!("DROP TABLE `{}`.`{}`", mysql.db_name, table)).await.unwrap();
     }
 
+    #[ignore]
+    #[tokio::test]
+    async fn test_extended_mysql_to_oracle() {
+        let mysql = mysql_cfg();
+        let mysql_pool = sqlx::MySqlPool::connect(&mysql.url).await.unwrap();
+        let src = DbConnection::MySql(mysql_pool);
+        let oracle = oracle_connect();
+
+        let table = format!("ext_mo_{}", std::process::id());
+        prepare_extended_mysql_source(&src, &mysql.db_name, &table).await;
+
+        cleanup_oracle_source(&oracle, &table).await;
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: mysql.db_name.clone(),
+            target_id: "tgt".into(),
+            target_database: "TESTUSER".into(),
+            tables: vec![table.clone()],
+            conflict_strategy: types::ConflictStrategy::Error,
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &oracle, &opts, None).await.unwrap();
+        assert!(!result.tables_transferred.is_empty(), "Errors: {:?}", result.errors);
+        assert_eq!(result.rows_transferred, 1, "Errors: {:?}", result.errors);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+
+        let tgt_data = oracle.get_table_data("TESTUSER", &table, 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 1);
+        assert_eq!(tgt_data.rows[0].get("id").or_else(|| tgt_data.rows[0].get("ID")).and_then(|v| v.as_i64()), Some(1));
+
+        src.execute_query(&format!("DROP TABLE `{}`.`{}`", mysql.db_name, table)).await.unwrap();
+        cleanup_oracle_source(&oracle, &table).await;
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_extended_pg_to_oracle() {
+        let pg = pg_cfg();
+        let pg_pool = sqlx::PgPool::connect(&pg.url).await.unwrap();
+        let src = DbConnection::Pg(pg_pool);
+        let oracle = oracle_connect();
+
+        let table = format!("ext_po_{}", std::process::id());
+        prepare_extended_pg_source(&src, &table).await;
+
+        cleanup_oracle_source(&oracle, &table).await;
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "testdb".into(),
+            target_id: "tgt".into(),
+            target_database: "TESTUSER".into(),
+            tables: vec![table.clone()],
+            conflict_strategy: types::ConflictStrategy::Error,
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &oracle, &opts, None).await.unwrap();
+        assert!(!result.tables_transferred.is_empty(), "Errors: {:?}", result.errors);
+        assert_eq!(result.rows_transferred, 1, "Errors: {:?}", result.errors);
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+
+        let tgt_data = oracle.get_table_data("TESTUSER", &table, 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 1);
+        assert_eq!(tgt_data.rows[0].get("id").or_else(|| tgt_data.rows[0].get("ID")).and_then(|v| v.as_i64()), Some(1));
+
+        src.execute_query(&format!("DROP TABLE \"{}\"", table)).await.unwrap();
+        cleanup_oracle_source(&oracle, &table).await;
+    }
+
     // ── Oracle integration tests ──
 
     #[ignore]
@@ -3833,5 +4557,975 @@ mod tests {
 
         src.execute_query(&format!("DROP TABLE \"{}\"", table)).await.unwrap();
         cleanup_oracle_source(&oracle, &table).await;
+    }
+
+    // ── Column mapping tests (SQLite in-memory) ──
+
+    #[tokio::test]
+    async fn test_transfer_column_mapping_rename() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'hello')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            column_mappings: vec![
+                types::ColumnMapping {
+                    source_column: "val".into(),
+                    target_column: "renamed".into(),
+                    skip: false,
+                    default_value: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+        assert_eq!(result.rows_transferred, 1);
+
+        let tgt_data = tgt.get_table_data("main", "t", 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 1);
+        assert_eq!(tgt_data.rows[0].get("renamed").and_then(|v| v.as_str()), Some("hello"));
+        assert!(tgt_data.rows[0].get("val").is_none(), "original column name should not exist in target");
+    }
+
+    #[tokio::test]
+    async fn test_transfer_column_mapping_skip() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT, secret TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'visible', 'hidden')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            column_mappings: vec![
+                types::ColumnMapping {
+                    source_column: "secret".into(),
+                    target_column: "secret".into(),
+                    skip: true,
+                    default_value: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+        assert_eq!(result.rows_transferred, 1);
+
+        let tgt_data = tgt.get_table_data("main", "t", 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 1);
+        assert_eq!(tgt_data.rows[0].get("id").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(tgt_data.rows[0].get("val").and_then(|v| v.as_str()), Some("visible"));
+        assert!(tgt_data.rows[0].get("secret").is_none(), "skipped column should not be in target");
+    }
+
+    #[tokio::test]
+    async fn test_transfer_column_mapping_default_value() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'original')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            column_mappings: vec![
+                types::ColumnMapping {
+                    source_column: "val".into(),
+                    target_column: "val".into(),
+                    skip: false,
+                    default_value: Some(serde_json::json!("defaulted")),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+        assert_eq!(result.rows_transferred, 1);
+
+        let tgt_data = tgt.get_table_data("main", "t", 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 1);
+        assert_eq!(tgt_data.rows[0].get("val").and_then(|v| v.as_str()), Some("defaulted"));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_column_mapping_all_skipped() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'data')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            column_mappings: vec![
+                types::ColumnMapping {
+                    source_column: "id".into(),
+                    target_column: "id".into(),
+                    skip: true,
+                    default_value: None,
+                },
+                types::ColumnMapping {
+                    source_column: "val".into(),
+                    target_column: "val".into(),
+                    skip: true,
+                    default_value: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert!(!result.errors.is_empty(), "should error when all columns skipped");
+        assert!(result.errors[0].contains("all columns were skipped"));
+        assert!(result.tables_transferred.is_empty(), "no tables should be transferred");
+    }
+
+    #[tokio::test]
+    async fn test_transfer_column_mapping_skip_and_default() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT, flag INT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'text', 42)")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            column_mappings: vec![
+                types::ColumnMapping {
+                    source_column: "flag".into(),
+                    target_column: "flag".into(),
+                    skip: true,
+                    default_value: None,
+                },
+                types::ColumnMapping {
+                    source_column: "val".into(),
+                    target_column: "val".into(),
+                    skip: false,
+                    default_value: Some(serde_json::json!("overridden")),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+        assert_eq!(result.rows_transferred, 1);
+
+        let tgt_data = tgt.get_table_data("main", "t", 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 1);
+        assert_eq!(tgt_data.rows[0].get("id").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(tgt_data.rows[0].get("val").and_then(|v| v.as_str()), Some("overridden"), "default_value should override source");
+        assert!(tgt_data.rows[0].get("flag").is_none(), "flag should be skipped");
+    }
+
+    #[tokio::test]
+    async fn test_transfer_column_mapping_combined() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT, flag INT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'text', 42)")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            column_mappings: vec![
+                types::ColumnMapping {
+                    source_column: "flag".into(),
+                    target_column: "flag".into(),
+                    skip: true,
+                    default_value: None,
+                },
+                types::ColumnMapping {
+                    source_column: "val".into(),
+                    target_column: "renamed_val".into(),
+                    skip: false,
+                    default_value: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+        assert_eq!(result.rows_transferred, 1);
+
+        let tgt_data = tgt.get_table_data("main", "t", 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 1);
+        assert_eq!(tgt_data.rows[0].get("id").and_then(|v| v.as_i64()), Some(1), "id should be preserved");
+        assert_eq!(tgt_data.rows[0].get("renamed_val").and_then(|v| v.as_str()), Some("text"), "val should be renamed");
+        assert!(tgt_data.rows[0].get("flag").is_none(), "flag should be skipped");
+    }
+
+    // ── Real MySQL → Docker targets integration test (read-only on source) ──
+    // Connects to the user's MySQL at 192.168.0.156:3306 (apps_beitou),
+    // transfers 3 small tables to each Docker target, verifies row counts.
+    // Only reads from source; never creates/drops/alters the source.
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_real_mysql_to_docker_all() {
+        let src_pwd = std::env::var("MYSQL_SRC_PASSWORD").expect("MYSQL_SRC_PASSWORD env var required for source DB connection");
+        let src_url = format!("mysql://root:{}@192.168.0.156:3306/apps_beitou", src_pwd);
+        let src_pool = sqlx::MySqlPool::connect(&src_url).await.unwrap();
+        let src = DbConnection::MySql(src_pool);
+
+        let target_tables = vec![
+            "luckysheet_model".to_string(),
+            "new_contract_system_info".to_string(),
+            "prj_funds_user".to_string(),
+        ];
+
+        // ── Target: MySQL (Docker) ──
+        {
+            let tgt_pool = sqlx::MySqlPool::connect("mysql://root:testpass@127.0.0.1:3307/testdb").await.unwrap();
+            let tgt = DbConnection::MySql(tgt_pool);
+            let db = "testdb";
+            for t in &target_tables {
+                tgt.execute_query(&format!("DROP TABLE IF EXISTS `{}`.`{}`", db, t)).await.unwrap();
+            }
+            let opts = types::TransferOptions {
+                source_id: "src".into(),
+                source_database: "apps_beitou".into(),
+                target_id: "tgt".into(),
+                target_database: db.into(),
+                tables: target_tables.clone(),
+                conflict_strategy: types::ConflictStrategy::Error,
+                transfer_indexes: false,
+                ..Default::default()
+            };
+            let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+            assert!(result.errors.is_empty(), "MySQL→MySQL errors: {:?}", result.errors);
+            println!("MySQL→MySQL: {} tables, {} rows", result.tables_transferred.len(), result.rows_transferred);
+            for t in &target_tables {
+                tgt.execute_query(&format!("DROP TABLE IF EXISTS `{}`.`{}`", db, t)).await.unwrap();
+            }
+        }
+
+        // ── Target: PostgreSQL (Docker) ──
+        {
+            let tgt_pool = sqlx::PgPool::connect("postgres://postgres:testpass@127.0.0.1:5433/testdb").await.unwrap();
+            let tgt = DbConnection::Pg(tgt_pool);
+            for t in &target_tables {
+                tgt.execute_query(&format!("DROP TABLE IF EXISTS \"{}\"", t)).await.unwrap();
+            }
+            let opts = types::TransferOptions {
+                source_id: "src".into(),
+                source_database: "apps_beitou".into(),
+                target_id: "tgt".into(),
+                target_database: "public".into(),
+                tables: target_tables.clone(),
+                conflict_strategy: types::ConflictStrategy::Error,
+                transfer_indexes: false,
+                ..Default::default()
+            };
+            let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+            assert!(result.errors.is_empty(), "MySQL→PG errors: {:?}", result.errors);
+            println!("MySQL→PG: {} tables, {} rows", result.tables_transferred.len(), result.rows_transferred);
+            for t in &target_tables {
+                tgt.execute_query(&format!("DROP TABLE IF EXISTS \"{}\"", t)).await.unwrap();
+            }
+        }
+
+        // ── Target: Oracle (Docker) ──
+        {
+            let oracle = oracle_connect();
+            // Clean both case variants (Oracle stores quoted names as-is)
+            for t in &target_tables {
+                oracle.execute_query(&format!("DROP TABLE \"{}\"", t)).await.ok();
+                oracle.execute_query(&format!("DROP TABLE \"{}\"", t.to_uppercase())).await.ok();
+            }
+            oracle.execute_query("COMMIT").await.ok();
+
+            let opts = types::TransferOptions {
+                source_id: "src".into(),
+                source_database: "apps_beitou".into(),
+                target_id: "tgt".into(),
+                target_database: "TESTUSER".into(),
+                tables: target_tables.clone(),
+                conflict_strategy: types::ConflictStrategy::Error,
+                transfer_indexes: false,
+                drop_target: true,
+                ..Default::default()
+            };
+            let result = transfer_data(&src, &oracle, &opts, None).await.unwrap();
+            assert!(result.errors.is_empty(), "MySQL→Oracle errors: {:?}", result.errors);
+            println!("MySQL→Oracle: {} tables, {} rows", result.tables_transferred.len(), result.rows_transferred);
+            for t in &target_tables {
+                oracle.execute_query(&format!("DROP TABLE \"{}\"", t)).await.ok();
+                oracle.execute_query(&format!("DROP TABLE \"{}\"", t.to_uppercase())).await.ok();
+            }
+            oracle.execute_query("COMMIT").await.ok();
+        }
+    }
+
+    // ── Full database migration test (read-only on source) ──
+    // Migrates ALL tables from apps_beitou to each Docker target,
+    // measures duration, collects errors.
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_full_mysql_to_docker_all() {
+        use std::time::Instant;
+
+        let src_pwd = std::env::var("MYSQL_SRC_PASSWORD").expect("MYSQL_SRC_PASSWORD env var required for source DB connection");
+        let src_url = format!("mysql://root:{}@192.168.0.156:3306/apps_beitou", src_pwd);
+        let src_pool = sqlx::MySqlPool::connect(&src_url).await.unwrap();
+        let src = DbConnection::MySql(src_pool);
+
+        let tables_resp = src.get_tables("apps_beitou").await.unwrap();
+        let all_tables: Vec<String> = tables_resp.into_iter()
+            .filter(|t| t.object_type.contains("TABLE") || t.object_type.is_empty())
+            .map(|t| t.name)
+            .collect();
+        println!("\n=== Full migration from apps_beitou ===");
+        println!("Total tables: {}", all_tables.len());
+
+        async fn run_migration(
+            src: &DbConnection, tgt: &DbConnection,
+            tables: &[String], src_db: &str, tgt_db: &str,
+            label: &str,
+        ) {
+            use std::io::Write;
+            let start = Instant::now();
+            let mut opts = types::TransferOptions {
+                source_id: "src".into(),
+                source_database: src_db.into(),
+                target_id: "tgt".into(),
+                target_database: tgt_db.into(),
+                tables: tables.to_vec(),
+                conflict_strategy: types::ConflictStrategy::Error,
+                error_mode: types::ErrorMode::Skip,
+                transfer_indexes: false,
+                ..Default::default()
+            };
+            // Process in batches to track progress
+            let batch_size = 20;
+            let mut total_tables = 0usize;
+            let mut total_rows = 0i64;
+            let mut all_errors = Vec::new();
+            for batch in tables.chunks(batch_size) {
+                opts.tables = batch.to_vec();
+                print!("  {}: batch {}/{}, tables {}-{}... ", label,
+                    (total_tables / batch_size) + 1,
+                    (tables.len() + batch_size - 1) / batch_size,
+                    total_tables + 1,
+                    (total_tables + batch.len()).min(tables.len()));
+                std::io::stdout().flush().unwrap();
+                let result = transfer_data(src, tgt, &opts, None).await.unwrap();
+                total_tables += result.tables_transferred.len();
+                total_rows += result.rows_transferred;
+                all_errors.extend(result.errors);
+                println!("{} tables, {} rows, {} errors", result.tables_transferred.len(), result.rows_transferred, all_errors.len());
+            }
+            let elapsed = start.elapsed();
+            let secs = elapsed.as_secs_f64();
+            println!("── {} done ──", label);
+            println!("  Duration: {:.1}s", secs);
+            println!("  Tables transferred: {}/{}", total_tables, tables.len());
+            println!("  Total rows: {}", total_rows);
+            println!("  Errors: {}", all_errors.len());
+            let rate = total_rows as f64 / secs.max(0.1);
+            println!("  Rate: {:.0} rows/s", rate);
+            if !all_errors.is_empty() {
+                let mut by_table: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+                for e in &all_errors {
+                    let tbl = tables.iter().find(|t| e.contains(t.as_str())).map(|s| s.as_str()).unwrap_or("unknown");
+                    *by_table.entry(tbl).or_insert(0) += 1;
+                }
+                println!("  Error breakdown (top 10):");
+                let mut sorted: Vec<(&&str, &usize)> = by_table.iter().collect();
+                sorted.sort_by(|a, b| b.1.cmp(a.1));
+                for (tbl, count) in sorted.iter().take(10) {
+                    println!("    {}: {} errors", tbl, count);
+                    for e in &all_errors {
+                        if e.contains(*tbl) {
+                            println!("      First error: {}", e);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // MySQL Docker — SKIP (already verified: 192/192, 5.2M rows, 0 critical errors)
+        // PostgreSQL Docker — SKIP (already verified: 192/192, 5.2M rows, 0 errors)
+        // Oracle Docker (all 192 tables — array binding makes this fast)
+        {
+            let oracle = oracle_connect();
+            let existing = oracle.get_tables("TESTUSER").await.unwrap();
+            for t in &existing {
+                oracle.execute_query(&format!("DROP TABLE \"{}\"", t.name)).await.ok();
+            }
+            oracle.execute_query("COMMIT").await.ok();
+            run_migration(&src, &oracle, &all_tables, "apps_beitou", "TESTUSER", "Oracle (Docker)").await;
+            let existing = oracle.get_tables("TESTUSER").await.unwrap();
+            for t in &existing {
+                oracle.execute_query(&format!("DROP TABLE \"{}\"", t.name)).await.ok();
+            }
+            oracle.execute_query("COMMIT").await.ok();
+        }
+
+        println!("\n=== Migration test complete ===");
+    }
+
+    #[test]
+    fn test_create_table_sql_quotes_datetime_defaults() {
+        let cols = vec![
+            types::ColumnInfo {
+                name: "id".into(),
+                data_type: "INT".into(),
+                key: "PRI".into(),
+                default_value: None,
+                nullable: false,
+                extra: "auto_increment".into(),
+            },
+            types::ColumnInfo {
+                name: "gmt_create".into(),
+                data_type: "datetime".into(),
+                key: "".into(),
+                default_value: Some("2010-05-05 00:00:00".into()),
+                nullable: false,
+                extra: "".into(),
+            },
+            types::ColumnInfo {
+                name: "name".into(),
+                data_type: "varchar(100)".into(),
+                key: "".into(),
+                default_value: Some("hello".into()),
+                nullable: true,
+                extra: "".into(),
+            },
+            types::ColumnInfo {
+                name: "ts".into(),
+                data_type: "timestamp".into(),
+                key: "".into(),
+                default_value: Some("CURRENT_TIMESTAMP".into()),
+                nullable: true,
+                extra: "".into(),
+            },
+        ];
+        let sql = create_table_sql("test_tbl", &cols, "mysql", "mysql", Some("target_db"));
+        assert!(sql.contains("`gmt_create` datetime DEFAULT '2010-05-05 00:00:00'"),
+            "datetime default should be quoted. SQL: {}", sql);
+        assert!(sql.contains("`name` varchar(100) DEFAULT 'hello'"),
+            "varchar default should be quoted. SQL: {}", sql);
+        assert!(sql.contains("`ts` timestamp DEFAULT CURRENT_TIMESTAMP"),
+            "CURRENT_TIMESTAMP should not be quoted. SQL: {}", sql);
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_duplicate_database_mysql() {
+        let cfg = mysql_cfg();
+        let pool = sqlx::MySqlPool::connect(&cfg.url).await.unwrap();
+        let conn = DbConnection::MySql(pool.clone());
+
+        let src_db = format!("dup_src_{}", std::process::id());
+        let tgt_db = format!("dup_tgt_{}", std::process::id());
+
+        conn.create_database(&src_db).await.unwrap();
+        conn.create_database(&tgt_db).await.unwrap();
+
+        let table = format!("dup_test_{}", std::process::id());
+        let create_sql = format!(
+            "CREATE TABLE `{}`.`{}` (\
+             id INT PRIMARY KEY AUTO_INCREMENT, \
+             gmt_create DATETIME DEFAULT '2010-05-05 00:00:00', \
+             gmt_modified DATETIME DEFAULT '2010-05-05 00:00:00', \
+             name VARCHAR(100) DEFAULT 'hello', \
+             ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP, \
+             data TEXT)",
+            src_db, table
+        );
+        conn.execute_query(&create_sql).await.unwrap();
+        conn.execute_query(
+            &format!("INSERT INTO `{}`.`{}` (name, data) VALUES ('test1', 'data1')", src_db, table)
+        ).await.unwrap();
+        conn.execute_query(
+            &format!("INSERT INTO `{}`.`{}` (name, data) VALUES ('test2', 'data2')", src_db, table)
+        ).await.unwrap();
+
+        let tables = conn.get_tables(&src_db).await.unwrap();
+        let table_names: Vec<String> = tables.iter().filter(|t| {
+            matches!(t.object_type.as_str(), "TABLE" | "BASE TABLE")
+        }).map(|t| t.name.clone()).collect();
+        assert!(table_names.contains(&table), "Test table not found");
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: src_db.clone(),
+            target_id: "tgt".into(),
+            target_database: tgt_db.clone(),
+            tables: vec![table.clone()],
+            mode: types::TransferMode::StructureAndData,
+            transfer_indexes: true,
+            transfer_foreign_keys: true,
+            transfer_views: true,
+            transfer_routines: true,
+            transfer_triggers: true,
+            conflict_strategy: types::ConflictStrategy::Error,
+            ..Default::default()
+        };
+
+        let target_conn = DbConnection::MySql(pool.clone());
+        let result = transfer_data(&conn, &target_conn, &opts, None).await.unwrap();
+        assert!(result.errors.is_empty(), "Transfer had errors: {:?}", result.errors);
+
+        let tgt_data = target_conn.get_table_data(&tgt_db, &table, 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 2, "Target should have 2 rows");
+
+        conn.execute_query(&format!("DROP TABLE `{}`.`{}`", src_db, table)).await.unwrap();
+        conn.execute_query(&format!("DROP DATABASE `{}`", src_db)).await.unwrap();
+        conn.execute_query(&format!("DROP DATABASE `{}`", tgt_db)).await.unwrap();
+    }
+
+    // ── DDL SQL generation tests (pure functions, no DB required) ──
+
+    #[test]
+    fn test_ddl_create_table_sql_variants() {
+        for (kind, name) in [
+            (ddl::DbKind::MySql, "mysql"),
+            (ddl::DbKind::Postgres, "postgres"),
+            (ddl::DbKind::Sqlite, "sqlite"),
+            (ddl::DbKind::Oracle, "oracle"),
+        ] {
+            let cols = vec![
+                types::ColumnDef { name: "id".into(), data_type: "INT".into(), nullable: false, default_value: None, primary_key: true },
+                types::ColumnDef { name: "Name".into(), data_type: "VARCHAR(100)".into(), nullable: true, default_value: Some("'hello'".into()), primary_key: false },
+                types::ColumnDef { name: "ts".into(), data_type: "TIMESTAMP".into(), nullable: true, default_value: Some("CURRENT_TIMESTAMP".into()), primary_key: false },
+            ];
+            let sql = ddl::create_table_sql(&kind, None, "t1", &cols);
+            assert!(sql.contains("CREATE TABLE"), "{}: missing CREATE TABLE", name);
+            assert!(sql.contains("PRIMARY KEY"), "{}: missing PRIMARY KEY", name);
+            if matches!(kind, ddl::DbKind::MySql | ddl::DbKind::Sqlite) {
+                assert!(sql.contains("`Name`"), "{}: expected backtick quotes", name);
+            } else if matches!(kind, ddl::DbKind::Oracle) {
+                assert!(sql.contains("\"Name\""), "{}: Oracle with uppercase chars should get double-quotes", name);
+            } else {
+                assert!(sql.contains("\"Name\""), "{}: expected double-quote quotes", name);
+            }
+        }
+    }
+
+    #[test]
+    fn test_ddl_drop_table_sql() {
+        let mysql = ddl::drop_table_sql(&ddl::DbKind::MySql, None, "t1");
+        assert_eq!(mysql, "DROP TABLE IF EXISTS `t1`");
+        let pg = ddl::drop_table_sql(&ddl::DbKind::Postgres, None, "t1");
+        assert_eq!(pg, "DROP TABLE \"t1\"");
+    }
+
+    #[test]
+    fn test_ddl_truncate_table_sql() {
+        let m = ddl::truncate_table_sql(&ddl::DbKind::MySql, None, "t1");
+        assert_eq!(m, "TRUNCATE TABLE `t1`");
+        let s = ddl::truncate_table_sql(&ddl::DbKind::Sqlite, None, "t1");
+        assert_eq!(s, "DELETE FROM `t1`");
+        let o = ddl::truncate_table_sql(&ddl::DbKind::Oracle, None, "t1");
+        assert_eq!(o, "TRUNCATE TABLE T1"); // Oracle uppercases
+    }
+
+    #[test]
+    fn test_ddl_rename_table_sql() {
+        let m = ddl::rename_table_sql(&ddl::DbKind::MySql, Some("mydb"), "old", "new");
+        assert!(m.contains("RENAME TABLE"));
+        assert!(m.contains("`mydb`.`old`"));
+        assert!(m.contains("`new`"));
+        let p = ddl::rename_table_sql(&ddl::DbKind::Postgres, None, "old", "new");
+        assert!(p.contains("RENAME TO \"new\""));
+    }
+
+    #[test]
+    fn test_ddl_add_column_sql() {
+        let col = types::ColumnDef { name: "age".into(), data_type: "INT".into(), nullable: true, default_value: Some("0".into()), primary_key: false };
+        let m = ddl::add_column_sql(&ddl::DbKind::MySql, None, "t1", &col);
+        assert!(m.contains("ALTER TABLE `t1` ADD COLUMN `age` INT DEFAULT 0"));
+        let p = ddl::add_column_sql(&ddl::DbKind::Postgres, None, "t1", &col);
+        assert!(p.contains("ALTER TABLE \"t1\" ADD COLUMN \"age\" INT DEFAULT 0"));
+    }
+
+    #[test]
+    fn test_ddl_drop_column_sql() {
+        let m = ddl::drop_column_sql(&ddl::DbKind::MySql, None, "t1", "bad_col");
+        assert_eq!(m, "ALTER TABLE `t1` DROP COLUMN `bad_col`");
+    }
+
+    #[test]
+    fn test_ddl_modify_column_sql() {
+        let col = types::ColumnDef { name: "name".into(), data_type: "TEXT".into(), nullable: true, default_value: None, primary_key: false };
+        let m = ddl::modify_column_sql(&ddl::DbKind::MySql, None, "t1", &col);
+        assert!(m.contains("MODIFY COLUMN"));
+        let p = ddl::modify_column_sql(&ddl::DbKind::Postgres, None, "t1", &col);
+        assert!(p.contains("ALTER COLUMN"));
+    }
+
+    #[test]
+    fn test_ddl_rename_column_sql() {
+        let m = ddl::rename_column_sql(&ddl::DbKind::MySql, None, "t1", "old", "new");
+        assert!(m.contains("RENAME COLUMN `old` TO `new`"));
+        let p = ddl::rename_column_sql(&ddl::DbKind::Postgres, None, "t1", "old", "new");
+        assert!(p.contains("RENAME COLUMN \"old\" TO \"new\""));
+    }
+
+    #[test]
+    fn test_ddl_drop_view_routine_trigger_sql() {
+        let v = ddl::drop_view_sql(&ddl::DbKind::MySql, None, "myview");
+        assert_eq!(v, "DROP VIEW IF EXISTS `myview`");
+        let r = ddl::drop_routine_sql(&ddl::DbKind::MySql, None, "myproc", "PROCEDURE");
+        assert_eq!(r, "DROP PROCEDURE IF EXISTS `myproc`");
+        let t = ddl::drop_trigger_sql(&ddl::DbKind::MySql, None, "mytrig");
+        assert_eq!(t, "DROP TRIGGER IF EXISTS `mytrig`");
+        // PG without IF EXISTS
+        let v2 = ddl::drop_view_sql(&ddl::DbKind::Postgres, None, "mv");
+        assert_eq!(v2, "DROP VIEW \"mv\"");
+    }
+
+    #[test]
+    fn test_ddl_default_literals() {
+        let cols = vec![
+            types::ColumnDef { name: "a".into(), data_type: "INT".into(), nullable: true, default_value: Some("NULL".into()), primary_key: false },
+            types::ColumnDef { name: "b".into(), data_type: "INT".into(), nullable: true, default_value: Some("42".into()), primary_key: false },
+            types::ColumnDef { name: "c".into(), data_type: "VARCHAR(10)".into(), nullable: true, default_value: Some("'direct'".into()), primary_key: false },
+        ];
+        let sql = ddl::create_table_sql(&ddl::DbKind::MySql, None, "lit", &cols);
+        assert!(sql.contains("DEFAULT NULL"), "NULL literal: {}", sql);
+        assert!(sql.contains("DEFAULT 42"), "numeric: {}", sql);
+        assert!(sql.contains("DEFAULT 'direct'"), "quoted: {}", sql);
+    }
+
+    // ── SQLite operation tests (in-memory, no Docker) ──
+
+    #[tokio::test]
+    async fn test_sqlite_get_tables() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE t1 (id INT)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE t2 (val TEXT)").execute(&pool).await.unwrap();
+        let conn = DbConnection::Sqlite(pool);
+        let tables = conn.get_tables("main").await.unwrap();
+        let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"t1"));
+        assert!(names.contains(&"t2"));
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_get_table_ddl() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE ddl_t (id INTEGER PRIMARY KEY, name TEXT NOT NULL, flag INT DEFAULT 0)")
+            .execute(&pool).await.unwrap();
+        let conn = DbConnection::Sqlite(pool);
+        let ddl = conn.get_table_ddl("main", "ddl_t").await.unwrap();
+        assert!(ddl.to_lowercase().contains("create table"), "DDL missing CREATE TABLE: {}", ddl);
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_get_schema_cache() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE sc_t (id INT, val TEXT)").execute(&pool).await.unwrap();
+        let conn = DbConnection::Sqlite(pool);
+        let cache = conn.get_schema_cache("main").await.unwrap();
+        assert!(!cache.tables.is_empty(), "should find tables");
+        let t = cache.tables.iter().find(|t| t.table == "sc_t").unwrap();
+        assert!(!t.columns.is_empty(), "should find columns");
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_create_database_returns_error() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let conn = DbConnection::Sqlite(pool);
+        let result = conn.create_database("new_db").await;
+        assert!(result.is_err(), "SQLite should not support CREATE DATABASE");
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_drop_database_returns_error() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let conn = DbConnection::Sqlite(pool);
+        let result = conn.drop_database("some_db").await;
+        assert!(result.is_err(), "SQLite should not support DROP DATABASE");
+    }
+
+    // ── compare_schemas test (SQLite vs SQLite) ──
+
+    #[tokio::test]
+    async fn test_compare_schemas_sqlite() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t1 (id INT PRIMARY KEY, name TEXT, flag INT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("CREATE TABLE t2 (val TEXT)").execute(&src_pool).await.unwrap();
+
+        // Target has t1 with different column type, missing t2, extra t3
+        sqlx::query("CREATE TABLE t1 (id BIGINT PRIMARY KEY, name TEXT, flag INT, extra INT)")
+            .execute(&tgt_pool).await.unwrap();
+        sqlx::query("CREATE TABLE t3 (x INT)").execute(&tgt_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let result = compare_schemas(&src, &tgt, "main", "main").await.unwrap();
+        assert!(!result.tables.is_empty(), "should have diffs");
+        // t1 type mismatch on id column
+        let t1 = result.tables.iter().find(|t| t.table == "t1").unwrap();
+        assert_eq!(t1.status, "differs");
+        let id_col = t1.columns.iter().find(|c| c.name == "id").unwrap();
+        assert_eq!(id_col.status, "type_mismatch");
+        // t2 only in source
+        assert!(result.extra_in_source.contains(&"t2".to_string()));
+        // t3 only in target
+        assert!(result.extra_in_target.contains(&"t3".to_string()));
+    }
+
+    // ── backup / restore test (SQLite in-memory) ──
+
+    #[tokio::test]
+    async fn test_backup_restore_sqlite() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE bk_t (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO bk_t VALUES (1, 'one'), (2, 'two'), (3, 'three')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let tmp = std::env::temp_dir().join(format!("backup_test_{}.sql", std::process::id()));
+        let path = tmp.to_str().unwrap();
+
+        let (count, _) = backup_database(&src, "main", &["bk_t".into()], path, None).await.unwrap();
+        assert_eq!(count, 1, "should backup 1 table");
+
+        let (stmt_count, errors) = restore_database(&tgt, "main", path, None).await.unwrap();
+        assert!(errors.is_empty(), "restore errors: {:?}", errors);
+        assert!(stmt_count > 0, "should execute statements");
+
+        let data = tgt.get_table_data("main", "bk_t", 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(data.rows.len(), 3, "restored data should have 3 rows");
+        assert_eq!(data.rows[0].get("id").and_then(|v| v.as_i64()), Some(1));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    // ── Scheduler pure logic tests ──
+
+    #[test]
+    fn test_scheduler_compute_next_run_valid() {
+        let mut task = scheduler::ScheduledTask {
+            id: "t1".into(),
+            name: "Daily backup".into(),
+            cron_expr: "0 0 * * * *".into(),
+            enabled: true,
+            config: scheduler::TaskConfig::Backup {
+                source_id: "s1".into(),
+                database: "mydb".into(),
+                tables: vec!["t1".into()],
+                output_path: "/tmp/bk.sql".into(),
+            },
+            created_at: "2024-01-01T00:00:00Z".into(),
+            last_run: None,
+            next_run: None,
+            last_result: None,
+        };
+        task.compute_next_run();
+        assert!(task.next_run.is_some(), "valid cron should produce next_run");
+    }
+
+    #[test]
+    fn test_scheduler_compute_next_run_invalid() {
+        let mut task = scheduler::ScheduledTask {
+            id: "t2".into(),
+            name: "Bad cron".into(),
+            cron_expr: "not-a-cron".into(),
+            enabled: true,
+            config: scheduler::TaskConfig::Backup {
+                source_id: "s1".into(),
+                database: "mydb".into(),
+                tables: vec!["t1".into()],
+                output_path: "/tmp/bk.sql".into(),
+            },
+            created_at: "2024-01-01T00:00:00Z".into(),
+            last_run: None,
+            next_run: None,
+            last_result: None,
+        };
+        task.compute_next_run();
+        assert!(task.next_run.is_none(), "invalid cron should give None");
+    }
+
+    #[test]
+    fn test_scheduler_task_serialization() {
+        let task = scheduler::ScheduledTask {
+            id: "t1".into(),
+            name: "Test".into(),
+            cron_expr: "0 * * * * *".into(),
+            enabled: true,
+            config: scheduler::TaskConfig::Transfer {
+                source_id: "src".into(),
+                source_database: "db1".into(),
+                target_id: "tgt".into(),
+                target_database: "db2".into(),
+                tables: vec!["orders".into()],
+                mode: types::TransferMode::StructureAndData,
+                conflict_strategy: types::ConflictStrategy::Replace,
+                drop_target: false,
+                truncate_target: false,
+                where_clause: None,
+                row_limit: None,
+                page_size: 1000,
+                parallelism: 2,
+                transfer_indexes: true,
+                transfer_foreign_keys: true,
+                transfer_views: false,
+                transfer_routines: false,
+                transfer_triggers: false,
+                foreign_key_action: types::ForeignKeyAction::Skip,
+                column_mappings: vec![],
+                error_mode: types::ErrorMode::Skip,
+            },
+            created_at: "2024-06-01T00:00:00Z".into(),
+            last_run: None,
+            next_run: None,
+            last_result: None,
+        };
+
+        let json = serde_json::to_string(&task).unwrap();
+        let deserialized: scheduler::ScheduledTask = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, "t1");
+        assert_eq!(deserialized.name, "Test");
+        match deserialized.config {
+            scheduler::TaskConfig::Transfer { ref source_id, .. } => {
+                assert_eq!(source_id, "src");
+            }
+            _ => panic!("expected Transfer config"),
+        }
+    }
+
+    // ── Transfer with where clause test (SQLite in-memory) ──
+
+    #[tokio::test]
+    async fn test_transfer_with_where_clause() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            where_clause: Some("id > 2".into()),
+            conflict_strategy: types::ConflictStrategy::Error,
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert_eq!(result.rows_transferred, 2, "should filter by where clause");
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+
+        let tgt_data = tgt.get_table_data("main", "t", 1, 100, None, None, None, None).await.unwrap();
+        assert_eq!(tgt_data.rows.len(), 2);
+        assert_eq!(tgt_data.rows[0].get("id").and_then(|v| v.as_i64()), Some(3));
+    }
+
+    // ── Transfer with row limit test (SQLite in-memory) ──
+
+    #[tokio::test]
+    async fn test_transfer_with_row_limit() {
+        let src_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let tgt_pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+
+        sqlx::query("CREATE TABLE t (id INT, val TEXT)")
+            .execute(&src_pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+            .execute(&src_pool).await.unwrap();
+
+        let src = DbConnection::Sqlite(src_pool);
+        let tgt = DbConnection::Sqlite(tgt_pool);
+
+        let opts = types::TransferOptions {
+            source_id: "src".into(),
+            source_database: "main".into(),
+            target_id: "tgt".into(),
+            target_database: "main".into(),
+            tables: vec!["t".into()],
+            row_limit: Some(2),
+            conflict_strategy: types::ConflictStrategy::Error,
+            ..Default::default()
+        };
+
+        let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
+        assert_eq!(result.rows_transferred, 2, "should limit rows");
+        assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
     }
 }

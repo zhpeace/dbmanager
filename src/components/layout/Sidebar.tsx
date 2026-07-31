@@ -89,6 +89,8 @@ interface SidebarProps {
   tables: Record<string, Record<string, TableInfo[]>>
   loading: Record<string, boolean>
   onNewTable: (database: string) => void
+  onNewDatabase: (connectionId: string) => void
+  onDuplicateDatabase: (connectionId: string, database: string) => void
   onDesignTable: (database: string, table: string) => void
   onDropObject: (type: string, name: string, database: string) => void
   onTruncateTable: (database: string, table: string) => void
@@ -113,6 +115,8 @@ export function Sidebar({
   tables,
   loading,
   onNewTable,
+  onNewDatabase,
+  onDuplicateDatabase,
   onDesignTable,
   onDropObject,
   onTruncateTable,
@@ -151,8 +155,10 @@ export function Sidebar({
                  onTableClick={(sql, db, table) => onTableClick(sql, db, table)}
                  onDatabaseClick={(db) => onDatabaseClick(db)}
                 onInsertSql={(sql) => onInsertSql(sql)}
-                onNewTable={(db) => onNewTable(db)}
-               onDesignTable={(db, tbl) => onDesignTable(db, tbl)}
+                 onNewTable={(db) => onNewTable(db)}
+                 onNewDatabase={(connId) => onNewDatabase(connId)}
+                onDuplicateDatabase={(connId, db) => onDuplicateDatabase(connId, db)}
+                onDesignTable={(db, tbl) => onDesignTable(db, tbl)}
                onDropObject={(type, name, db) => onDropObject(type, name, db)}
                onTruncateTable={(db, tbl) => onTruncateTable(db, tbl)}
                onRenameTable={(db, tbl) => onRenameTable(db, tbl)}
@@ -189,6 +195,8 @@ function ConnectionItem({
   tableLoading,
   connId,
   onNewTable,
+  onNewDatabase,
+  onDuplicateDatabase,
   onDesignTable,
   onDropObject,
   onTruncateTable,
@@ -213,6 +221,8 @@ function ConnectionItem({
   tableLoading: Record<string, boolean>
   connId: string
   onNewTable: (database: string) => void
+  onNewDatabase: (connectionId: string) => void
+  onDuplicateDatabase: (connectionId: string, database: string) => void
   onDesignTable: (database: string, table: string) => void
   onDropObject: (type: string, name: string, database: string) => void
   onTruncateTable: (database: string, table: string) => void
@@ -333,6 +343,15 @@ function ConnectionItem({
             <RefreshCw className="h-3 w-3 mr-2" />
             {t('sidebar.refresh')}
           </ContextMenuItem>
+          {["mysql", "postgresql", "mongo", "oracle"].includes(connection.config.type) && (
+          <>
+          <ContextMenuSeparator />
+          <ContextMenuItem onClick={() => onNewDatabase(connId)}>
+            <Database className="h-3 w-3 mr-2" />
+            {t('sidebar.new_database')}
+          </ContextMenuItem>
+          </>
+          )}
           <ContextMenuItem onClick={() => navigator.clipboard.writeText(connection.config.name)}>
             <Copy className="h-3 w-3 mr-2" />
             {t('sidebar.copy_name')}
@@ -397,6 +416,19 @@ function ConnectionItem({
                       <Copy className="h-3 w-3 mr-2" />
                       {t('sidebar.copy_name')}
                     </ContextMenuItem>
+                    <ContextMenuSeparator />
+                    {["mysql", "postgresql", "mongo", "oracle"].includes(connection.config.type) && (
+                    <ContextMenuItem onClick={() => onDropObject("DATABASE", db.name, db.name)} className="text-destructive">
+                      <Trash2 className="h-3 w-3 mr-2" />
+                      {t('sidebar.drop_database')}
+                    </ContextMenuItem>
+                    )}
+                    {["mysql", "postgresql", "mongo", "oracle"].includes(connection.config.type) && (
+                    <ContextMenuItem onClick={() => onDuplicateDatabase(connId, db.name)}>
+                      <Copy className="h-3 w-3 mr-2" />
+                      {t('sidebar.duplicate_database')}
+                    </ContextMenuItem>
+                    )}
                   </ContextMenuContent>
                 </ContextMenu>
                 {isDbExpanded && dbTables && (
