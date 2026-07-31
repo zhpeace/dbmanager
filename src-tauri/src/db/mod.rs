@@ -2868,15 +2868,20 @@ pub async fn transfer_data(
                             let coll = db.collection::<mongodb::bson::Document>(table);
                             let mut docs = Vec::new();
                             for row in &mapped_rows {
-                                let json_str = serde_json::to_string(row).map_err(|e| e.to_string())?;
-                                if let Ok(doc) = mongodb::bson::Document::from_reader(json_str.as_bytes()) {
+                                if let Ok(doc) = mongodb::bson::to_document(row) {
                                     docs.push(doc);
                                 }
                             }
+                            if docs.len() != mapped_rows.len() {
+                                errors.push(format!("MongoDB skipped {} rows in '{}' (BSON conversion failed)", mapped_rows.len() - docs.len(), table));
+                            }
                             if !docs.is_empty() {
+                                let inserted = docs.len() as i64;
                                 if let Err(e) = coll.insert_many(docs).await {
                                     errors.push(format!("MongoDB insert error in '{}': {}", table, e));
                                     check_error_mode!();
+                                } else {
+                                    rows_transferred += inserted;
                                 }
                             }
                         }
@@ -5027,6 +5032,110 @@ mod tests {
         }
 
         println!("\n=== Migration test complete ===");
+    }
+
+    // ── Full MySQL → MongoDB migration test (read-only on source) ──
+    // Migrates ALL tables from apps_beitou to MongoDB Docker (27018),
+    // measures duration, collects errors, verifies document counts.
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_full_mysql_to_mongodb_all() {
+        use std::time::Instant;
+
+        let src_pwd = std::env::var("MYSQL_SRC_PASSWORD").expect("MYSQL_SRC_PASSWORD env var required for source DB connection");
+        let src_url = format!("mysql://root:{}@192.168.0.156:3306/apps_beitou", src_pwd);
+        let src_pool = sqlx::MySqlPool::connect(&src_url).await.unwrap();
+        let src = DbConnection::MySql(src_pool);
+
+        let tables_resp = src.get_tables("apps_beitou").await.unwrap();
+        let all_tables: Vec<String> = tables_resp.into_iter()
+            .filter(|t| t.object_type.contains("TABLE") || t.object_type.is_empty())
+            .map(|t| t.name)
+            .collect();
+        println!("\n=== Full MySQL → MongoDB migration from apps_beitou ===");
+        println!("Total tables: {}", all_tables.len());
+
+        let mongo_client = mongodb::Client::with_uri_str("mongodb://127.0.0.1:27018").await.unwrap();
+        let target_db = "apps_beitou";
+        let mongo = DbConnection::Mongo(mongo_client.clone(), target_db.to_string());
+
+        mongo.drop_database(target_db).await.unwrap();
+
+        use std::io::Write;
+        let start = Instant::now();
+        let batch_size = 20;
+        let mut total_tables = 0usize;
+        let mut total_rows = 0i64;
+        let mut all_errors = Vec::new();
+        for batch in all_tables.chunks(batch_size) {
+            let opts = types::TransferOptions {
+                source_id: "src".into(),
+                source_database: "apps_beitou".into(),
+                target_id: "tgt".into(),
+                target_database: target_db.into(),
+                tables: batch.to_vec(),
+                conflict_strategy: types::ConflictStrategy::Error,
+                error_mode: types::ErrorMode::Skip,
+                transfer_indexes: false,
+                ..Default::default()
+            };
+            print!("  MongoDB (Docker): batch {}/{}, tables {}-{}... ",
+                (total_tables / batch_size) + 1,
+                (all_tables.len() + batch_size - 1) / batch_size,
+                total_tables + 1,
+                (total_tables + batch.len()).min(all_tables.len()));
+            std::io::stdout().flush().unwrap();
+            let result = transfer_data(&src, &mongo, &opts, None).await.unwrap();
+            total_tables += result.tables_transferred.len();
+            total_rows += result.rows_transferred;
+            all_errors.extend(result.errors);
+            println!("{} tables, {} rows, {} errors", result.tables_transferred.len(), result.rows_transferred, all_errors.len());
+        }
+        let elapsed = start.elapsed();
+        let secs = elapsed.as_secs_f64();
+        println!("── MongoDB (Docker) done ──");
+        println!("  Duration: {:.1}s", secs);
+        println!("  Tables transferred: {}/{}", total_tables, all_tables.len());
+        println!("  Total rows: {}", total_rows);
+        println!("  Errors: {}", all_errors.len());
+        println!("  Rate: {:.0} rows/s", total_rows as f64 / secs.max(0.1));
+
+        // Verify document counts against source row counts.
+        let src_pool_ref = match &src {
+            DbConnection::MySql(pool) => pool,
+            _ => unreachable!(),
+        };
+        let db = mongo_client.database(target_db);
+        let mut verified = 0usize;
+        let mut mismatches = Vec::new();
+        for table in &all_tables {
+            let count_sql = format!(
+                "SELECT COUNT(*) AS cnt FROM `{}`.`{}`",
+                "apps_beitou".replace('`', "``"),
+                table.replace('`', "``")
+            );
+            let count_row = sqlx::raw_sql(&count_sql).fetch_one(src_pool_ref).await.unwrap();
+            let src_count: i64 = count_row.get(0);
+            let coll = db.collection::<mongodb::bson::Document>(table);
+            let doc_count = coll.count_documents(mongodb::bson::doc!{}).await.map(|n| n as i64).unwrap_or(-1);
+            verified += 1;
+            if src_count != doc_count {
+                mismatches.push(format!("{}: source={} mongodb={}", table, src_count, doc_count));
+            }
+        }
+        println!("  Verified collections: {}/{}", verified, all_tables.len());
+        if mismatches.is_empty() {
+            println!("  ✓ All document counts match source row counts");
+        } else {
+            println!("  ✗ {} count mismatches:", mismatches.len());
+            for m in mismatches.iter().take(10) {
+                println!("    {}", m);
+            }
+        }
+
+        mongo.drop_database(target_db).await.unwrap();
+        println!("\n=== MongoDB migration test complete ===");
     }
 
     #[test]
