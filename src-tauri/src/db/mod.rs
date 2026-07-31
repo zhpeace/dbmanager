@@ -1911,8 +1911,22 @@ pub async fn bulk_insert(
                 for row_chunk in rows.chunks(chunk_size) {
                     let mut qb = sqlx::QueryBuilder::<sqlx::MySql>::new(&prefix);
                     qb.push_values(row_chunk.iter(), |mut b, row| {
-                        for val in row {
-                            push_json_val!(b, val);
+                        for (col_idx, val) in row.iter().enumerate() {
+                            // MySQL's JSON column rejects non-text parameter types (e.g. a bare
+                            // number bound as i64 fails with "Invalid JSON text"). Always bind the
+                            // JSON text representation for JSON columns so scalars/arrays/objects
+                            // are all accepted.
+                            let is_json = source_col_types
+                                .map(|types| types.get(col_idx).map(|t| t.to_lowercase().contains("json")).unwrap_or(false))
+                                .unwrap_or(false);
+                            if is_json {
+                                match val {
+                                    serde_json::Value::Null => { b.push_bind(None::<String>); }
+                                    _ => { b.push_bind(val.to_string()); }
+                                }
+                            } else {
+                                push_json_val!(b, val);
+                            }
                         }
                     });
                     match qb.build().execute(pool).await {
@@ -5013,23 +5027,22 @@ mod tests {
             }
         }
 
-        // MySQL Docker — SKIP (already verified: 192/192, 5.2M rows, 0 critical errors)
-        // PostgreSQL Docker — SKIP (already verified: 192/192, 5.2M rows, 0 errors)
-        // Oracle Docker (all 192 tables — array binding makes this fast)
+        // MySQL Docker (re-verified after JSON scalar binding fix)
         {
-            let oracle = oracle_connect();
-            let existing = oracle.get_tables("TESTUSER").await.unwrap();
+            let tgt_pool = sqlx::MySqlPool::connect("mysql://root:testpass@127.0.0.1:3307/testdb").await.unwrap();
+            let tgt = DbConnection::MySql(tgt_pool);
+            let existing = tgt.get_tables("testdb").await.unwrap();
             for t in &existing {
-                oracle.execute_query(&format!("DROP TABLE \"{}\"", t.name)).await.ok();
+                tgt.execute_query(&format!("DROP TABLE IF EXISTS `testdb`.`{}`", t.name.replace('`', "``"))).await.ok();
             }
-            oracle.execute_query("COMMIT").await.ok();
-            run_migration(&src, &oracle, &all_tables, "apps_beitou", "TESTUSER", "Oracle (Docker)").await;
-            let existing = oracle.get_tables("TESTUSER").await.unwrap();
+            run_migration(&src, &tgt, &all_tables, "apps_beitou", "testdb", "MySQL (Docker)").await;
+            let existing = tgt.get_tables("testdb").await.unwrap();
             for t in &existing {
-                oracle.execute_query(&format!("DROP TABLE \"{}\"", t.name)).await.ok();
+                tgt.execute_query(&format!("DROP TABLE IF EXISTS `testdb`.`{}`", t.name.replace('`', "``"))).await.ok();
             }
-            oracle.execute_query("COMMIT").await.ok();
         }
+        // PostgreSQL Docker — SKIP (already verified: 192/192, 5.2M rows, 0 errors)
+        // Oracle Docker — SKIP (already verified: 192/192, 5.2M rows, 0 errors)
 
         println!("\n=== Migration test complete ===");
     }
