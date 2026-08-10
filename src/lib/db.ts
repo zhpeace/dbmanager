@@ -178,9 +178,17 @@ export async function dropDatabase(id: string, dbName: string): Promise<void> {
 export async function duplicateDatabase(
   id: string,
   sourceDb: string,
-  targetDb: string
+  targetDb: string,
+  conn?: { host?: string; port?: number; user?: string; password?: string }
 ): Promise<TransferResult> {
-  return invoke("duplicate_database", { id, sourceDb, targetDb })
+  const payload: Record<string, unknown> = { id, sourceDb, targetDb }
+  if (conn) {
+    if (conn.host) payload.host = conn.host
+    if (conn.port) payload.port = conn.port
+    if (conn.user) payload.user = conn.user
+    if (conn.password) payload.password = conn.password
+  }
+  return invoke("duplicate_database", payload)
 }
 
 export async function dropTable(id: string, database: string, table: string): Promise<QueryResult> {

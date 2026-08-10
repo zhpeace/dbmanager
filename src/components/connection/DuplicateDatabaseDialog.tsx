@@ -16,6 +16,7 @@ interface DuplicateDatabaseDialogProps {
   onDone: () => void
   onCreated?: () => void
   dbType?: string
+  connConfig?: { host?: string; port?: number; user?: string; password?: string }
 }
 
 const MAX_LENGTH: Record<string, number> = {
@@ -37,7 +38,7 @@ function validateName(name: string, dbType: string, sourceDb: string): string | 
   return null
 }
 
-export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sourceDb, onDone, onCreated, dbType = "mysql" }: DuplicateDatabaseDialogProps) {
+export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sourceDb, onDone, onCreated, dbType = "mysql", connConfig }: DuplicateDatabaseDialogProps) {
   const { t } = useTranslation()
   const [targetDb, setTargetDb] = useState("")
   const [duplicating, setDuplicating] = useState(false)
@@ -87,7 +88,7 @@ export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sour
     setResult(null)
     setLogs([])
     try {
-      const res = await duplicateDatabase(connectionId, sourceDb, targetDb.trim())
+      const res = await duplicateDatabase(connectionId, sourceDb, targetDb.trim(), connConfig)
       setResult({ tables: res.tables_transferred.length, rows: res.rows_transferred, duration: res.duration, errors: res.errors })
       onCreated?.()
     } catch (e: any) {

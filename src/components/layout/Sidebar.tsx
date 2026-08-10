@@ -684,7 +684,7 @@ function ConnectionItem({
                               </div>
                               {isSchemaExpanded && (
                                 <div className="ml-3 mt-0.5 space-y-0.5">
-                                  {renderTypeGroups(schemaKey, schemaObjects, db.name)}
+                                  {renderTypeGroups(schemaKey, schemaObjects, schema.name)}
                                   {schemaObjects.length === 0 && (
                                     <p className="text-xs text-muted-foreground px-2 py-0.5">{t('sidebar.no_objects')}</p>
                                   )}

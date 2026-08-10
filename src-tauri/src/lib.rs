@@ -763,6 +763,10 @@ async fn duplicate_database(
     id: String,
     source_db: String,
     target_db: String,
+    host: Option<String>,
+    port: Option<u16>,
+    user: Option<String>,
+    password: Option<String>,
 ) -> Result<TransferResult, String> {
     let conn = {
         let connections = state.connections.lock().await;
@@ -785,6 +789,132 @@ async fn duplicate_database(
     }
 
     conn.create_database(&target_db).await?;
+
+    let start = std::time::Instant::now();
+
+    let is_pg = matches!(conn, DbConnection::Pg(_));
+
+    // PostgreSQL pools are bound to a single database, so we connect dedicated
+    // pools to the source and target databases and copy schema by schema.
+    if is_pg {
+        let host = host.ok_or("PostgreSQL connection config (host) is required")?;
+        let port = port.unwrap_or(5432);
+        let user = user.ok_or("PostgreSQL connection config (user) is required")?;
+        let password = password.unwrap_or_default();
+
+        let source_pool = match sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .connect_with(
+                sqlx::postgres::PgConnectOptions::new()
+                    .host(&host)
+                    .port(port)
+                    .username(&user)
+                    .password(&password)
+                    .database(&source_db),
+            )
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = conn.drop_database(&target_db).await;
+                return Err(format!("PostgreSQL connection failed (source): {}", e));
+            }
+        };
+        let target_pool = match sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .connect_with(
+                sqlx::postgres::PgConnectOptions::new()
+                    .host(&host)
+                    .port(port)
+                    .username(&user)
+                    .password(&password)
+                    .database(&target_db),
+            )
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = conn.drop_database(&target_db).await;
+                return Err(format!("PostgreSQL connection failed (target): {}", e));
+            }
+        };
+
+        let source_conn = DbConnection::Pg(source_pool);
+        let target_conn = DbConnection::Pg(target_pool);
+
+        let all_objects = match source_conn.get_tables("").await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = conn.drop_database(&target_db).await;
+                return Err(e);
+            }
+        };
+        let schemas = source_conn.get_schemas().await.unwrap_or_default();
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let app_clone = app.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = log_rx.recv().await {
+                let _ = app_clone.emit("migration-log", msg);
+            }
+        });
+
+        let mut tables_transferred = Vec::new();
+        let mut rows_transferred = 0i64;
+        let mut errors = Vec::new();
+        let mut logs = Vec::new();
+
+        for schema in &schemas {
+            let schema_name = schema.name.clone();
+            let schema_tables: Vec<String> = all_objects.iter()
+                .filter(|t| {
+                    t.schema.as_deref() == Some(schema_name.as_str())
+                        && matches!(t.object_type.as_str(), "TABLE" | "BASE TABLE")
+                })
+                .map(|t| t.name.clone())
+                .collect();
+            if schema_tables.is_empty() {
+                continue;
+            }
+
+            let opts = TransferOptions {
+                source_id: id.clone(),
+                source_database: schema_name.clone(),
+                target_id: id.clone(),
+                target_database: schema_name.clone(),
+                tables: schema_tables,
+                mode: db::types::TransferMode::StructureAndData,
+                transfer_indexes: true,
+                transfer_foreign_keys: true,
+                transfer_views: true,
+                transfer_routines: true,
+                transfer_triggers: true,
+                ..Default::default()
+            };
+
+            match db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx.clone())).await {
+                Ok(r) => {
+                    tables_transferred.extend(r.tables_transferred);
+                    rows_transferred += r.rows_transferred;
+                    errors.extend(r.errors);
+                    logs.extend(r.logs);
+                }
+                Err(e) => errors.push(format!("Failed to copy schema '{}': {}", schema_name, e)),
+            }
+        }
+
+        if !errors.is_empty() {
+            let _ = conn.drop_database(&target_db).await;
+        }
+
+        return Ok(TransferResult {
+            tables_transferred,
+            rows_transferred,
+            errors,
+            duration: format!("{:.2}s", start.elapsed().as_secs_f64()),
+            logs,
+        });
+    }
 
     let all_objects = match conn.get_tables(&source_db).await {
         Ok(v) => v,

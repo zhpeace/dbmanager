@@ -1090,6 +1090,7 @@ function AppContent() {
           connectionId={duplicateDb.connectionId}
           sourceDb={duplicateDb.database}
           dbType={connDbType(duplicateDb.connectionId)}
+          connConfig={connections.find((c) => c.id === duplicateDb.connectionId)?.config}
           onCreated={() => handleRefresh(duplicateDb.connectionId)}
           onDone={() => setDuplicateDb(null)}
         />

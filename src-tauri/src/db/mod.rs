@@ -460,6 +460,36 @@ fn build_row_handles(
 }
 
 impl DbConnection {
+    /// Resolve a PG `database` argument to the schema it refers to.
+    ///
+    /// Callers pass either a schema name (e.g. "public", "mydb") or, for
+    /// legacy reasons, the name of the connected database itself (e.g.
+    /// "oushutest"). If the argument is an actual schema in the connected
+    /// database, use it; otherwise fall back to the default schema "public".
+    async fn pg_resolve_schema(&self, database: &str) -> String {
+        if let DbConnection::Pg(pool) = self {
+            match database {
+                "" | "public" | "postgres" | "testdb" => "public".to_string(),
+                other => {
+                    let exists = sqlx::raw_sql(&format!(
+                        "SELECT 1 FROM pg_namespace WHERE nspname = '{}'",
+                        other.replace('\'', "''")
+                    ))
+                    .fetch_one(pool)
+                    .await
+                    .is_ok();
+                    if exists {
+                        other.to_string()
+                    } else {
+                        "public".to_string()
+                    }
+                }
+            }
+        } else {
+            database.to_string()
+        }
+    }
+
     pub async fn get_databases(&self) -> Result<Vec<DatabaseInfo>, String> {
         match self {
             DbConnection::MySql(pool) => {
@@ -1237,7 +1267,7 @@ impl DbConnection {
                 })
             }
             DbConnection::Pg(pool) => {
-                let schema = match database { "testdb" | "postgres" | "" => "public", other => other };
+                let schema = self.pg_resolve_schema(database).await;
                 let qualified = format!("\"{}\".\"{}\"", schema.replace('"', "\"\""), table.replace('"', "\"\""));
                 let where_str = where_clause.map(|w| format!(" WHERE {}", w)).unwrap_or_default();
                 let count_sql = format!("SELECT COUNT(*) AS cnt FROM {}{}", &qualified, where_str);
@@ -1257,7 +1287,7 @@ impl DbConnection {
                     let col_sql = format!(
                         "SELECT column_name, data_type, is_nullable, '', column_default, '' \
                          FROM information_schema.COLUMNS WHERE table_schema = '{}' AND table_name = '{}'",
-                        database.replace('\'', "\\'"),
+                        schema.replace('\'', "\\'"),
                         table.replace('\'', "\\'")
                     );
                     let col_rows = sqlx::raw_sql(&col_sql)
@@ -1827,12 +1857,13 @@ impl DbConnection {
                 Ok(SchemaCache { tables, views, routines: routines_list, triggers })
             }
             DbConnection::Pg(pool) => {
+                let schema = self.pg_resolve_schema(database).await;
                 let rows = sqlx::raw_sql(&format!(
                     "SELECT table_name, column_name, data_type, is_nullable, '', column_default, '' \
                      FROM information_schema.COLUMNS \
-                     WHERE table_schema = 'public' AND table_catalog = '{}' \
+                     WHERE table_schema = '{}' \
                      ORDER BY table_name, ordinal_position",
-                    database.replace('\'', "\\'")
+                    schema.replace('\'', "\\'")
                 )).fetch_all(pool).await.map_err(|e| e.to_string())?;
 
                 let mut tables_map: std::collections::HashMap<String, Vec<ColumnInfo>> = std::collections::HashMap::new();
@@ -1854,8 +1885,8 @@ impl DbConnection {
                      FROM information_schema.table_constraints tc \
                      JOIN information_schema.key_column_usage kcu \
                        ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema \
-                     WHERE tc.table_schema = 'public' AND tc.table_catalog = '{}' AND tc.constraint_type = 'PRIMARY KEY'",
-                    database.replace('\'', "\\'")
+                     WHERE tc.table_schema = '{}' AND tc.constraint_type = 'PRIMARY KEY'",
+                    schema.replace('\'', "\\'")
                 )).fetch_all(pool).await.map_err(|e| e.to_string())?;
                 for row in &pk_rows {
                     let t: String = row.get(0);
@@ -1872,8 +1903,8 @@ impl DbConnection {
                      FROM information_schema.key_column_usage kcu \
                      JOIN information_schema.constraint_column_usage ccu \
                        ON kcu.constraint_name = ccu.constraint_name \
-                     WHERE kcu.table_schema = 'public' AND kcu.table_catalog = '{}'",
-                    database.replace('\'', "\\'")
+                     WHERE kcu.table_schema = '{}'",
+                    schema.replace('\'', "\\'")
                 )).fetch_all(pool).await.map_err(|e| e.to_string())?;
 
                 let mut fk_map: std::collections::HashMap<String, Vec<ForeignKeyInfo>> = std::collections::HashMap::new();
@@ -1886,15 +1917,16 @@ impl DbConnection {
                 }
 
                 let idx_rows = sqlx::raw_sql(&format!(
-                    "SELECT t.relname, i.relname, a.attname, ix.indisunique, k.ordinality \
+                    "SELECT t.relname, i.relname, a.attname, ix.indisunique \
                      FROM pg_namespace n \
                      JOIN pg_class t ON t.relnamespace = n.oid AND t.relkind = 'r' \
                      JOIN pg_index ix ON ix.indrelid = t.oid \
                      JOIN pg_class i ON i.oid = ix.indexrelid \
-                     CROSS JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ordinality) \
-                     JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum \
-                     WHERE n.nspname = 'public' AND NOT ix.indisprimary AND a.attnum > 0 \
-                     ORDER BY t.relname, i.relname, k.ordinality",
+                     JOIN pg_attribute a ON a.attrelid = t.oid \
+                     WHERE n.nspname = '{}' AND NOT ix.indisprimary AND a.attnum > 0 \
+                       AND a.attnum = ANY (ix.indkey) \
+                     ORDER BY t.relname, i.relname, a.attnum",
+                    schema.replace('\'', "\\'")
                 )).fetch_all(pool).await.map_err(|e| e.to_string())?;
 
                 let mut idx_map: std::collections::HashMap<String, Vec<IndexInfo>> = std::collections::HashMap::new();
@@ -1915,8 +1947,8 @@ impl DbConnection {
                 }
 
                 let views = sqlx::raw_sql(&format!(
-                    "SELECT table_name, view_definition FROM information_schema.views WHERE table_schema = 'public' AND table_catalog = '{}'",
-                    database.replace('\'', "\\'")
+                    "SELECT table_name, view_definition FROM information_schema.views WHERE table_schema = '{}'",
+                    schema.replace('\'', "\\'")
                 )).fetch_all(pool).await.map_err(|e| e.to_string())?.iter().map(|r| {
                     let name: String = r.get(0);
                     let def: String = r.get(1);
@@ -2131,7 +2163,8 @@ impl DbConnection {
                 Ok(out)
             }
             DbConnection::Pg(pool) => {
-                let qualified = format!("\"{}\".\"{}\"", database.replace('"', "\"\""), table.replace('"', "\"\""));
+                let schema = self.pg_resolve_schema(database).await;
+                let qualified = format!("\"{}\".\"{}\"", schema.replace('"', "\"\""), table.replace('"', "\"\""));
                 let conds = cols.iter().map(|c| format!("\"{}\" ILIKE '{}'", c.replace('"', "\"\""), pattern.replace('\'', "''"))).collect::<Vec<_>>().join(" OR ");
                 let sql = format!("SELECT * FROM {} WHERE {} LIMIT {}", qualified, conds, limit);
                 let rows = sqlx::raw_sql(&sql).fetch_all(pool).await.map_err(|e| e.to_string())?;
