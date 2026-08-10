@@ -1,0 +1,14 @@
+/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/deps/serde-596900e7c264cb00.d: /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/build/serde-3a0752beb65326b5/out/private.rs
+
+/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/deps/libserde-596900e7c264cb00.rlib: /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/build/serde-3a0752beb65326b5/out/private.rs
+
+/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/deps/libserde-596900e7c264cb00.rmeta: /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/build/serde-3a0752beb65326b5/out/private.rs
+
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/build/serde-3a0752beb65326b5/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/build/serde-3a0752beb65326b5/out

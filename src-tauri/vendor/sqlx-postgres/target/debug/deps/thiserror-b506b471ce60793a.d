@@ -1,0 +1,14 @@
+/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/deps/thiserror-b506b471ce60793a.d: /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/lib.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/aserror.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/display.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/var.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/private.rs /Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/build/thiserror-8efd5e943e10e082/out/private.rs
+
+/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/deps/libthiserror-b506b471ce60793a.rlib: /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/lib.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/aserror.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/display.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/var.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/private.rs /Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/build/thiserror-8efd5e943e10e082/out/private.rs
+
+/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/deps/libthiserror-b506b471ce60793a.rmeta: /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/lib.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/aserror.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/display.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/var.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/private.rs /Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/build/thiserror-8efd5e943e10e082/out/private.rs
+
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/lib.rs:
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/aserror.rs:
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/display.rs:
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/var.rs:
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.19/src/private.rs:
+/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/build/thiserror-8efd5e943e10e082/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/build/thiserror-8efd5e943e10e082/out

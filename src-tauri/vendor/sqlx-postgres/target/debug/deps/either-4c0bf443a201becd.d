@@ -1,0 +1,11 @@
+/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/deps/either-4c0bf443a201becd.d: /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/lib.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/serde_untagged.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/serde_untagged_optional.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/iterator.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/into_either.rs
+
+/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/deps/libeither-4c0bf443a201becd.rlib: /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/lib.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/serde_untagged.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/serde_untagged_optional.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/iterator.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/into_either.rs
+
+/Users/hp/Documents/opencodetest/dbmanager/src-tauri/vendor/sqlx-postgres/target/debug/deps/libeither-4c0bf443a201becd.rmeta: /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/lib.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/serde_untagged.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/serde_untagged_optional.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/iterator.rs /Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/into_either.rs
+
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/lib.rs:
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/serde_untagged.rs:
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/serde_untagged_optional.rs:
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/iterator.rs:
+/Users/hp/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.17.0/src/into_either.rs:
