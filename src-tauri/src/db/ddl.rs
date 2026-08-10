@@ -223,3 +223,135 @@ pub fn drop_trigger_sql(kind: &DbKind, schema: Option<&str>, trigger: &str) -> S
         DbKind::Sqlite => format!("DROP TRIGGER {}", q),
     }
 }
+
+pub fn create_index_sql(
+    kind: &DbKind,
+    schema: Option<&str>,
+    table: &str,
+    name: &str,
+    columns: &[String],
+    unique: bool,
+) -> String {
+    let cols = columns.iter().map(|c| quote_ident(kind, c)).collect::<Vec<_>>().join(", ");
+    let uniq = if unique { "UNIQUE " } else { "" };
+    format!(
+        "CREATE {}INDEX {} ON {} ({})",
+        uniq,
+        quote_ident(kind, name),
+        quote_schema_table(kind, schema, table),
+        cols
+    )
+}
+
+pub fn drop_index_sql(kind: &DbKind, schema: Option<&str>, table: &str, name: &str) -> String {
+    match kind {
+        DbKind::MySql => {
+            format!("DROP INDEX {} ON {}", quote_ident(kind, name), quote_schema_table(kind, schema, table))
+        }
+        _ => format!("DROP INDEX {}", quote_ident(kind, name)),
+    }
+}
+
+pub fn add_foreign_key_sql(
+    kind: &DbKind,
+    schema: Option<&str>,
+    table: &str,
+    name: &str,
+    column: &str,
+    ref_table: &str,
+    ref_column: &str,
+) -> Result<String, String> {
+    if matches!(kind, DbKind::Sqlite) {
+        return Err("Foreign key management is not supported for SQLite".to_string());
+    }
+    Ok(format!(
+        "ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({})",
+        quote_schema_table(kind, schema, table),
+        quote_ident(kind, name),
+        quote_ident(kind, column),
+        quote_ident(kind, ref_table),
+        quote_ident(kind, ref_column),
+    ))
+}
+
+pub fn drop_foreign_key_sql(
+    kind: &DbKind,
+    schema: Option<&str>,
+    table: &str,
+    name: &str,
+) -> Result<String, String> {
+    if matches!(kind, DbKind::Sqlite) {
+        return Err("Foreign key management is not supported for SQLite".to_string());
+    }
+    match kind {
+        DbKind::MySql => Ok(format!(
+            "ALTER TABLE {} DROP FOREIGN KEY {}",
+            quote_schema_table(kind, schema, table),
+            quote_ident(kind, name)
+        )),
+        _ => Ok(format!(
+            "ALTER TABLE {} DROP CONSTRAINT {}",
+            quote_schema_table(kind, schema, table),
+            quote_ident(kind, name)
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cols(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn create_index_sql_mysql() {
+        let sql = create_index_sql(&DbKind::MySql, Some("mydb"), "orders", "idx_status", &cols(&["status", "created_at"]), false);
+        assert_eq!(sql, "CREATE INDEX `idx_status` ON `mydb`.`orders` (`status`, `created_at`)");
+    }
+
+    #[test]
+    fn create_index_sql_unique_postgres() {
+        let sql = create_index_sql(&DbKind::Postgres, None, "orders", "uq_order_no", &cols(&["order_no"]), true);
+        assert_eq!(sql, "CREATE UNIQUE INDEX \"uq_order_no\" ON \"orders\" (\"order_no\")");
+    }
+
+    #[test]
+    fn drop_index_sql_mysql_uses_on_table() {
+        let sql = drop_index_sql(&DbKind::MySql, None, "orders", "idx_status");
+        assert_eq!(sql, "DROP INDEX `idx_status` ON `orders`");
+    }
+
+    #[test]
+    fn drop_index_sql_postgres_no_table() {
+        let sql = drop_index_sql(&DbKind::Postgres, None, "orders", "idx_status");
+        assert_eq!(sql, "DROP INDEX \"idx_status\"");
+    }
+
+    #[test]
+    fn test_add_foreign_key_sql() {
+        let sql = add_foreign_key_sql(&DbKind::MySql, None, "orders", "fk_customer", "customer_id", "customers", "id").unwrap();
+        assert_eq!(
+            sql,
+            "ALTER TABLE `orders` ADD CONSTRAINT `fk_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`)"
+        );
+    }
+
+    #[test]
+    fn add_foreign_key_sqlite_unsupported() {
+        assert!(add_foreign_key_sql(&DbKind::Sqlite, None, "t", "fk", "a", "u", "id").is_err());
+    }
+
+    #[test]
+    fn drop_foreign_key_sql_mysql() {
+        let sql = drop_foreign_key_sql(&DbKind::MySql, None, "orders", "fk_customer").unwrap();
+        assert_eq!(sql, "ALTER TABLE `orders` DROP FOREIGN KEY `fk_customer`");
+    }
+
+    #[test]
+    fn drop_foreign_key_sql_postgres() {
+        let sql = drop_foreign_key_sql(&DbKind::Postgres, None, "orders", "fk_customer").unwrap();
+        assert_eq!(sql, "ALTER TABLE \"orders\" DROP CONSTRAINT \"fk_customer\"");
+    }
+}

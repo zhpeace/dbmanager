@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
+import { open, save } from "@tauri-apps/plugin-dialog"
 import { useTranslation } from "react-i18next"
 import { TopBar } from "@/components/layout/TopBar"
 import { Sidebar } from "@/components/layout/Sidebar"
@@ -17,8 +18,10 @@ import { SchedulerDialog } from "@/components/connection/SchedulerDialog"
 import { NewDatabaseDialog } from "@/components/connection/NewDatabaseDialog"
 import { DuplicateDatabaseDialog } from "@/components/connection/DuplicateDatabaseDialog"
 import { cn } from "@/lib/utils"
+import { ResizeHandle } from "@/components/ui/resize-handle"
 import { CreateTableDialog } from "@/components/connection/CreateTableDialog"
 import { DesignTableDialog } from "@/components/connection/DesignTableDialog"
+import { FindInTablesDialog } from "@/components/connection/FindInTablesDialog"
 import {
   Dialog,
   DialogContent,
@@ -35,8 +38,11 @@ import type {
   DatabaseInfo,
   TableInfo,
   QueryResult,
+  ExecResult,
+  DatabaseType,
 } from "@/lib/db"
-import { createObjectTemplate, getConnectionSecret, saveConnectionSecret, deleteConnectionSecret, type LicenseStatus } from "@/lib/db"
+import { createObjectTemplate, getConnectionSecret, saveConnectionSecret, deleteConnectionSecret, buildSelectPreview, type LicenseStatus } from "@/lib/db"
+import { splitSqlStatements, parseErrorLine, buildExplainSql } from "@/lib/sql"
 import { LicenseDialog, loadLicenseStatus } from "@/components/connection/LicenseDialog"
 
 const STORAGE_KEY = "dbmanager-connections"
@@ -59,10 +65,11 @@ function AppContent() {
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [databases, setDatabases] = useState<Record<string, DatabaseInfo[]>>({})
+  const [schemas, setSchemas] = useState<Record<string, Record<string, DatabaseInfo[]>>>({})
   const [tables, setTables] = useState<Record<string, Record<string, TableInfo[]>>>({})
   const [loading, setLoading] = useState<Record<string, boolean>>({})
-  const [tabs, setTabs] = useState<{ id: string; title: string; sql: string }[]>(
-    () => [{ id: crypto.randomUUID(), title: t('editor.tab_query') + " 1", sql: "" }]
+  const [tabs, setTabs] = useState<{ id: string; title: string; sql: string; filePath: string | null; browse?: { database: string; table: string } | null }[]>(
+    () => [{ id: crypto.randomUUID(), title: t('editor.tab_query') + " 1", sql: "", filePath: null }]
   )
   const [activeTabId, setActiveTabId] = useState<string>(() => "")
   const activeTabIdRef = useRef<string>("")
@@ -73,17 +80,50 @@ function AppContent() {
     setActiveTabId((prev) => prev || tabs[0]?.id || "")
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-  const [queryResult, setQueryResult] = useState<QueryResult | null>(null)
+  const [queryResults, setQueryResults] = useState<ExecResult[]>([])
+  const [errorMarker, setErrorMarker] = useState<{ line: number; message: string } | null>(null)
   const [executing, setExecuting] = useState(false)
+  const [txActive, setTxActive] = useState<Record<string, boolean>>({})
+  const [sqlHistory, setSqlHistory] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("dbmanager-sqlhistory") || "[]")
+      return Array.isArray(saved) ? saved : []
+    } catch {
+      return []
+    }
+  })
+  useEffect(() => {
+    localStorage.setItem("dbmanager-sqlhistory", JSON.stringify(sqlHistory))
+  }, [sqlHistory])
+  const [sqlFavorites, setSqlFavorites] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("dbmanager-sqlfavorites") || "[]")
+      return Array.isArray(saved) ? saved : []
+    } catch {
+      return []
+    }
+  })
+  useEffect(() => {
+    localStorage.setItem("dbmanager-sqlfavorites", JSON.stringify(sqlFavorites))
+  }, [sqlFavorites])
   const [editingConfig, setEditingConfig] = useState<ConnectionConfig | null>(null)
-  const [browsingTable, setBrowsingTable] = useState<{ database: string; table: string } | null>(null)
   const [activeBottomTab, setActiveBottomTab] = useState<"results" | "browse">("results")
+  const BOTTOM_PANEL_MIN = 120
+  const [bottomPanelHeight, setBottomPanelHeight] = useState<number>(() => {
+    const saved = Number(localStorage.getItem("dbmanager-bottomPanelHeight"))
+    return Number.isFinite(saved) && saved >= BOTTOM_PANEL_MIN ? saved : Math.round(window.innerHeight / 3)
+  })
+  const bottomPanelStartHeight = useRef(bottomPanelHeight)
+  useEffect(() => {
+    localStorage.setItem("dbmanager-bottomPanelHeight", String(bottomPanelHeight))
+  }, [bottomPanelHeight])
   const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [compareDialogOpen, setCompareDialogOpen] = useState(false)
   const [backupDialogOpen, setBackupDialogOpen] = useState(false)
   const [restoreDialogOpen, setRestoreDialogOpen] = useState(false)
   const [schedulerDialogOpen, setSchedulerDialogOpen] = useState(false)
+  const [findDialogOpen, setFindDialogOpen] = useState(false)
   const [newDatabaseConnId, setNewDatabaseConnId] = useState<string | null>(null)
   const [duplicateDb, setDuplicateDb] = useState<{ connectionId: string; database: string } | null>(null)
   const [showErDiagram, setShowErDiagram] = useState(false)
@@ -234,7 +274,8 @@ function AppContent() {
 
   async function handleSelectConnection(id: string) {
     setActiveConnectionId(id)
-    setBrowsingTable(null)
+    setTabs((prev) => prev.map((tb) => ({ ...tb, browse: null })))
+    setActiveBottomTab("results")
     const conn = connectionsRef.current.find((c) => c.id === id)
     if (!conn) return
 
@@ -257,26 +298,40 @@ function AppContent() {
       delete next[id]
       return next
     })
+    setSchemas((prev) => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
     setTables((prev) => {
       const next = { ...prev }
       delete next[id]
       return next
     })
-    setQueryResult(null)
+    setQueryResults([])
+    setErrorMarker(null)
+    setTxActive((prev) => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
     if (activeConnectionId === id) {
       setActiveConnectionId(null)
     }
   }
 
   function handleDatabaseClick(database: string) {
-    setBrowsingTable({ database, table: "" })
+    setActiveTabBrowse({ database, table: "" })
   }
 
   async function handleLoadTables(id: string, database: string) {
     setLoading((prev) => ({ ...prev, [`${id}:${database}`]: true }))
     try {
       const conn = connectionsRef.current.find((c) => c.id === id)
-      if (conn?.config.type === "mysql" && !conn.config.database) {
+      const needSwitch =
+        (conn?.config.type === "mysql" && !conn.config.database) ||
+        (conn?.config.type === "postgresql" && conn.config.database !== database)
+      if (needSwitch && conn) {
         const password = await resolvePassword(conn)
         await invoke("switch_database", {
           id,
@@ -285,6 +340,7 @@ function AppContent() {
           user: conn.config.user,
           password,
           database,
+          databaseType: conn.config.type,
         })
       }
       const result: TableInfo[] = await invoke("get_tables", { id, database })
@@ -292,6 +348,13 @@ function AppContent() {
         ...prev,
         [id]: { ...(prev[id] || {}), [database]: result },
       }))
+      if (conn?.config.type === "postgresql") {
+        const schemasResult: DatabaseInfo[] = await invoke("get_schemas", { id })
+        setSchemas((prev) => ({
+          ...prev,
+          [id]: { ...(prev[id] || {}), [database]: schemasResult },
+        }))
+      }
     } catch (e: any) {
       alert(t('app.load_tables_failed', { error: String(e) }))
     }
@@ -309,27 +372,206 @@ function AppContent() {
     setLoading((prev) => ({ ...prev, [id]: false }))
   }
 
-  async function handleExecute(sql: string) {
+  function pushHistory(sql: string) {
+    const s = sql.trim()
+    if (!s) return
+    setSqlHistory((prev) => {
+      const next = prev.filter((h) => h !== s)
+      return [s, ...next].slice(0, 30)
+    })
+  }
+
+  async function runSql(sql: string, opts?: { startLine?: number; plan?: boolean }) {
     if (!activeConnectionId) return
     setActiveBottomTab("results")
+    setErrorMarker(null)
+    const statements = splitSqlStatements(sql)
+      .map((s) => s.text)
+      .filter(Boolean)
+    if (statements.length === 0) return
+    const results: ExecResult[] = []
+    const dbType = connDbType(activeConnectionId)
     setExecuting(true)
     try {
-      const result: QueryResult = await invoke("execute_query", {
-        id: activeConnectionId,
-        query: sql,
-      })
-      setQueryResult(result)
-    } catch (e: any) {
-      setQueryResult({
-        columns: [],
-        rows: [],
-        rowCount: 0,
-        duration: "0ms",
-        error: String(e),
-      })
+      for (let i = 0; i < statements.length; i++) {
+        const title = opts?.plan
+          ? t('resultpanel.plan', { n: i + 1 })
+          : t('resultpanel.result', { n: i + 1 })
+        try {
+          const r: QueryResult = await invoke("execute_query", {
+            id: activeConnectionId,
+            query: statements[i],
+          })
+          results.push({ id: crypto.randomUUID(), title, isPlan: opts?.plan, ...r })
+        } catch (e: any) {
+          const err = String(e)
+          results.push({
+            id: crypto.randomUUID(),
+            title,
+            columns: [],
+            rows: [],
+            rowCount: 0,
+            duration: "",
+            error: err,
+          })
+          const relLine = parseErrorLine(err, dbType)
+          if (relLine) {
+            setErrorMarker({ line: (opts?.startLine || 1) + relLine - 1, message: err })
+          }
+          break
+        }
+      }
     } finally {
       setExecuting(false)
     }
+    if (results.length > 0) {
+      setQueryResults(results)
+      pushHistory(sql)
+    }
+  }
+
+  function handleExecute(sql: string, startLine?: number) {
+    runSql(sql, { startLine })
+  }
+
+  function handleRunAll(sql: string) {
+    runSql(sql, { startLine: 1 })
+  }
+
+  async function handleCancel() {
+    if (!activeConnectionId) return
+    try {
+      await invoke("cancel_query", { id: activeConnectionId })
+    } catch {}
+  }
+
+  async function handleBeginTransaction() {
+    if (!activeConnectionId) return
+    try {
+      await invoke("begin_transaction", { id: activeConnectionId })
+      setTxActive((prev) => ({ ...prev, [activeConnectionId!]: true }))
+    } catch (e: any) {
+      setQueryResults([
+        {
+          id: crypto.randomUUID(),
+          title: t('resultpanel.result', { n: 1 }),
+          columns: [],
+          rows: [],
+          rowCount: 0,
+          duration: "",
+          error: t('editor.tx_begin_failed') + ": " + String(e),
+        },
+      ])
+    }
+  }
+
+  async function handleCommitTransaction() {
+    if (!activeConnectionId) return
+    try {
+      await invoke("commit_transaction", { id: activeConnectionId })
+      setTxActive((prev) => ({ ...prev, [activeConnectionId!]: false }))
+    } catch (e: any) {
+      setQueryResults([
+        {
+          id: crypto.randomUUID(),
+          title: t('resultpanel.result', { n: 1 }),
+          columns: [],
+          rows: [],
+          rowCount: 0,
+          duration: "",
+          error: t('editor.tx_commit_failed') + ": " + String(e),
+        },
+      ])
+    }
+  }
+
+  async function handleRollbackTransaction() {
+    if (!activeConnectionId) return
+    try {
+      await invoke("rollback_transaction", { id: activeConnectionId })
+      setTxActive((prev) => ({ ...prev, [activeConnectionId!]: false }))
+    } catch (e: any) {
+      setQueryResults([
+        {
+          id: crypto.randomUUID(),
+          title: t('resultpanel.result', { n: 1 }),
+          columns: [],
+          rows: [],
+          rowCount: 0,
+          duration: "",
+          error: t('editor.tx_rollback_failed') + ": " + String(e),
+        },
+      ])
+    }
+  }
+
+  function handleExplain(sql: string) {
+    if (!activeConnectionId) return
+    const planSql = buildExplainSql(connDbType(activeConnectionId), sql)
+    if (!planSql) {
+      setQueryResults([
+        {
+          id: crypto.randomUUID(),
+          title: t('resultpanel.plan', { n: 1 }),
+          columns: [],
+          rows: [],
+          rowCount: 0,
+          duration: "",
+          error: t('editor.explain_unsupported'),
+        },
+      ])
+      return
+    }
+    runSql(planSql, { startLine: 1, plan: true })
+  }
+
+  function fileBasename(path: string): string {
+    return path.split(/[\\/]/).pop() || path
+  }
+
+  async function handleSave() {
+    const tab = activeTab()
+    if (!tab) return
+    let path = tab.filePath
+    if (!path) {
+      const res = await save({ defaultPath: "query.sql", filters: [{ name: "SQL", extensions: ["sql"] }] })
+      if (!res) return
+      path = res
+    }
+    try {
+      await invoke("write_text_file", { path, content: tab.sql })
+      setTabs((prev) =>
+        prev.map((tb) =>
+          tb.id === activeTabIdRef.current ? { ...tb, filePath: path, title: fileBasename(path) } : tb
+        )
+      )
+    } catch (e: any) {
+      setErrorBanner(String(e))
+    }
+  }
+
+  async function handleOpen() {
+    const res = await open({ multiple: false, filters: [{ name: "SQL", extensions: ["sql"] }] })
+    if (!res) return
+    try {
+      const content = await invoke<string>("read_text_file", { path: res })
+      const id = crypto.randomUUID()
+      setTabs((prev) => [...prev, { id, title: fileBasename(res), sql: content, filePath: res, browse: null }])
+      setActiveTabId(id)
+    } catch (e: any) {
+      setErrorBanner(String(e))
+    }
+  }
+
+  function handleHistoryRun(sql: string) {
+    setActiveTabSql(sql)
+    runSql(sql, { startLine: 1 })
+  }
+
+  function handleToggleFavorite(sql: string) {
+    setSqlFavorites((prev) =>
+      prev.includes(sql) ? prev.filter((s) => s !== sql) : [sql, ...prev]
+    )
   }
 
   function handleNewConnection() {
@@ -382,6 +624,15 @@ function AppContent() {
     setSchedulerDialogOpen(true)
   }
 
+  function handleOpenFind() {
+    setFindDialogOpen(true)
+  }
+
+  function handleOpenFoundRow(table: string) {
+    if (!activeConnection) return
+    openTableTab(buildSelectPreview(table, activeConnection.config.type), currentDatabase || undefined, table)
+  }
+
   function handleNewDatabase(connectionId: string) {
     setNewDatabaseConnId(connectionId)
   }
@@ -423,6 +674,37 @@ function AppContent() {
 
   function handleDesignTable(database: string, table: string) {
     setDesignDialog({ database, table })
+  }
+
+  async function handleExportTable(database: string, table: string, format: "csv" | "json" | "insert") {
+    if (!activeConnectionId) return
+    const { invoke } = await import("@tauri-apps/api/core")
+    const { save } = await import("@tauri-apps/plugin-dialog")
+    const { toCsv, toJson, toInsert } = await import("@/lib/sql")
+    const { quoteIdent } = await import("@/lib/db")
+    try {
+      const dbType = connDbType(activeConnectionId) as DatabaseType
+      const qualified = database ? quoteIdent(`${database}.${table}`, dbType) : quoteIdent(table, dbType)
+      const result = await invoke<QueryResult>("execute_query", {
+        id: activeConnectionId,
+        query: `SELECT * FROM ${qualified}`,
+      })
+      if (result.error) throw new Error(result.error)
+      if (!result.columns.length) return
+      const ext = format === "csv" ? "csv" : format === "json" ? "json" : "sql"
+      const defaultPath = `${table}_export_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.${ext}`
+      const path = await save({ defaultPath, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] })
+      if (!path) return
+      const content =
+        format === "csv"
+          ? toCsv(result.columns, result.rows)
+          : format === "json"
+            ? toJson(result.rows)
+            : toInsert(table, result.columns, result.rows)
+      await invoke("write_text_file", { path, content })
+    } catch (e: any) {
+      setErrorBanner(t('dialog.failed', { error: String(e) }))
+    }
   }
 
   function handleDropObject(type: string, name: string, database: string) {
@@ -501,10 +783,30 @@ function AppContent() {
     setTabs((prev) => prev.map((tb) => (tb.id === id ? { ...tb, sql } : tb)))
   }
 
+  function setActiveTabBrowse(browse: { database: string; table: string } | null) {
+    const id = activeTabIdRef.current || tabs[0]?.id
+    if (!id) return
+    setTabs((prev) => prev.map((tb) => (tb.id === id ? { ...tb, browse } : tb)))
+  }
+
+  function openTableTab(sql: string, database?: string, table?: string) {
+    if (!database || !table) return
+    const existing = tabs.find((tb) => tb.browse?.database === database && tb.browse?.table === table)
+    if (existing) {
+      setActiveTabId(existing.id)
+      setActiveBottomTab("browse")
+      return
+    }
+    const id = crypto.randomUUID()
+    setTabs((prev) => [...prev, { id, title: table, sql, filePath: null, browse: { database, table } }])
+    setActiveTabId(id)
+    setActiveBottomTab("browse")
+  }
+
   function openInNewTab(sql: string) {
     const id = crypto.randomUUID()
     const n = tabs.length + 1
-    setTabs((prev) => [...prev, { id, title: t('editor.tab_query') + " " + n, sql }])
+    setTabs((prev) => [...prev, { id, title: t('editor.tab_query') + " " + n, sql, filePath: null }])
     setActiveTabId(id)
   }
 
@@ -518,7 +820,7 @@ function AppContent() {
       if (next.length === 0) {
         const nid = crypto.randomUUID()
         setActiveTabId(nid)
-        return [{ id: nid, title: t('editor.tab_query') + " 1", sql: "" }]
+        return [{ id: nid, title: t('editor.tab_query') + " 1", sql: "", filePath: null }]
       }
       if (id === activeTabId) {
         const idx = prev.findIndex((tb) => tb.id === id)
@@ -549,10 +851,17 @@ function AppContent() {
   }
 
   const activeConnection = connections.find((c) => c.id === activeConnectionId)
-  const currentDatabase = browsingTable?.database || activeConnection?.config.database || null
+  const activeBrowse = activeTab()?.browse
+  const currentDatabase = activeBrowse?.database || activeConnection?.config.database || null
   const currentTables = (activeConnectionId && tables[activeConnectionId] && currentDatabase)
     ? tables[activeConnectionId][currentDatabase] || []
     : []
+  const lastExec = queryResults.length > 0
+    ? {
+        duration: queryResults[queryResults.length - 1].duration || "0ms",
+        count: queryResults.reduce((s, r) => s + r.rowCount, 0),
+      }
+    : null
 
   if (checkingLicense) {
     return (
@@ -583,6 +892,7 @@ function AppContent() {
         onOpenBackup={handleOpenBackup}
         onOpenRestore={handleOpenRestore}
         onOpenSchedule={handleOpenSchedule}
+        onOpenFind={handleOpenFind}
       />
       <div className="flex flex-1 min-h-0">
         <Sidebar
@@ -597,20 +907,18 @@ function AppContent() {
           onLoadTables={handleLoadTables}
           onDatabaseClick={handleDatabaseClick}
           onTableClick={(sql, database, table) => {
-            setActiveTabSql(sql)
-            if (database && table) {
-              setBrowsingTable({ database, table })
-              setActiveBottomTab("browse")
-            }
+            openTableTab(sql, database, table)
           }}
-          onInsertSql={(sql) => setActiveTabSql(sql)}
+          onInsertSql={(sql) => openInNewTab(sql)}
           databases={databases}
+          schemas={schemas}
           tables={tables}
           loading={loading}
           onNewTable={handleNewTable}
           onNewDatabase={handleNewDatabase}
           onDuplicateDatabase={handleDuplicateDatabase}
           onDesignTable={handleDesignTable}
+          onExportTable={handleExportTable}
           onDropObject={handleDropObject}
           onTruncateTable={handleTruncate}
           onRenameTable={handleRename}
@@ -657,27 +965,55 @@ function AppContent() {
                 </div>
                 <div className="flex-1 min-h-0 border-b">
                   <SqlEditor
-                    onExecute={handleExecute}
-                    result={queryResult}
+                    onExecute={(sql, startLine) => handleExecute(sql, startLine)}
+                    onRunAll={handleRunAll}
+                    onExplain={handleExplain}
+                    onCancel={handleCancel}
+                    onSave={handleSave}
+                    onOpen={handleOpen}
+                    onHistoryRun={handleHistoryRun}
+                    onToggleFavorite={handleToggleFavorite}
+                    favorites={sqlFavorites}
+                    onNewTab={newTab}
+                    onBeginTransaction={handleBeginTransaction}
+                    onCommitTransaction={handleCommitTransaction}
+                    onRollbackTransaction={handleRollbackTransaction}
+                    txActive={activeConnectionId ? !!txActive[activeConnectionId] : false}
                     executing={executing}
+                    lastExec={lastExec}
                     value={activeTab()?.sql || ""}
                     onChange={setActiveTabSql}
-                    onNewTab={newTab}
                     connectionId={activeConnectionId}
                     currentDatabase={currentDatabase}
+                    dbType={connDbType(activeConnectionId)}
+                    history={sqlHistory}
+                    errorMarker={errorMarker}
                   />
                 </div>
-                <div className="h-1/3 min-h-[120px] flex flex-col">
-                  {activeBottomTab === "browse" && browsingTable && activeConnectionId ? (
+                <ResizeHandle
+                  orientation="horizontal"
+                  onDragStart={() => { bottomPanelStartHeight.current = bottomPanelHeight }}
+                  onDelta={(delta) => {
+                    setBottomPanelHeight(() =>
+                      Math.min(
+                        Math.max(bottomPanelStartHeight.current - delta, BOTTOM_PANEL_MIN),
+                        Math.round(window.innerHeight * 0.8)
+                      )
+                    )
+                  }}
+                  className="-mb-1 -mt-1"
+                />
+                <div className="min-h-0 flex flex-col" style={{ height: bottomPanelHeight }}>
+                  {activeBottomTab === "browse" && activeBrowse?.table && activeConnectionId ? (
                     <TableBrowser
                       connectionId={activeConnectionId}
-                      database={browsingTable.database}
-                      table={browsingTable.table}
+                      database={activeBrowse.database}
+                      table={activeBrowse.table}
                       dbType={activeConnection!.config.type}
-                      onClose={() => { setBrowsingTable(null); setActiveBottomTab("results") }}
+                      onClose={() => { setActiveTabBrowse(null); setActiveBottomTab("results") }}
                     />
                   ) : (
-                    <ResultPanel result={queryResult} />
+                    <ResultPanel results={queryResults} />
                   )}
                 </div>
               </div>
@@ -732,6 +1068,13 @@ function AppContent() {
         onOpenChange={setSchedulerDialogOpen}
         connections={connections}
       />
+      <FindInTablesDialog
+        open={findDialogOpen}
+        onOpenChange={setFindDialogOpen}
+        connectionId={activeConnectionId}
+        database={currentDatabase}
+        onOpenRow={handleOpenFoundRow}
+      />
       {newDatabaseConnId && (
         <NewDatabaseDialog
           open={true}
@@ -746,7 +1089,9 @@ function AppContent() {
           onOpenChange={() => setDuplicateDb(null)}
           connectionId={duplicateDb.connectionId}
           sourceDb={duplicateDb.database}
-          onDone={() => { handleRefresh(duplicateDb.connectionId); setDuplicateDb(null) }}
+          dbType={connDbType(duplicateDb.connectionId)}
+          onCreated={() => handleRefresh(duplicateDb.connectionId)}
+          onDone={() => setDuplicateDb(null)}
         />
       )}
       {createDialog && activeConnectionId && (

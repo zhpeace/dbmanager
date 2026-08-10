@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use sqlx::{Row, Column};
 use mongodb::Client as MongoClient;
 use std::sync::Arc;
-use types::{ColumnInfo, DatabaseInfo, ForeignKeyInfo, IndexInfo, QueryResult, SchemaCache, TableData, TableInfo, TableSchemaInfo, ViewInfo, RoutineInfo, TriggerInfo};
+use types::{ColumnInfo, DatabaseInfo, FindMatch, ForeignKeyInfo, IndexInfo, QueryResult, SchemaCache, TableData, TableInfo, TableSchemaInfo, ViewInfo, RoutineInfo, TriggerInfo};
 
 #[derive(Clone)]
 pub enum DbConnection {
@@ -18,9 +18,18 @@ pub enum DbConnection {
     Redis(redis::aio::ConnectionManager),
 }
 
+pub enum DbTransaction {
+    MySql(sqlx::Transaction<'static, sqlx::MySql>),
+    Pg(sqlx::Transaction<'static, sqlx::Postgres>),
+    Sqlite(sqlx::Transaction<'static, sqlx::Sqlite>),
+    Oracle(Arc<std::sync::Mutex<oracle::Connection>>),
+}
+
 pub struct AppState {
     pub connections: tokio::sync::Mutex<HashMap<String, DbConnection>>,
     pub checkpoints: tokio::sync::Mutex<HashMap<String, types::CheckpointState>>,
+    pub active_queries: tokio::sync::Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
+    pub transactions: tokio::sync::Mutex<HashMap<String, DbTransaction>>,
     pub scheduler: scheduler::SchedulerManager,
 }
 
@@ -29,7 +38,165 @@ impl AppState {
         Self {
             connections: tokio::sync::Mutex::new(HashMap::new()),
             checkpoints: tokio::sync::Mutex::new(HashMap::new()),
+            active_queries: tokio::sync::Mutex::new(HashMap::new()),
+            transactions: tokio::sync::Mutex::new(HashMap::new()),
             scheduler: scheduler::SchedulerManager::new(Vec::new()),
+        }
+    }
+}
+
+impl DbTransaction {
+    pub fn is_supported(&self) -> bool {
+        matches!(self, DbTransaction::MySql(_) | DbTransaction::Pg(_) | DbTransaction::Sqlite(_) | DbTransaction::Oracle(_))
+    }
+
+    pub async fn execute_query(&mut self, query: &str) -> Result<QueryResult, String> {
+        let start = std::time::Instant::now();
+        match self {
+            DbTransaction::MySql(tx) => {
+                use futures_util::TryStreamExt;
+                let mut stream = sqlx::raw_sql(query).fetch(&mut **tx);
+                let mut rows = Vec::new();
+                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                    rows.push(row);
+                }
+                Ok(mysql_rows_to_result(rows, &start))
+            }
+            DbTransaction::Pg(tx) => {
+                use futures_util::TryStreamExt;
+                let mut stream = sqlx::raw_sql(query).fetch(&mut **tx);
+                let mut rows = Vec::new();
+                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                    rows.push(row);
+                }
+                Ok(pg_rows_to_result(rows, &start))
+            }
+            DbTransaction::Sqlite(tx) => {
+                use futures_util::TryStreamExt;
+                let mut stream = sqlx::raw_sql(query).fetch(&mut **tx);
+                let mut rows = Vec::new();
+                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                    rows.push(row);
+                }
+                Ok(sqlite_rows_to_result(rows, &start))
+            }
+            DbTransaction::Oracle(conn) => {
+                let query = query.to_string();
+                let conn = conn.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let conn = conn.lock().map_err(|e| e.to_string())?;
+                    let trimmed = query.trim_start();
+                    let is_select = trimmed.to_uppercase().starts_with("SELECT")
+                        || trimmed.to_uppercase().starts_with("WITH")
+                        || trimmed.to_uppercase().starts_with("SHOW")
+                        || trimmed.to_uppercase().starts_with("DESCRIBE");
+                    if is_select {
+                        let mut stmt = conn.query(&query, &[]).map_err(|e| e.to_string())?;
+                        let cols: Vec<String> = stmt.column_info().iter()
+                            .map(|c| c.name().to_string()).collect();
+                        let mut rows = Vec::new();
+                        while let Some(row) = stmt.next() {
+                            let row = row.map_err(|e| e.to_string())?;
+                            let mut map = serde_json::Map::new();
+                            for (i, col) in cols.iter().enumerate() {
+                                let json_val = oracle_decode_value(&row, i);
+                                map.insert(col.clone(), json_val);
+                            }
+                            rows.push(serde_json::Value::Object(map));
+                        }
+                        let elapsed = format!("{:.2}ms", start.elapsed().as_secs_f64() * 1000.0);
+                        let row_count = rows.len();
+                        Ok(QueryResult { columns: cols, rows, row_count, duration: elapsed, error: None })
+                    } else {
+                        let stmt = conn.execute(&query, &[]).map_err(|e| e.to_string())?;
+                        let count = stmt.row_count().unwrap_or(0) as usize;
+                        let elapsed = format!("{:.2}ms", start.elapsed().as_secs_f64() * 1000.0);
+                        Ok(QueryResult { columns: vec![], rows: vec![], row_count: count, duration: elapsed, error: None })
+                    }
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                result
+            }
+        }
+    }
+
+    pub async fn execute_update(&mut self, query: &str) -> Result<QueryResult, String> {
+        self.execute_query(query).await
+    }
+
+    pub async fn execute_batch(&mut self, queries: &[String]) -> Result<u64, String> {
+        match self {
+            DbTransaction::MySql(tx) => {
+                let mut count = 0u64;
+                for q in queries {
+                    let r = sqlx::query(q.as_str()).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                    count += r.rows_affected();
+                }
+                Ok(count)
+            }
+            DbTransaction::Pg(tx) => {
+                let mut count = 0u64;
+                for q in queries {
+                    let r = sqlx::query(q.as_str()).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                    count += r.rows_affected();
+                }
+                Ok(count)
+            }
+            DbTransaction::Sqlite(tx) => {
+                let mut count = 0u64;
+                for q in queries {
+                    let r = sqlx::query(q.as_str()).execute(&mut **tx).await.map_err(|e| e.to_string())?;
+                    count += r.rows_affected();
+                }
+                Ok(count)
+            }
+            DbTransaction::Oracle(conn) => {
+                let queries = queries.to_vec();
+                let conn = conn.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let conn = conn.lock().map_err(|e| e.to_string())?;
+                    let mut count = 0u64;
+                    for q in &queries {
+                        let r = conn.execute(q, &[]).map_err(|e| e.to_string())?;
+                        count += r.row_count().unwrap_or(0) as u64;
+                    }
+                    Ok(count)
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                result
+            }
+        }
+    }
+
+    pub async fn commit(self) -> Result<(), String> {
+        match self {
+            DbTransaction::MySql(tx) => tx.commit().await.map_err(|e| e.to_string()),
+            DbTransaction::Pg(tx) => tx.commit().await.map_err(|e| e.to_string()),
+            DbTransaction::Sqlite(tx) => tx.commit().await.map_err(|e| e.to_string()),
+            DbTransaction::Oracle(conn) => {
+                tokio::task::spawn_blocking(move || {
+                    conn.lock().map_err(|e| e.to_string())?.commit().map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| e.to_string())?
+            }
+        }
+    }
+
+    pub async fn rollback(self) -> Result<(), String> {
+        match self {
+            DbTransaction::MySql(tx) => tx.rollback().await.map_err(|e| e.to_string()),
+            DbTransaction::Pg(tx) => tx.rollback().await.map_err(|e| e.to_string()),
+            DbTransaction::Sqlite(tx) => tx.rollback().await.map_err(|e| e.to_string()),
+            DbTransaction::Oracle(conn) => {
+                tokio::task::spawn_blocking(move || {
+                    conn.lock().map_err(|e| e.to_string())?.rollback().map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| e.to_string())?
+            }
         }
     }
 }
@@ -128,6 +295,14 @@ fn pg_decode_value_free(row: &sqlx::postgres::PgRow, col: &ColumnInfo) -> serde_
         row.try_get::<Option<serde_json::Value>, _>(name).ok().flatten()
     } else if t.contains("uuid") {
         row.try_get::<Option<uuid::Uuid>, _>(name).ok().flatten().map(|x| serde_json::Value::String(x.to_string()))
+    } else if t.contains("bytea") || t.contains("bytes") {
+        row.try_get::<Option<Vec<u8>>, _>(name).ok().flatten().map(|b| {
+            serde_json::Value::String(if b.iter().all(|&c| c == 0 || (c >= 32 && c < 127)) {
+                String::from_utf8_lossy(&b).to_string()
+            } else {
+                format!("0x{}", b.iter().map(|c| format!("{:02x}", c)).collect::<String>())
+            })
+        })
     } else {
         row.try_get::<Option<String>, _>(name).ok().flatten().map(serde_json::Value::String)
     };
@@ -147,6 +322,19 @@ fn sqlite_column_info_free(col: &sqlx::sqlite::SqliteColumn) -> ColumnInfo {
 
 fn sqlite_decode_value_free(row: &sqlx::sqlite::SqliteRow, col: &ColumnInfo) -> serde_json::Value {
     let name = col.name.as_str();
+    let t = col.data_type.to_lowercase();
+    if t.contains("blob") || t.contains("binary") || t.contains("bytea") || t.contains("bytes") {
+        return match row.try_get::<Option<Vec<u8>>, _>(name) {
+            Ok(Some(b)) => {
+                serde_json::Value::String(if b.iter().all(|&c| c == 0 || (c >= 32 && c < 127)) {
+                    String::from_utf8_lossy(&b).to_string()
+                } else {
+                    format!("0x{}", b.iter().map(|c| format!("{:02x}", c)).collect::<String>())
+                })
+            }
+            _ => serde_json::Value::Null,
+        };
+    }
     let opt: Option<serde_json::Value> = row.try_get::<Option<String>, _>(name).ok().flatten().map(serde_json::Value::String)
         .or_else(|| row.try_get::<Option<i64>, _>(name).ok().flatten().map(serde_json::Value::from))
         .or_else(|| row.try_get::<Option<f64>, _>(name).ok().flatten().map(serde_json::Value::from))
@@ -352,6 +540,27 @@ impl DbConnection {
         }
     }
 
+    pub async fn get_schemas(&self) -> Result<Vec<DatabaseInfo>, String> {
+        match self {
+            DbConnection::Pg(pool) => {
+                let rows = sqlx::query(
+                    "SELECT nspname FROM pg_catalog.pg_namespace \
+                     WHERE nspname NOT LIKE 'pg_%' AND nspname <> 'information_schema' \
+                     AND nspname NOT IN ('blockchain','cstore','db4ai','dbe_perf','dbe_pldebugger','dbe_pldeveloper','dbe_sql_util','pkg_service','snapshot','sqladvisor') \
+                     ORDER BY nspname",
+                )
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+                Ok(rows
+                    .into_iter()
+                    .map(|r| DatabaseInfo { name: r.get::<String, _>(0) })
+                    .collect())
+            }
+            _ => Ok(vec![]),
+        }
+    }
+
     pub async fn create_database(&self, db_name: &str) -> Result<(), String> {
         match self {
             DbConnection::MySql(pool) => {
@@ -488,9 +697,13 @@ impl DbConnection {
             DbConnection::Pg(pool) => {
                 let mut result: Vec<TableInfo> = Vec::new();
                 let rows = sqlx::query(
-                    "SELECT tablename, 'TABLE' FROM pg_catalog.pg_tables WHERE schemaname = 'public' \
+                    "SELECT schemaname, tablename, 'TABLE' FROM pg_catalog.pg_tables \
+                     WHERE schemaname NOT LIKE 'pg_%' AND schemaname <> 'information_schema' \
+                     AND schemaname NOT IN ('blockchain','cstore','db4ai','dbe_perf','dbe_pldebugger','dbe_pldeveloper','dbe_sql_util','pkg_service','snapshot','sqladvisor') \
                      UNION ALL \
-                     SELECT viewname, 'VIEW' FROM pg_catalog.pg_views WHERE schemaname = 'public' \
+                     SELECT schemaname, viewname, 'VIEW' FROM pg_catalog.pg_views \
+                     WHERE schemaname NOT LIKE 'pg_%' AND schemaname <> 'information_schema' \
+                     AND schemaname NOT IN ('blockchain','cstore','db4ai','dbe_perf','dbe_pldebugger','dbe_pldeveloper','dbe_sql_util','pkg_service','snapshot','sqladvisor') \
                      ORDER BY 2, 1",
                 )
                 .fetch_all(pool)
@@ -498,41 +711,44 @@ impl DbConnection {
                 .map_err(|e| e.to_string())?;
                 for r in rows {
                     result.push(TableInfo {
-                        name: r.get::<String, _>(0),
-                        object_type: r.get::<String, _>(1),
-                        schema: Some("public".to_string()),
+                        name: r.get::<String, _>(1),
+                        object_type: r.get::<String, _>(2),
+                        schema: Some(r.get::<String, _>(0)),
                     });
                 }
                 let func_rows = sqlx::query(
-                    "SELECT proname, CASE WHEN prokind = 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END \
+                    "SELECT n.nspname, p.proname, CASE WHEN p.prokind = 'p' THEN 'PROCEDURE' ELSE 'FUNCTION' END \
                      FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace \
-                     WHERE n.nspname = 'public' ORDER BY 2, 1",
+                     WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname <> 'information_schema' \
+                     AND n.nspname NOT IN ('blockchain','cstore','db4ai','dbe_perf','dbe_pldebugger','dbe_pldeveloper','dbe_sql_util','pkg_service','snapshot','sqladvisor') ORDER BY 2, 1",
                 )
                 .fetch_all(pool)
                 .await;
                 if let Ok(frows) = func_rows {
                     for r in frows {
                         result.push(TableInfo {
-                            name: r.get::<String, _>(0),
-                            object_type: r.get::<String, _>(1),
-                            schema: Some("public".to_string()),
+                            name: r.get::<String, _>(1),
+                            object_type: r.get::<String, _>(2),
+                            schema: Some(r.get::<String, _>(0)),
                         });
                     }
                 }
                 let trig_rows = sqlx::query(
-                    "SELECT t.tgname FROM pg_catalog.pg_trigger t \
+                    "SELECT n.nspname, t.tgname FROM pg_catalog.pg_trigger t \
                      JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid \
                      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-                     WHERE n.nspname = 'public' AND NOT t.tgisinternal ORDER BY t.tgname",
+                     WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname <> 'information_schema' \
+                     AND n.nspname NOT IN ('blockchain','cstore','db4ai','dbe_perf','dbe_pldebugger','dbe_pldeveloper','dbe_sql_util','pkg_service','snapshot','sqladvisor') \
+                     AND NOT t.tgisinternal ORDER BY t.tgname",
                 )
                 .fetch_all(pool)
                 .await;
                 if let Ok(trows) = trig_rows {
                     for r in trows {
                         result.push(TableInfo {
-                            name: r.get::<String, _>(0),
+                            name: r.get::<String, _>(1),
                             object_type: "TRIGGER".to_string(),
-                            schema: Some("public".to_string()),
+                            schema: Some(r.get::<String, _>(0)),
                         });
                     }
                 }
@@ -631,29 +847,57 @@ impl DbConnection {
     }
 
     pub async fn execute_query(&self, query: &str) -> Result<QueryResult, String> {
+        self.execute_query_with_cancel(query, None).await
+    }
+
+    pub async fn execute_query_with_cancel(
+        &self,
+        query: &str,
+        cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<QueryResult, String> {
         let start = std::time::Instant::now();
         let query = query.to_owned();
+        let is_cancelled = || {
+            cancel
+                .as_ref()
+                .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+        };
 
         match self {
             DbConnection::MySql(pool) => {
-                let rows = sqlx::raw_sql(&query)
-                    .fetch_all(pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                use futures_util::TryStreamExt;
+                let mut stream = sqlx::raw_sql(&query).fetch(pool);
+                let mut rows = Vec::new();
+                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                    if is_cancelled() {
+                        return Err("Query cancelled".to_string());
+                    }
+                    rows.push(row);
+                }
                 Ok(mysql_rows_to_result(rows, &start))
             }
             DbConnection::Pg(pool) => {
-                let rows = sqlx::raw_sql(&query)
-                    .fetch_all(pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                use futures_util::TryStreamExt;
+                let mut stream = sqlx::raw_sql(&query).fetch(pool);
+                let mut rows = Vec::new();
+                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                    if is_cancelled() {
+                        return Err("Query cancelled".to_string());
+                    }
+                    rows.push(row);
+                }
                 Ok(pg_rows_to_result(rows, &start))
             }
             DbConnection::Sqlite(pool) => {
-                let rows = sqlx::raw_sql(&query)
-                    .fetch_all(pool)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                use futures_util::TryStreamExt;
+                let mut stream = sqlx::raw_sql(&query).fetch(pool);
+                let mut rows = Vec::new();
+                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                    if is_cancelled() {
+                        return Err("Query cancelled".to_string());
+                    }
+                    rows.push(row);
+                }
                 Ok(sqlite_rows_to_result(rows, &start))
             }
             DbConnection::Mongo(_client, _db) => {
@@ -662,6 +906,7 @@ impl DbConnection {
             DbConnection::Oracle(conn) => {
                 let query = query.clone();
                 let conn = conn.clone();
+                let cancel_flag = cancel.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let conn = conn.lock().map_err(|e| e.to_string())?;
                     let trimmed = query.trim_start();
@@ -675,6 +920,9 @@ impl DbConnection {
                             .map(|c| c.name().to_string()).collect();
                         let mut rows = Vec::new();
                         while let Some(row) = stmt.next() {
+                            if cancel_flag.as_ref().is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed)) {
+                                return Err::<QueryResult, String>("Query cancelled".to_string());
+                            }
                             let row = row.map_err(|e| e.to_string())?;
                             let mut map = serde_json::Map::new();
                             for (i, col) in cols.iter().enumerate() {
@@ -1827,8 +2075,233 @@ impl DbConnection {
         }
     }
 
+    pub async fn find_in_tables(&self, database: &str, search: &str, max_tables: usize, per_table_limit: i64) -> Result<Vec<FindMatch>, String> {
+        let needle = search.trim();
+        if needle.is_empty() {
+            return Ok(vec![]);
+        }
+        let schema = self.get_schema_cache(database).await?;
+        let mut matches = Vec::new();
+        for t in schema.tables.iter().take(max_tables) {
+            // Only text-ish columns are searched; binary/blob columns are skipped.
+            let text_cols: Vec<&String> = t.columns
+                .iter()
+                .filter(|c| {
+                    let dt = c.data_type.to_uppercase();
+                    dt.contains("CHAR") || dt.contains("TEXT") || dt.contains("VARCHAR") || dt.contains("STRING")
+                })
+                .map(|c| &c.name)
+                .collect();
+            if text_cols.is_empty() {
+                continue;
+            }
+            let per_table = self.search_table(database, &t.table, &text_cols, needle, per_table_limit).await?;
+            matches.extend(per_table);
+        }
+        Ok(matches)
+    }
+
+    async fn search_table(&self, database: &str, table: &str, cols: &[&String], needle: &str, limit: i64) -> Result<Vec<FindMatch>, String> {
+        let pattern = format!("%{}%", needle.replace('%', "\\%").replace('_', "\\_"));
+        match self {
+            DbConnection::MySql(pool) => {
+                let qualified = format!("`{}`.`{}`", database.replace('`', "``"), table.replace('`', "``"));
+                let conds = cols.iter().map(|c| format!("`{}` LIKE '{}'", c.replace('`', "``"), pattern.replace('\\', "\\\\").replace('\'', "''"))).collect::<Vec<_>>().join(" OR ");
+                let sql = format!("SELECT * FROM {} WHERE {} LIMIT {}", qualified, conds, limit);
+                let rows = sqlx::raw_sql(&sql).fetch_all(pool).await.map_err(|e| e.to_string())?;
+                let mut out = Vec::new();
+                for row in rows {
+                    let cols_info: Vec<ColumnInfo> = row.columns().iter().map(|c| mysql_column_info_free(c)).collect();
+                    let mut map = serde_json::Map::new();
+                    for col in &cols_info {
+                        let v = mysql_decode_value_free(&row, col);
+                        map.insert(col.name.clone(), v);
+                    }
+                    let json = serde_json::Value::Object(map);
+                    for c in cols {
+                        if let Some(v) = json.get(*c) {
+                            if let Some(s) = v.as_str() {
+                                if s.to_lowercase().contains(&needle.to_lowercase()) {
+                                    out.push(FindMatch { table: table.to_string(), column: (*c).clone(), value: s.to_string(), row: json.clone() });
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            DbConnection::Pg(pool) => {
+                let qualified = format!("\"{}\".\"{}\"", database.replace('"', "\"\""), table.replace('"', "\"\""));
+                let conds = cols.iter().map(|c| format!("\"{}\" ILIKE '{}'", c.replace('"', "\"\""), pattern.replace('\'', "''"))).collect::<Vec<_>>().join(" OR ");
+                let sql = format!("SELECT * FROM {} WHERE {} LIMIT {}", qualified, conds, limit);
+                let rows = sqlx::raw_sql(&sql).fetch_all(pool).await.map_err(|e| e.to_string())?;
+                let mut out = Vec::new();
+                for row in rows {
+                    let cols_info: Vec<ColumnInfo> = row.columns().iter().map(|c| pg_column_info_free(c)).collect();
+                    let mut map = serde_json::Map::new();
+                    for col in &cols_info {
+                        let v = pg_decode_value_free(&row, col);
+                        map.insert(col.name.clone(), v);
+                    }
+                    let json = serde_json::Value::Object(map);
+                    for c in cols {
+                        if let Some(v) = json.get(*c) {
+                            if let Some(s) = v.as_str() {
+                                if s.to_lowercase().contains(&needle.to_lowercase()) {
+                                    out.push(FindMatch { table: table.to_string(), column: (*c).clone(), value: s.to_string(), row: json.clone() });
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            DbConnection::Sqlite(pool) => {
+                let qualified = format!("\"{}\".\"{}\"", database.replace('"', "\"\""), table.replace('"', "\"\""));
+                let conds = cols.iter().map(|c| format!("\"{}\" LIKE '{}'", c.replace('"', "\"\""), pattern.replace('\'', "''"))).collect::<Vec<_>>().join(" OR ");
+                let sql = format!("SELECT * FROM {} WHERE {} LIMIT {}", qualified, conds, limit);
+                let rows = sqlx::raw_sql(&sql).fetch_all(pool).await.map_err(|e| e.to_string())?;
+                let mut out = Vec::new();
+                for row in rows {
+                    let cols_info: Vec<ColumnInfo> = row.columns().iter().map(|c| sqlite_column_info_free(c)).collect();
+                    let mut map = serde_json::Map::new();
+                    for col in &cols_info {
+                        let v = sqlite_decode_value_free(&row, col);
+                        map.insert(col.name.clone(), v);
+                    }
+                    let json = serde_json::Value::Object(map);
+                    for c in cols {
+                        if let Some(v) = json.get(*c) {
+                            if let Some(s) = v.as_str() {
+                                if s.to_lowercase().contains(&needle.to_lowercase()) {
+                                    out.push(FindMatch { table: table.to_string(), column: (*c).clone(), value: s.to_string(), row: json.clone() });
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            DbConnection::Oracle(conn) => {
+                let conn = conn.clone();
+                let table = table.to_string();
+                let database = database.to_string();
+                let cols: Vec<String> = cols.iter().map(|c| (*c).clone()).collect();
+                let needle = needle.to_string();
+                let result = tokio::task::spawn_blocking(move || {
+                    let conn = conn.lock().map_err(|e| e.to_string())?;
+                    let owner = if database.is_empty() { "".to_string() } else { database.clone() };
+                    let qtable = if table.contains('.') {
+                        table.clone()
+                    } else if !owner.is_empty() {
+                        format!("\"{}\".\"{}\"", owner.replace('"', "\"\""), table.replace('"', "\"\""))
+                    } else {
+                        format!("\"{}\"", table.replace('"', "\"\""))
+                    };
+                    let conds = cols.iter().map(|c| format!("\"{}\" LIKE '%{}%'", c.replace('"', "\"\""), needle.replace('\'', "''"))).collect::<Vec<_>>().join(" OR ");
+                    let sql = format!("SELECT * FROM {} WHERE {} FETCH FIRST {} ROWS ONLY", qtable, conds, limit);
+                    let mut stmt = conn.query(&sql, &[]).map_err(|e| e.to_string())?;
+                    let cols_info: Vec<String> = stmt.column_info().iter().map(|c| c.name().to_string()).collect();
+                    let mut out = Vec::new();
+                    while let Some(row) = stmt.next() {
+                        let row = row.map_err(|e| e.to_string())?;
+                        let mut map = serde_json::Map::new();
+                        for (i, col) in cols_info.iter().enumerate() {
+                            let v = oracle_decode_value(&row, i);
+                            map.insert(col.clone(), v);
+                        }
+                        let json = serde_json::Value::Object(map);
+                        for c in &cols {
+                            if let Some(v) = json.get(c) {
+                                if let Some(s) = v.as_str() {
+                                    if s.to_lowercase().contains(&needle.to_lowercase()) {
+                                        out.push(FindMatch { table: table.clone(), column: c.clone(), value: s.to_string(), row: json.clone() });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(out)
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                result
+            }
+            DbConnection::Mongo(_, _) => Ok(vec![]),
+            DbConnection::Redis(_) => Ok(vec![]),
+        }
+    }
+
     pub async fn execute_update(&self, query: &str) -> Result<QueryResult, String> {
         self.execute_query(query).await
+    }
+
+    pub async fn execute_batch(&self, queries: &[String]) -> Result<u64, String> {
+        match self {
+            DbConnection::MySql(pool) => {
+                let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+                let mut count = 0u64;
+                for q in queries {
+                    let r = sqlx::query(q.as_str())
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    count += r.rows_affected();
+                }
+                tx.commit().await.map_err(|e| e.to_string())?;
+                Ok(count)
+            }
+            DbConnection::Pg(pool) => {
+                let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+                let mut count = 0u64;
+                for q in queries {
+                    let r = sqlx::query(q.as_str())
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    count += r.rows_affected();
+                }
+                tx.commit().await.map_err(|e| e.to_string())?;
+                Ok(count)
+            }
+            DbConnection::Sqlite(pool) => {
+                let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+                let mut count = 0u64;
+                for q in queries {
+                    let r = sqlx::query(q.as_str())
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    count += r.rows_affected();
+                }
+                tx.commit().await.map_err(|e| e.to_string())?;
+                Ok(count)
+            }
+            DbConnection::Oracle(conn) => {
+                let queries = queries.to_vec();
+                let conn = conn.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let conn = conn.lock().map_err(|e| e.to_string())?;
+                    for q in &queries {
+                        if let Err(e) = conn.execute(q, &[]) {
+                            let _ = conn.rollback();
+                            return Err(e.to_string());
+                        }
+                    }
+                    conn.commit().map_err(|e| e.to_string())?;
+                    Ok(queries.len() as u64)
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                result
+            }
+            DbConnection::Mongo(_, _) => {
+                Err("Batch execution is not supported for MongoDB connections".to_string())
+            }
+            DbConnection::Redis(_) => {
+                Err("Batch execution is not supported for Redis connections".to_string())
+            }
+        }
     }
 
 pub async fn bulk_insert(
@@ -5649,5 +6122,131 @@ mod tests {
         let result = transfer_data(&src, &tgt, &opts, None).await.unwrap();
         assert_eq!(result.rows_transferred, 2, "should limit rows");
         assert!(result.errors.is_empty(), "Errors: {:?}", result.errors);
+    }
+
+    // ── execute_batch transaction tests (SQLite in-memory) ──
+
+    #[tokio::test]
+    async fn test_execute_batch_commits_all() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+            .execute(&pool).await.unwrap();
+
+        let conn = DbConnection::Sqlite(pool.clone());
+        let queries = vec![
+            "UPDATE t SET v = 'a2' WHERE id = 1".to_string(),
+            "DELETE FROM t WHERE id = 2".to_string(),
+            "INSERT INTO t (v) VALUES ('c')".to_string(),
+        ];
+        let affected = conn.execute_batch(&queries).await.unwrap();
+        assert_eq!(affected, 3);
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM t")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(count, 2);
+        let v: String = sqlx::query_scalar("SELECT v FROM t WHERE id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(v, "a2");
+    }
+
+    #[tokio::test]
+    async fn test_execute_batch_rolls_back_on_error() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'a')")
+            .execute(&pool).await.unwrap();
+
+        let conn = DbConnection::Sqlite(pool.clone());
+        let queries = vec![
+            "UPDATE t SET v = 'changed' WHERE id = 1".to_string(),
+            "INSERT INTO missing VALUES (1)".to_string(),
+        ];
+        let err = conn.execute_batch(&queries).await.unwrap_err();
+        assert!(err.contains("missing"), "unexpected error: {}", err);
+
+        let v: String = sqlx::query_scalar("SELECT v FROM t WHERE id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(v, "a", "failed batch must not partially apply");
+    }
+
+    // ── begin/commit/rollback transaction tests (SQLite in-memory) ──
+
+    #[tokio::test]
+    async fn test_transaction_rollback_discards_changes() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'a')")
+            .execute(&pool).await.unwrap();
+
+        let mut tx = DbTransaction::Sqlite(pool.begin().await.unwrap());
+        tx.execute_query("UPDATE t SET v = 'changed' WHERE id = 1").await.unwrap();
+        tx.rollback().await.unwrap();
+
+        let v: String = sqlx::query_scalar("SELECT v FROM t WHERE id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(v, "a", "rollback must discard uncommitted changes");
+    }
+
+    #[tokio::test]
+    async fn test_transaction_commit_persists_changes() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'a')")
+            .execute(&pool).await.unwrap();
+
+        let mut tx = DbTransaction::Sqlite(pool.begin().await.unwrap());
+        tx.execute_query("UPDATE t SET v = 'changed' WHERE id = 1").await.unwrap();
+        tx.commit().await.unwrap();
+
+        let v: String = sqlx::query_scalar("SELECT v FROM t WHERE id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(v, "changed", "commit must persist changes");
+    }
+
+    #[tokio::test]
+    async fn test_transaction_select_returns_rows() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+            .execute(&pool).await.unwrap();
+
+        let mut tx = DbTransaction::Sqlite(pool.begin().await.unwrap());
+        let result = tx.execute_query("SELECT id, v FROM t ORDER BY id").await.unwrap();
+        assert_eq!(result.columns, vec!["id", "v"]);
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.row_count, 2);
+        tx.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_transaction_execute_update_and_batch_route_to_tx() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1, 'a'), (2, 'b')")
+            .execute(&pool).await.unwrap();
+
+        let mut tx = DbTransaction::Sqlite(pool.begin().await.unwrap());
+        tx.execute_update("UPDATE t SET v = 'u' WHERE id = 1").await.unwrap();
+        let affected = tx.execute_batch(&[
+            "UPDATE t SET v = 'x' WHERE id = 2".to_string(),
+            "INSERT INTO t (v) VALUES ('c')".to_string(),
+        ]).await.unwrap();
+        assert_eq!(affected, 2);
+
+        tx.rollback().await.unwrap();
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM t")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(count, 2, "uncommitted changes must be discarded");
+        let v: String = sqlx::query_scalar("SELECT v FROM t WHERE id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(v, "a");
     }
 }

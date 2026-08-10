@@ -6,6 +6,14 @@ pub struct DatabaseInfo {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct FindMatch {
+    pub table: String,
+    pub column: String,
+    pub value: String,
+    pub row: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TableInfo {
     pub name: String,
     pub object_type: String,

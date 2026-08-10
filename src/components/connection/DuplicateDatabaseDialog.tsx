@@ -14,9 +14,30 @@ interface DuplicateDatabaseDialogProps {
   connectionId: string
   sourceDb: string
   onDone: () => void
+  onCreated?: () => void
+  dbType?: string
 }
 
-export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sourceDb, onDone }: DuplicateDatabaseDialogProps) {
+const MAX_LENGTH: Record<string, number> = {
+  mysql: 64,
+  postgresql: 63,
+  oracle: 128,
+  mongodb: 64,
+  sqlite: 64,
+  redis: 64,
+}
+
+function validateName(name: string, dbType: string, sourceDb: string): string | null {
+  const trimmed = name.trim()
+  if (!trimmed) return "name_required"
+  if (trimmed.toLowerCase() === sourceDb.toLowerCase()) return "same_name"
+  const maxLen = MAX_LENGTH[dbType] ?? 64
+  if (trimmed.length > maxLen) return "name_too_long"
+  if (/[\/\\\.\x00-\x1f]/.test(trimmed)) return "name_invalid"
+  return null
+}
+
+export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sourceDb, onDone, onCreated, dbType = "mysql" }: DuplicateDatabaseDialogProps) {
   const { t } = useTranslation()
   const [targetDb, setTargetDb] = useState("")
   const [duplicating, setDuplicating] = useState(false)
@@ -35,25 +56,40 @@ export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sour
     }
   }, [open, sourceDb])
 
+  // Subscribe while the dialog is open so early migration logs are not lost.
   useEffect(() => {
-    if (!duplicating) return
-    const unlisten = listen<string>("migration-log", (event) => {
-      setLogs((prev) => [...prev, event.payload])
+    if (!open) return
+    let cancelled = false
+    let unlistenFn: (() => void) | null = null
+    listen<string>("migration-log", (event) => {
+      if (!cancelled) setLogs((prev) => [...prev, event.payload])
+    }).then((fn) => {
+      if (cancelled) fn()
+      else unlistenFn = fn
     })
-    return () => { unlisten.then((fn) => fn()) }
-  }, [duplicating])
+    return () => {
+      cancelled = true
+      unlistenFn?.()
+    }
+  }, [open])
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [logs])
 
+  const validationError = validateName(targetDb, dbType, sourceDb)
+  const completedTables = logs.filter((msg) => msg.startsWith("Completed table:")).length
+
   const handleDuplicate = async () => {
-    if (!targetDb.trim()) return
+    if (!targetDb.trim() || validationError) return
     setDuplicating(true)
     setError(null)
+    setResult(null)
+    setLogs([])
     try {
       const res = await duplicateDatabase(connectionId, sourceDb, targetDb.trim())
       setResult({ tables: res.tables_transferred.length, rows: res.rows_transferred, duration: res.duration, errors: res.errors })
+      onCreated?.()
     } catch (e: any) {
       setError(e.toString())
     } finally {
@@ -81,7 +117,17 @@ export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sour
               disabled={duplicating}
               autoFocus
             />
+            {validationError && !duplicating && (
+              <div className="text-xs text-destructive">{t(`dialog.duplicate_${validationError}`)}</div>
+            )}
           </div>
+
+          {duplicating && (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              {t('dialog.duplicate_progress', { count: completedTables })}
+            </div>
+          )}
 
           {logs.length > 0 && (
             <div className="max-h-[160px] overflow-y-auto border rounded p-2 space-y-1 bg-muted/20">
@@ -111,8 +157,8 @@ export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sour
 
           {error && (
             <div className="flex items-center gap-2 text-xs text-destructive">
-              <XCircle className="h-3 w-3" />
-              {error}
+              <XCircle className="h-3 w-3 shrink-0" />
+              <span className="break-all">{error}</span>
             </div>
           )}
         </div>
@@ -120,10 +166,10 @@ export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sour
           <Button variant="outline" size="sm" onClick={() => { onOpenChange(false); onDone() }} disabled={duplicating}>
             {t('dialog.close')}
           </Button>
-          {!result && !error && (
-            <Button size="sm" onClick={handleDuplicate} disabled={!targetDb.trim() || duplicating}>
+          {!result && (
+            <Button size="sm" onClick={handleDuplicate} disabled={!!validationError || duplicating}>
               {duplicating ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
-              {t('dialog.duplicate')}
+              {duplicating ? t('dialog.duplicating') : t('dialog.duplicate')}
             </Button>
           )}
         </DialogFooter>

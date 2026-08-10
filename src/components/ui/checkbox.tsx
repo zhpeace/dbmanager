@@ -5,12 +5,14 @@ interface CheckboxProps {
   onCheckedChange: (checked: boolean) => void
   className?: string
   disabled?: boolean
+  id?: string
 }
 
-export function Checkbox({ checked, onCheckedChange, className, disabled }: CheckboxProps) {
+export function Checkbox({ checked, onCheckedChange, className, disabled, id }: CheckboxProps) {
   return (
     <input
       type="checkbox"
+      id={id}
       checked={checked}
       disabled={disabled}
       onChange={(e) => onCheckedChange(e.target.checked)}

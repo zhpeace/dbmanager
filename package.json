@@ -33,6 +33,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "fflate": "^0.8.3",
     "i18next": "^26.3.6",
     "lucide-react": "^1.24.0",
     "react": "^19.2.7",
@@ -40,6 +41,7 @@
     "react-i18next": "^17.0.10",
     "react-router-dom": "^7.18.1",
     "recharts": "^3.9.2",
+    "sql-formatter": "^15.8.2",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.2"
   },

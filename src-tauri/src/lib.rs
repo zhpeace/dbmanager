@@ -4,7 +4,8 @@ mod secrets;
 
 use db::AppState;
 use db::DbConnection;
-use db::types::{CheckpointState, CompareResult, DatabaseInfo, QueryResult, SchemaCache, TableData, TableInfo, TransferOptions, TransferResult};
+use db::DbTransaction;
+use db::types::{CheckpointState, CompareResult, DatabaseInfo, FindMatch, QueryResult, SchemaCache, TableData, TableInfo, TransferOptions, TransferResult};
 use db::scheduler::{ScheduledTask, TaskConfig};
 use tauri::Emitter;
 use tauri::Manager;
@@ -118,6 +119,27 @@ async fn toggle_scheduled_task(
 }
 
 #[tauri::command]
+async fn read_text_file(path: String) -> Result<String, String> {
+    tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("Failed to read {}: {}", path, e))
+}
+
+#[tauri::command]
+async fn write_text_file(path: String, content: String) -> Result<(), String> {
+    tokio::fs::write(&path, content)
+        .await
+        .map_err(|e| format!("Failed to write {}: {}", path, e))
+}
+
+#[tauri::command]
+async fn write_binary_file(path: String, data: Vec<u8>) -> Result<(), String> {
+    tokio::fs::write(&path, data)
+        .await
+        .map_err(|e| format!("Failed to write {}: {}", path, e))
+}
+
+#[tauri::command]
 async fn connect_mysql(
     state: tauri::State<'_, AppState>,
     id: String,
@@ -162,6 +184,7 @@ async fn connect_postgres(
     database: Option<String>,
 ) -> Result<(), String> {
     let db = database.as_deref().unwrap_or("postgres");
+    log::info!("connect_postgres: connecting to {}:{} db={} user={}", host, port, db, user);
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .acquire_timeout(std::time::Duration::from_secs(10))
@@ -174,7 +197,12 @@ async fn connect_postgres(
                 .database(db)
         )
         .await
-        .map_err(|e| format!("PostgreSQL connection failed: {}", e))?;
+        .map_err(|e| {
+            let msg = format!("PostgreSQL connection failed: {}", e);
+            log::error!("{}", msg);
+            msg
+        })?;
+    log::info!("connect_postgres: connected to {}:{} db={}", host, port, db);
 
     let mut connections = state.connections.lock().await;
     connections.insert(id, DbConnection::Pg(pool));
@@ -217,17 +245,39 @@ async fn switch_database(
     user: String,
     password: String,
     database: String,
+    database_type: Option<String>,
 ) -> Result<(), String> {
-    let conn_str = format!("mysql://{}:{}@{}:{}/{}", user, password, host, port, database);
-    let pool = sqlx::mysql::MySqlPoolOptions::new()
-        .max_connections(5)
-        .connect(&conn_str)
-        .await
-        .map_err(|e| format!("MySQL connection failed: {}", e))?;
+    match database_type.as_deref() {
+        Some("postgresql") | Some("pg") => {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(5)
+                .connect_with(
+                    sqlx::postgres::PgConnectOptions::new()
+                        .host(&host)
+                        .port(port)
+                        .username(&user)
+                        .password(&password)
+                        .database(&database),
+                )
+                .await
+                .map_err(|e| format!("PostgreSQL connection failed: {}", e))?;
+            let mut connections = state.connections.lock().await;
+            connections.insert(id, DbConnection::Pg(pool));
+            Ok(())
+        }
+        _ => {
+            let conn_str = format!("mysql://{}:{}@{}:{}/{}", user, password, host, port, database);
+            let pool = sqlx::mysql::MySqlPoolOptions::new()
+                .max_connections(5)
+                .connect(&conn_str)
+                .await
+                .map_err(|e| format!("MySQL connection failed: {}", e))?;
 
-    let mut connections = state.connections.lock().await;
-    connections.insert(id, DbConnection::MySql(pool));
-    Ok(())
+            let mut connections = state.connections.lock().await;
+            connections.insert(id, DbConnection::MySql(pool));
+            Ok(())
+        }
+    }
 }
 
 #[tauri::command]
@@ -247,6 +297,25 @@ async fn get_databases(
         })?
     };
     conn.get_databases().await
+}
+
+#[tauri::command]
+async fn get_schemas(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<Vec<DatabaseInfo>, String> {
+    let conn = {
+        let connections = state.connections.lock().await;
+        connections.get(&id).ok_or("Connection not found").map(|c| match c {
+            DbConnection::MySql(p) => DbConnection::MySql(p.clone()),
+            DbConnection::Pg(p) => DbConnection::Pg(p.clone()),
+            DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
+            DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
+            DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
+        })?
+    };
+    conn.get_schemas().await
 }
 
 #[tauri::command]
@@ -410,6 +479,46 @@ async fn connect_redis(
     Ok(())
 }
 
+fn oracle_client_lib_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("ORACLE_CLIENT_LIB_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(contents) = exe.parent().and_then(|p| p.parent()) {
+            candidates.push(contents.join("Resources").join("instantclient"));
+            candidates.push(contents.join("Frameworks").join("instantclient"));
+            candidates.push(contents.join("Resources").join("oracle"));
+        }
+    }
+    let mut scan_dirs = vec![PathBuf::from("/opt/oracle"), PathBuf::from("/usr/local/lib/oracle"), PathBuf::from("/usr/local/oracle")];
+    if let Some(home) = std::env::var_os("HOME") {
+        scan_dirs.insert(0, PathBuf::from(home).join("lib/oracle"));
+    }
+    for base in scan_dirs {
+        if let Ok(entries) = std::fs::read_dir(&base) {
+            let mut dirs: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                .map(|e| e.path())
+                .filter(|p| p.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with("instantclient_")).unwrap_or(false))
+                .collect();
+            dirs.sort();
+            candidates.extend(dirs);
+        }
+    }
+    candidates.into_iter().find(|d| d.join("libclntsh.dylib").exists() || d.join("libclntsh.so").exists())
+}
+
+fn init_oracle_client() -> Result<(), String> {
+    let mut params = oracle::InitParams::new();
+    if let Some(dir) = oracle_client_lib_dir() {
+        params.oracle_client_lib_dir(dir).map_err(|e| format!("Oracle client init failed: {}", e))?;
+    }
+    params.init().map_err(|e| format!("Oracle client init failed: {}", e))?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn connect_oracle(
     state: tauri::State<'_, AppState>,
@@ -420,6 +529,7 @@ async fn connect_oracle(
     password: String,
     database: String,
 ) -> Result<(), String> {
+    init_oracle_client()?;
     let service = if database.is_empty() { "ORCL" } else { &database };
     let conn_str = format!("//{}:{}/{}", host, port, service);
     let conn = tokio::task::spawn_blocking(move || {
@@ -480,6 +590,7 @@ async fn test_connection(
             Ok("Connection successful".to_string())
         }
         "oracle" => {
+            init_oracle_client()?;
             let db = database.as_deref().unwrap_or("ORCL");
             let service = if db.is_empty() { "ORCL" } else { db };
             let conn_str = format!("//{}:{}/{}", host, port, service);
@@ -515,6 +626,12 @@ async fn execute_update(
     id: String,
     query: String,
 ) -> Result<QueryResult, String> {
+    {
+        let mut tx_map = state.transactions.lock().await;
+        if let Some(tx) = tx_map.get_mut(&id) {
+            return tx.execute_update(&query).await;
+        }
+    }
     let conn = {
         let connections = state.connections.lock().await;
         connections.get(&id).ok_or("Connection not found").map(|c| match c {
@@ -527,6 +644,32 @@ async fn execute_update(
         })?
     };
     conn.execute_update(&query).await
+}
+
+#[tauri::command]
+async fn execute_batch(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    queries: Vec<String>,
+) -> Result<u64, String> {
+    {
+        let mut tx_map = state.transactions.lock().await;
+        if let Some(tx) = tx_map.get_mut(&id) {
+            return tx.execute_batch(&queries).await;
+        }
+    }
+    let conn = {
+        let connections = state.connections.lock().await;
+        connections.get(&id).ok_or("Connection not found").map(|c| match c {
+            DbConnection::MySql(p) => DbConnection::MySql(p.clone()),
+            DbConnection::Pg(p) => DbConnection::Pg(p.clone()),
+            DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
+            DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
+            DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
+        })?
+    };
+    conn.execute_batch(&queries).await
 }
 
 #[tauri::command]
@@ -547,6 +690,29 @@ async fn get_schema_cache(
         })?
     };
     conn.get_schema_cache(&database).await
+}
+
+#[tauri::command]
+async fn find_in_tables(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    database: String,
+    search: String,
+    max_tables: Option<usize>,
+    per_table_limit: Option<i64>,
+) -> Result<Vec<FindMatch>, String> {
+    let conn = {
+        let connections = state.connections.lock().await;
+        connections.get(&id).ok_or("Connection not found").map(|c| match c {
+            DbConnection::MySql(p) => DbConnection::MySql(p.clone()),
+            DbConnection::Pg(p) => DbConnection::Pg(p.clone()),
+            DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
+            DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
+            DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
+        })?
+    };
+    conn.find_in_tables(&database, &search, max_tables.unwrap_or(50), per_table_limit.unwrap_or(5)).await
 }
 
 #[tauri::command]
@@ -604,13 +770,29 @@ async fn duplicate_database(
         match c {
             DbConnection::Sqlite(_) => return Err("SQLite does not support duplicate database".to_string()),
             DbConnection::Redis(_) => return Err("Redis does not support duplicate database".to_string()),
+            DbConnection::Oracle(_) => return Err("Oracle does not support creating databases".to_string()),
             _ => c.clone(),
         }
     };
 
+    if target_db.eq_ignore_ascii_case(&source_db) {
+        return Err("Target database name must be different from the source".to_string());
+    }
+
+    let existing = conn.get_databases().await?;
+    if existing.iter().any(|d| d.name.eq_ignore_ascii_case(&target_db)) {
+        return Err(format!("Target database '{}' already exists", target_db));
+    }
+
     conn.create_database(&target_db).await?;
 
-    let all_objects = conn.get_tables(&source_db).await?;
+    let all_objects = match conn.get_tables(&source_db).await {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = conn.drop_database(&target_db).await;
+            return Err(e);
+        }
+    };
     let table_names: Vec<String> = all_objects.iter().filter(|t| {
         matches!(t.object_type.as_str(), "TABLE" | "BASE TABLE")
     }).map(|t| t.name.clone()).collect();
@@ -619,7 +801,7 @@ async fn duplicate_database(
         source_id: id.clone(),
         source_database: source_db,
         target_id: id,
-        target_database: target_db,
+        target_database: target_db.clone(),
         tables: table_names,
         mode: db::types::TransferMode::StructureAndData,
         transfer_indexes: true,
@@ -642,7 +824,11 @@ async fn duplicate_database(
         }
     });
 
-    db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx)).await
+    let result = db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx)).await;
+    if result.is_err() {
+        target_conn.drop_database(&target_db).await.ok();
+    }
+    result
 }
 
 #[tauri::command]
@@ -651,6 +837,17 @@ async fn execute_query(
     id: String,
     query: String,
 ) -> Result<QueryResult, String> {
+    {
+        let mut tx_map = state.transactions.lock().await;
+        if let Some(tx) = tx_map.get_mut(&id) {
+            return tx.execute_query(&query).await;
+        }
+    }
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let mut m = state.active_queries.lock().await;
+        m.insert(id.clone(), cancel.clone());
+    }
     let conn = {
         let connections = state.connections.lock().await;
         connections.get(&id).ok_or("Connection not found").map(|c| match c {
@@ -662,7 +859,63 @@ async fn execute_query(
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
-    conn.execute_query(&query).await
+    let result = conn.execute_query_with_cancel(&query, Some(cancel.clone())).await;
+    let mut m = state.active_queries.lock().await;
+    m.remove(&id);
+    result
+}
+
+#[tauri::command]
+async fn cancel_query(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    let m = state.active_queries.lock().await;
+    if let Some(flag) = m.get(&id) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn begin_transaction(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    let conn = get_conn(&state, &id).await?;
+    let tx = match conn {
+        DbConnection::MySql(pool) => {
+            let tx = pool.begin().await.map_err(|e| e.to_string())?;
+            DbTransaction::MySql(tx)
+        }
+        DbConnection::Pg(pool) => {
+            let tx = pool.begin().await.map_err(|e| e.to_string())?;
+            DbTransaction::Pg(tx)
+        }
+        DbConnection::Sqlite(pool) => {
+            let tx = pool.begin().await.map_err(|e| e.to_string())?;
+            DbTransaction::Sqlite(tx)
+        }
+        DbConnection::Oracle(conn) => DbTransaction::Oracle(conn),
+        _ => return Err("Transactions are not supported for this connection type".to_string()),
+    };
+    let mut m = state.transactions.lock().await;
+    m.insert(id, tx);
+    Ok(())
+}
+
+#[tauri::command]
+async fn commit_transaction(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    let mut m = state.transactions.lock().await;
+    let tx = m.remove(&id).ok_or("No active transaction")?;
+    tx.commit().await
+}
+
+#[tauri::command]
+async fn rollback_transaction(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    let mut m = state.transactions.lock().await;
+    let tx = m.remove(&id).ok_or("No active transaction")?;
+    tx.rollback().await
+}
+
+#[tauri::command]
+async fn transaction_status(state: tauri::State<'_, AppState>, id: String) -> Result<bool, String> {
+    let m = state.transactions.lock().await;
+    Ok(m.contains_key(&id))
 }
 
 #[tauri::command]
@@ -824,6 +1077,74 @@ async fn drop_trigger(
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
     let sql = db::ddl::drop_trigger_sql(&kind, schema, &trigger);
+    conn.execute_update(&sql).await
+}
+
+#[tauri::command]
+async fn create_index(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    database: String,
+    table: String,
+    name: String,
+    columns: Vec<String>,
+    unique: bool,
+) -> Result<QueryResult, String> {
+    if columns.is_empty() {
+        return Err("Index must have at least one column".to_string());
+    }
+    let conn = get_conn(&state, &id).await?;
+    let kind = db::ddl::db_kind(&conn)?;
+    let schema = if database.is_empty() { None } else { Some(database.as_str()) };
+    let sql = db::ddl::create_index_sql(&kind, schema, &table, &name, &columns, unique);
+    conn.execute_update(&sql).await
+}
+
+#[tauri::command]
+async fn drop_index(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    database: String,
+    table: String,
+    name: String,
+) -> Result<QueryResult, String> {
+    let conn = get_conn(&state, &id).await?;
+    let kind = db::ddl::db_kind(&conn)?;
+    let schema = if database.is_empty() { None } else { Some(database.as_str()) };
+    let sql = db::ddl::drop_index_sql(&kind, schema, &table, &name);
+    conn.execute_update(&sql).await
+}
+
+#[tauri::command]
+async fn add_foreign_key(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    database: String,
+    table: String,
+    name: String,
+    column: String,
+    ref_table: String,
+    ref_column: String,
+) -> Result<QueryResult, String> {
+    let conn = get_conn(&state, &id).await?;
+    let kind = db::ddl::db_kind(&conn)?;
+    let schema = if database.is_empty() { None } else { Some(database.as_str()) };
+    let sql = db::ddl::add_foreign_key_sql(&kind, schema, &table, &name, &column, &ref_table, &ref_column)?;
+    conn.execute_update(&sql).await
+}
+
+#[tauri::command]
+async fn drop_foreign_key(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    database: String,
+    table: String,
+    name: String,
+) -> Result<QueryResult, String> {
+    let conn = get_conn(&state, &id).await?;
+    let kind = db::ddl::db_kind(&conn)?;
+    let schema = if database.is_empty() { None } else { Some(database.as_str()) };
+    let sql = db::ddl::drop_foreign_key_sql(&kind, schema, &table, &name)?;
     conn.execute_update(&sql).await
 }
 
@@ -994,6 +1315,8 @@ pub fn run() {
     let app_state = AppState {
         connections: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         checkpoints: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        active_queries: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        transactions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         scheduler: db::scheduler::SchedulerManager::new(initial_tasks),
     };
 
@@ -1003,10 +1326,13 @@ pub fn run() {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
+                        .level(log::LevelFilter::Debug)
                         .build(),
                 )?;
             }
+            app.handle()
+                .plugin(tauri_plugin_dialog::init())
+                .expect("failed to init dialog plugin");
 
             let handle = app.handle().clone();
             let cancel_rx = app.state::<AppState>().scheduler.cancel_tx.subscribe();
@@ -1028,14 +1354,22 @@ pub fn run() {
             disconnect,
             switch_database,
             get_databases,
+            get_schemas,
             create_database,
             drop_database,
             get_tables,
             get_table_data,
             get_table_ddl,
             execute_query,
+            cancel_query,
+            begin_transaction,
+            commit_transaction,
+            rollback_transaction,
+            transaction_status,
             execute_update,
+            execute_batch,
             get_schema_cache,
+            find_in_tables,
             transfer_data,
             duplicate_database,
             create_table,
@@ -1049,6 +1383,10 @@ pub fn run() {
                     drop_view,
                     drop_routine,
                     drop_trigger,
+                    create_index,
+                    drop_index,
+                    add_foreign_key,
+                    drop_foreign_key,
                     license::activate_license,
                     license::get_license_status,
                     secrets::save_connection_secret,
@@ -1065,6 +1403,9 @@ pub fn run() {
                     update_scheduled_task,
                     delete_scheduled_task,
                     toggle_scheduled_task,
+                    read_text_file,
+                    write_text_file,
+                    write_binary_file,
                 ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1305,4 +1646,31 @@ async fn run_transfer_task(
 
     let result = db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx)).await?;
     Ok(format!("Transfer completed: {} tables, {} rows", result.tables_transferred.len(), result.rows_transferred))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_oracle_client_lib_dir_detected() {
+        let dir = oracle_client_lib_dir().expect("oracle client lib dir should be detected");
+        assert!(
+            dir.join("libclntsh.dylib").exists() || dir.join("libclntsh.so").exists(),
+            "libclntsh missing in {dir:?}"
+        );
+    }
+
+    #[test]
+    fn test_oracle_connect_without_shell_env() {
+        init_oracle_client().expect("oracle client init should succeed without DYLD_LIBRARY_PATH");
+        let conn = oracle::Connection::connect("TESTUSER", "testpass", "//127.0.0.1:1521/XEPDB1")
+            .expect("oracle connect should succeed");
+        let mut rows = conn
+            .query("SELECT 1 FROM dual", &[])
+            .expect("query should succeed");
+        let row = rows.next().expect("should have one row").unwrap();
+        let value: i64 = row.get(0).unwrap();
+        assert_eq!(value, 1);
+    }
 }

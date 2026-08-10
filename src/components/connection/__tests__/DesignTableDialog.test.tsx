@@ -5,11 +5,19 @@ import { DesignTableDialog } from "../DesignTableDialog"
 const getSchemaCacheMock = vi.fn()
 const alterAddColumnMock = vi.fn()
 const alterDropColumnMock = vi.fn()
+const createIndexMock = vi.fn()
+const dropIndexMock = vi.fn()
+const addForeignKeyMock = vi.fn()
+const dropForeignKeyMock = vi.fn()
 
 vi.mock("@/lib/db", () => ({
   getSchemaCache: (...args: any[]) => getSchemaCacheMock(...args),
   alterAddColumn: (...args: any[]) => alterAddColumnMock(...args),
   alterDropColumn: (...args: any[]) => alterDropColumnMock(...args),
+  createIndex: (...args: any[]) => createIndexMock(...args),
+  dropIndex: (...args: any[]) => dropIndexMock(...args),
+  addForeignKey: (...args: any[]) => addForeignKeyMock(...args),
+  dropForeignKey: (...args: any[]) => dropForeignKeyMock(...args),
 }))
 
 const defaultProps = {
@@ -31,6 +39,18 @@ beforeEach(() => {
         columns: [
           { name: "id", data_type: "INT", nullable: false, key: "PRI", default_value: null },
           { name: "email", data_type: "VARCHAR(255)", nullable: true, key: "", default_value: null },
+        ],
+        indexes: [
+          { name: "idx_email", columns: ["email"], unique: true, index_type: "" },
+        ],
+        foreign_keys: [
+          { column_name: "email", ref_table: "profiles", ref_column: "email", constraint_name: "fk_user_profile" },
+        ],
+      },
+      {
+        table: "profiles",
+        columns: [
+          { name: "id", data_type: "INT", nullable: false, key: "PRI", default_value: null },
         ],
       },
     ],
@@ -155,4 +175,104 @@ it("closes dialog when Close clicked", async () => {
   const closeButtons = screen.getAllByRole("button", { name: "Close" })
   await user.click(closeButtons[closeButtons.length - 1])
   expect(onOpenChange).toHaveBeenCalledWith(false)
+})
+
+it("renders the three design tabs", async () => {
+  render(<DesignTableDialog {...defaultProps} />)
+  await waitFor(() => {
+    expect(screen.getByText("Columns")).toBeInTheDocument()
+  })
+  expect(screen.getByText("Indexes")).toBeInTheDocument()
+  expect(screen.getByText("Foreign Keys")).toBeInTheDocument()
+})
+
+it("lists existing indexes and adds a new one", async () => {
+  const user = userEvent.setup()
+  createIndexMock.mockResolvedValue(undefined)
+  render(<DesignTableDialog {...defaultProps} />)
+  await waitFor(() => {
+    expect(screen.getByText("Indexes")).toBeInTheDocument()
+  })
+  await user.click(screen.getByText("Indexes"))
+  await waitFor(() => {
+    expect(screen.getByText("idx_email")).toBeInTheDocument()
+  })
+  const textboxes = screen.getAllByRole("textbox")
+  await user.type(textboxes[0], "idx_email2")
+  await user.type(textboxes[1], "email, id")
+  await user.click(screen.getByText("Add Index"))
+  await waitFor(() => {
+    expect(createIndexMock).toHaveBeenCalledWith("c1", "mydb", "users", "idx_email2", ["email", "id"], false)
+  })
+})
+
+it("drops an index", async () => {
+  const user = userEvent.setup()
+  dropIndexMock.mockResolvedValue(undefined)
+  render(<DesignTableDialog {...defaultProps} />)
+  await waitFor(() => {
+    expect(screen.getByText("Indexes")).toBeInTheDocument()
+  })
+  await user.click(screen.getByText("Indexes"))
+  await waitFor(() => {
+    expect(screen.getByText("idx_email")).toBeInTheDocument()
+  })
+  await user.click(screen.getAllByTitle("Drop")[0])
+  await waitFor(() => {
+    expect(dropIndexMock).toHaveBeenCalledWith("c1", "mydb", "users", "idx_email")
+  })
+})
+
+it("lists existing foreign keys and adds a new one", async () => {
+  const user = userEvent.setup()
+  addForeignKeyMock.mockResolvedValue(undefined)
+  render(<DesignTableDialog {...defaultProps} />)
+  await waitFor(() => {
+    expect(screen.getByText("Foreign Keys")).toBeInTheDocument()
+  })
+  await user.click(screen.getByText("Foreign Keys"))
+  await waitFor(() => {
+    expect(screen.getByText("fk_user_profile")).toBeInTheDocument()
+  })
+  await user.type(screen.getAllByRole("textbox")[0], "fk2")
+  const combos = screen.getAllByRole("combobox")
+  await user.click(combos[0])
+  const emailOption = await screen.findByRole("option", { name: "email" })
+  await user.click(emailOption)
+  await user.click(combos[1])
+  const profilesOption = await screen.findByRole("option", { name: "profiles" })
+  await user.click(profilesOption)
+  await user.type(screen.getByPlaceholderText("id"), "id")
+  await user.click(screen.getByText("Add Foreign Key"))
+  await waitFor(() => {
+    expect(addForeignKeyMock).toHaveBeenCalledWith("c1", "mydb", "users", "fk2", "email", "profiles", "id")
+  })
+})
+
+it("shows unsupported notice for sqlite foreign keys", async () => {
+  render(<DesignTableDialog {...defaultProps} dbType="sqlite" />)
+  await waitFor(() => {
+    expect(screen.getByText("Foreign Keys")).toBeInTheDocument()
+  })
+  await userEvent.setup().click(screen.getByText("Foreign Keys"))
+  await waitFor(() => {
+    expect(screen.getByText(/not supported/)).toBeInTheDocument()
+  })
+})
+
+it("drops a foreign key", async () => {
+  const user = userEvent.setup()
+  dropForeignKeyMock.mockResolvedValue(undefined)
+  render(<DesignTableDialog {...defaultProps} />)
+  await waitFor(() => {
+    expect(screen.getByText("Foreign Keys")).toBeInTheDocument()
+  })
+  await user.click(screen.getByText("Foreign Keys"))
+  await waitFor(() => {
+    expect(screen.getByText("fk_user_profile")).toBeInTheDocument()
+  })
+  await user.click(screen.getAllByTitle("Drop")[0])
+  await waitFor(() => {
+    expect(dropForeignKeyMock).toHaveBeenCalledWith("c1", "mydb", "users", "fk_user_profile")
+  })
 })

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, fireEvent } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { DataTable } from "../DataTable"
 
@@ -84,11 +84,9 @@ it("renders inline edit input when editingCell matches", () => {
     />
   )
   expect(screen.getByRole("textbox")).toBeInTheDocument()
-  expect(screen.getByText("Save")).toBeInTheDocument()
-  expect(screen.getByText("Cancel")).toBeInTheDocument()
 })
 
-it("calls onCellEdit when save button clicked in edit mode", async () => {
+it("calls onCellEdit when Enter pressed in edit mode", async () => {
   const user = userEvent.setup()
   const handleCellEdit = vi.fn()
   render(
@@ -103,7 +101,7 @@ it("calls onCellEdit when save button clicked in edit mode", async () => {
   const input = screen.getByRole("textbox")
   await user.clear(input)
   await user.type(input, "Charlie")
-  await user.click(screen.getByText("Save"))
+  await user.keyboard("{Enter}")
   expect(handleCellEdit).toHaveBeenCalledWith(0, "name", "Charlie")
 })
 
@@ -121,27 +119,285 @@ it("calls onCellEditStart when double-clicking a cell", async () => {
   expect(handleEditStart).toHaveBeenCalledWith(0, "name")
 })
 
-it("save button is disabled when value unchanged", async () => {
+it("Enter without changes closes editor without committing", async () => {
   const user = userEvent.setup()
+  const handleCellEdit = vi.fn()
   const handleEditStart = vi.fn()
   const { rerender } = render(
-    <DataTable
-      columns={columns}
-      rows={rows}
-      onCellEditStart={handleEditStart}
-    />
+    <DataTable columns={columns} rows={rows} onCellEditStart={handleEditStart} />
   )
   await user.dblClick(screen.getByText("Alice"))
-  expect(handleEditStart).toHaveBeenCalledWith(0, "name")
-  // Rerender with editingCell set to simulate parent state update
   rerender(
     <DataTable
       columns={columns}
       rows={rows}
       editingCell={{ row: 0, col: "name" }}
-      onCellEdit={vi.fn()}
-      onCellEditStart={vi.fn()}
+      onCellEdit={handleCellEdit}
+      onCellEditStart={handleEditStart}
     />
   )
-  expect(screen.getByText("Save")).toBeDisabled()
+  await user.keyboard("{Enter}")
+  expect(handleCellEdit).not.toHaveBeenCalled()
+  expect(handleEditStart).toHaveBeenCalledWith(-1, "")
+})
+
+it("Escape cancels edit without committing", async () => {
+  const user = userEvent.setup()
+  const handleCellEdit = vi.fn()
+  const handleEditStart = vi.fn()
+  render(
+    <DataTable
+      columns={columns}
+      rows={rows}
+      editingCell={{ row: 0, col: "name" }}
+      onCellEdit={handleCellEdit}
+      onCellEditStart={handleEditStart}
+    />
+  )
+  const input = screen.getByRole("textbox")
+  await user.clear(input)
+  await user.type(input, "Charlie")
+  await user.keyboard("{Escape}")
+  expect(handleCellEdit).not.toHaveBeenCalled()
+  expect(handleEditStart).toHaveBeenCalledWith(-1, "")
+})
+
+it("renders selection checkboxes when onSelectionChange provided", () => {
+  render(
+    <DataTable
+      columns={columns}
+      rows={rows}
+      selectedRows={new Set([0])}
+      onSelectionChange={vi.fn()}
+    />
+  )
+  const checkboxes = screen.getAllByRole("checkbox")
+  expect(checkboxes).toHaveLength(2)
+  expect(checkboxes[0]).toBeChecked()
+})
+
+it("calls onSelectionChange when checkbox toggled", async () => {
+  const user = userEvent.setup()
+  const handleSelectionChange = vi.fn()
+  render(
+    <DataTable
+      columns={columns}
+      rows={rows}
+      onSelectionChange={handleSelectionChange}
+    />
+  )
+  await user.click(screen.getAllByRole("checkbox")[0])
+  expect(handleSelectionChange).toHaveBeenCalledWith(0, true)
+})
+
+it("shows status icons for modified/added/deleted rows", () => {
+  render(
+    <DataTable
+      columns={columns}
+      rows={rows}
+      rowStates={["modified", "added", "deleted"]}
+    />
+  )
+  expect(screen.getByText("Alice").closest("span")).toHaveClass("text-amber-600")
+})
+
+it("does not trigger edit on deleted rows", async () => {
+  const user = userEvent.setup()
+  const handleEditStart = vi.fn()
+  render(
+    <DataTable
+      columns={columns}
+      rows={rows}
+      rowStates={["deleted", undefined]}
+      onCellEditStart={handleEditStart}
+    />
+  )
+  await user.dblClick(screen.getByText("Alice"))
+  expect(handleEditStart).not.toHaveBeenCalled()
+})
+
+it("resizes column width only when dragging the header handle", () => {
+  render(<DataTable columns={["name"]} rows={[{ name: "Alice" }]} />)
+  const th = screen.getByText("name").closest("th")!
+  const handle = th.querySelector("div[title]") as HTMLElement
+  expect(handle).not.toBeNull()
+
+  fireEvent.pointerDown(handle, { clientX: 100, button: 0 })
+  fireEvent.mouseMove(document, { clientX: 200 })
+  fireEvent.mouseUp(document)
+
+  const nameTh = screen.getByText("name").closest("th")!
+  expect(nameTh.style.width).toBe("250px")
+})
+
+it("does not resize column width on hover without pointer down", () => {
+  render(<DataTable columns={["name"]} rows={[{ name: "Alice" }]} />)
+  const handle = screen.getByText("name").closest("th")!.querySelector("div[title]") as HTMLElement
+  const before = screen.getByText("name").closest("th")!.style.width
+
+  fireEvent.pointerMove(handle, { clientX: 100 })
+  fireEvent.pointerMove(handle, { clientX: 200 })
+
+  const after = screen.getByText("name").closest("th")!.style.width
+  expect(after).toBe(before)
+})
+
+it("opens large value editor on double-click for long text instead of inline edit", async () => {
+  const user = userEvent.setup()
+  const handleLarge = vi.fn()
+  const handleEditStart = vi.fn()
+  const long = "x".repeat(300)
+  render(
+    <DataTable
+      columns={["body"]}
+      rows={[{ body: long }]}
+      onLargeEdit={handleLarge}
+      onCellEditStart={handleEditStart}
+    />
+  )
+  await user.dblClick(screen.getByText(long))
+  expect(handleLarge).toHaveBeenCalledWith(0, "body")
+  expect(handleEditStart).not.toHaveBeenCalled()
+})
+
+it("keeps inline edit for short values", async () => {
+  const user = userEvent.setup()
+  const handleLarge = vi.fn()
+  const handleEditStart = vi.fn()
+  render(
+    <DataTable
+      columns={["name"]}
+      rows={[{ name: "Alice" }]}
+      onLargeEdit={handleLarge}
+      onCellEditStart={handleEditStart}
+    />
+  )
+  await user.dblClick(screen.getByText("Alice"))
+  expect(handleEditStart).toHaveBeenCalledWith(0, "name")
+  expect(handleLarge).not.toHaveBeenCalled()
+})
+
+it("routes object values to the large value editor", async () => {
+  const user = userEvent.setup()
+  const handleLarge = vi.fn()
+  const handleEditStart = vi.fn()
+  render(
+    <DataTable
+      columns={["meta"]}
+      rows={[{ meta: { a: 1 } }]}
+      onLargeEdit={handleLarge}
+      onCellEditStart={handleEditStart}
+    />
+  )
+  await user.dblClick(screen.getByText('{"a":1}'))
+  expect(handleLarge).toHaveBeenCalledWith(0, "meta")
+  expect(handleEditStart).not.toHaveBeenCalled()
+})
+
+it("shows expand icon for large values", () => {
+  render(<DataTable columns={["body"]} rows={[{ body: "x".repeat(300) }]} />)
+  expect(document.querySelectorAll(".lucide-maximize-2").length).toBeGreaterThan(0)
+})
+
+it("shows hex preview and opens binary editor for binary columns", async () => {
+  const user = userEvent.setup()
+  const handleBinary = vi.fn()
+  render(
+    <DataTable
+      columns={["data"]}
+      rows={[{ data: "0xDEADBEEF" }]}
+      binaryColumns={["data"]}
+      onBinaryEdit={handleBinary}
+    />
+  )
+  expect(screen.getByText("0xDEADBEEF")).toBeInTheDocument()
+  await user.dblClick(screen.getByText("0xDEADBEEF"))
+  expect(handleBinary).toHaveBeenCalledWith(0, "data")
+})
+
+it("truncates long hex preview in binary columns", () => {
+  const longHex = "0x" + "AB".repeat(40)
+  render(<DataTable columns={["data"]} rows={[{ data: longHex }]} binaryColumns={["data"]} />)
+  expect(screen.getByText(/^0x(AB){16}…$/)).toBeInTheDocument()
+})
+
+describe("context menu copy", () => {
+  let writeTextMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    writeTextMock = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: writeTextMock },
+      configurable: true,
+    })
+  })
+
+  async function openMenuOn(text: string) {
+    render(<DataTable columns={columns} rows={rows} tableName="users" primaryKeys={["id"]} />)
+    fireEvent.contextMenu(screen.getByText(text).closest("td")!)
+  }
+
+  async function clickMenuItem(label: string) {
+    const item = await screen.findByText(label)
+    fireEvent.pointerDown(item)
+    fireEvent.pointerUp(item)
+    fireEvent.click(item)
+  }
+
+  it("shows copy options in context menu", async () => {
+    render(<DataTable columns={columns} rows={rows} tableName="users" primaryKeys={["id"]} />)
+    fireEvent.contextMenu(screen.getByText("Alice").closest("td")!)
+    expect(screen.getByText("Copy Cell")).toBeInTheDocument()
+    expect(screen.getByText("Copy Row")).toBeInTheDocument()
+    expect(screen.getByText("Copy Column")).toBeInTheDocument()
+    expect(screen.getByText("Copy as INSERT")).toBeInTheDocument()
+    expect(screen.getByText("Copy as UPDATE")).toBeInTheDocument()
+  })
+
+  it("copies a cell value", async () => {
+    await openMenuOn("Alice")
+    await clickMenuItem("Copy Cell")
+    expect(writeTextMock).toHaveBeenCalledWith("Alice")
+  })
+
+  it("copies row as tab-separated values", async () => {
+    await openMenuOn("Alice")
+    await clickMenuItem("Copy Row")
+    expect(writeTextMock).toHaveBeenCalledWith("1\tAlice\talice@test.com")
+  })
+
+  it("copies a column as newline-separated values", async () => {
+    await openMenuOn("Alice")
+    await clickMenuItem("Copy Column")
+    expect(writeTextMock).toHaveBeenCalledWith("Alice\nBob")
+  })
+
+  it("copies row as CSV", async () => {
+    await openMenuOn("Alice")
+    await clickMenuItem("Copy Row as CSV")
+    expect(writeTextMock).toHaveBeenCalledWith('id,name,email\n1,Alice,alice@test.com')
+  })
+
+  it("copies row as INSERT statement", async () => {
+    await openMenuOn("Alice")
+    await clickMenuItem("Copy as INSERT")
+    expect(writeTextMock).toHaveBeenCalledWith(
+      "INSERT INTO `users` (`id`, `name`, `email`) VALUES\n  (1, 'Alice', 'alice@test.com');"
+    )
+  })
+
+  it("copies row as UPDATE statement using primary keys", async () => {
+    await openMenuOn("Alice")
+    await clickMenuItem("Copy as UPDATE")
+    expect(writeTextMock).toHaveBeenCalledWith(
+      "UPDATE `users` SET `id` = 1, `name` = 'Alice', `email` = 'alice@test.com' WHERE `id` = 1;"
+    )
+  })
+
+  it("hides INSERT/UPDATE items when no tableName provided", () => {
+    render(<DataTable columns={columns} rows={rows} />)
+    fireEvent.contextMenu(screen.getByText("Alice").closest("td")!)
+    expect(screen.queryByText("Copy as INSERT")).not.toBeInTheDocument()
+    expect(screen.queryByText("Copy as UPDATE")).not.toBeInTheDocument()
+  })
 })

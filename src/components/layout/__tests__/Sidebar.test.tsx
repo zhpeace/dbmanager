@@ -46,6 +46,7 @@ const defaultProps = {
   onNewDatabase: noop,
   onDuplicateDatabase: noop,
   onDesignTable: noop,
+  onExportTable: noop,
   onDropObject: noop,
   onTruncateTable: noop,
   onRenameTable: noop,

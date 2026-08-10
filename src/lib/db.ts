@@ -144,6 +144,12 @@ export interface QueryResult {
   error?: string
 }
 
+export interface ExecResult extends QueryResult {
+  id: string
+  title: string
+  isPlan?: boolean
+}
+
 export interface ColumnDef {
   name: string
   data_type: string
@@ -217,6 +223,50 @@ export async function dropTrigger(id: string, database: string, trigger: string)
   return invoke<QueryResult>("drop_trigger", { id, database, trigger })
 }
 
+export interface IndexDef {
+  name: string
+  columns: string[]
+  unique: boolean
+}
+
+export async function createIndex(
+  id: string,
+  database: string,
+  table: string,
+  name: string,
+  columns: string[],
+  unique: boolean
+): Promise<QueryResult> {
+  return invoke<QueryResult>("create_index", { id, database, table, name, columns, unique })
+}
+
+export async function dropIndex(id: string, database: string, table: string, name: string): Promise<QueryResult> {
+  return invoke<QueryResult>("drop_index", { id, database, table, name })
+}
+
+export interface ForeignKeyDef {
+  name: string
+  column: string
+  ref_table: string
+  ref_column: string
+}
+
+export async function addForeignKey(
+  id: string,
+  database: string,
+  table: string,
+  name: string,
+  column: string,
+  refTable: string,
+  refColumn: string
+): Promise<QueryResult> {
+  return invoke<QueryResult>("add_foreign_key", { id, database, table, name, column, refTable, refColumn })
+}
+
+export async function dropForeignKey(id: string, database: string, table: string, name: string): Promise<QueryResult> {
+  return invoke<QueryResult>("drop_foreign_key", { id, database, table, name })
+}
+
 export interface SchemaCache {
   tables: {
     table: string
@@ -242,6 +292,43 @@ export interface SchemaCache {
 
 export async function getSchemaCache(id: string, database: string): Promise<SchemaCache> {
   return invoke<SchemaCache>("get_schema_cache", { id, database })
+}
+
+export async function getSchemas(id: string): Promise<DatabaseInfo[]> {
+  return invoke<DatabaseInfo[]>("get_schemas", { id })
+}
+
+export interface FindMatch {
+  table: string
+  column: string
+  value: string
+  row: Record<string, unknown>
+}
+
+export async function findInTables(
+  id: string,
+  database: string,
+  search: string,
+  maxTables?: number,
+  perTableLimit?: number,
+): Promise<FindMatch[]> {
+  return invoke<FindMatch[]>("find_in_tables", { id, database, search, maxTables, perTableLimit })
+}
+
+export async function beginTransaction(id: string): Promise<void> {
+  return invoke("begin_transaction", { id })
+}
+
+export async function commitTransaction(id: string): Promise<void> {
+  return invoke("commit_transaction", { id })
+}
+
+export async function rollbackTransaction(id: string): Promise<void> {
+  return invoke("rollback_transaction", { id })
+}
+
+export async function transactionStatus(id: string): Promise<boolean> {
+  return invoke<boolean>("transaction_status", { id })
 }
 
 export function createObjectTemplate(
@@ -466,4 +553,27 @@ export async function deleteScheduledTask(id: string): Promise<void> {
 
 export async function toggleScheduledTask(id: string): Promise<ScheduledTask> {
   return invoke<ScheduledTask>("toggle_scheduled_task", { id })
+}
+
+export function quoteIdent(s: string, type: DatabaseType): string {
+  const parts = s.split(".")
+  if (parts.length > 1) {
+    return parts.map((p) => quoteIdent(p, type)).join(".")
+  }
+  if (type === "mysql" || type === "sqlite") {
+    return "`" + s.replace(/`/g, "``") + "`"
+  }
+  if (type === "oracle" && /^[a-zA-Z0-9_$#]+$/.test(s)) {
+    return s
+  }
+  if (s.toLowerCase() !== s || /[^a-zA-Z0-9_]/.test(s)) {
+    return '"' + s.replace(/"/g, '""') + '"'
+  }
+  return s
+}
+
+export function buildSelectPreview(table: string, type: DatabaseType, limit = 100): string {
+  const q = quoteIdent(table, type)
+  if (type === "oracle") return `SELECT * FROM ${q} FETCH FIRST ${limit} ROWS ONLY`
+  return `SELECT * FROM ${q} LIMIT ${limit}`
 }
