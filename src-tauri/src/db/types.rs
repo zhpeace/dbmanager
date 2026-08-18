@@ -18,6 +18,18 @@ pub struct TableInfo {
     pub name: String,
     pub object_type: String,
     pub schema: Option<String>,
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+    #[serde(default)]
+    pub row_count: Option<i64>,
+    #[serde(default)]
+    pub ttl: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RedisKeyPage {
+    pub keys: Vec<TableInfo>,
+    pub cursor: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,6 +274,16 @@ impl Default for TransferOptions {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransferStat {
+    pub table: String,
+    pub rows: i64,
+    pub size_bytes: u64,
+    pub duration_ms: u64,
+    pub status: String,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TransferResult {
     pub tables_transferred: Vec<String>,
@@ -269,6 +291,8 @@ pub struct TransferResult {
     pub errors: Vec<String>,
     pub duration: String,
     pub logs: Vec<String>,
+    #[serde(default)]
+    pub table_stats: Vec<TransferStat>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -286,6 +310,11 @@ pub struct RedisKeyInfo {
     pub ttl: i64,
     pub value: serde_json::Value,
     pub size: usize,
+    pub encoding: String,
+    pub refcount: i64,
+    pub idletime: i64,
+    pub memory_usage: Option<i64>,
+    pub n_elements: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

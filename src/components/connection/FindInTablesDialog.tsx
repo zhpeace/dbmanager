@@ -50,7 +50,12 @@ export function FindInTablesDialog({ open, onOpenChange, connectionId, database,
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent
+        className="max-w-2xl"
+        hideClose={searching}
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle className="text-sm flex items-center gap-2">
             <Search className="h-4 w-4" />

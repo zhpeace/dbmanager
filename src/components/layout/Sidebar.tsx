@@ -24,8 +24,16 @@ import {
   Workflow,
   Plus,
   FileDown,
+  Text,
+  Hash,
+  List,
+  Shapes,
+  ListOrdered,
+  Waves,
+  Timer,
+  Search,
 } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn, formatBytes, formatCount } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -52,6 +60,12 @@ const TYPE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = 
   PROCEDURE: Workflow,
   TRIGGER: Zap,
   COLLECTION: Layers,
+  STRING: Text,
+  HASH: Hash,
+  LIST: List,
+  SET: Shapes,
+  ZSET: ListOrdered,
+  STREAM: Waves,
   default: Box,
 }
 
@@ -63,6 +77,21 @@ const TYPE_COLORS: Record<string, string> = {
   PROCEDURE: "text-orange-400",
   TRIGGER: "text-pink-400",
   COLLECTION: "text-green-400",
+  STRING: "text-green-400",
+  HASH: "text-yellow-400",
+  LIST: "text-cyan-400",
+  SET: "text-purple-400",
+  ZSET: "text-blue-400",
+  STREAM: "text-red-400",
+}
+
+const REDIS_TYPE_ORDER = ["STRING", "HASH", "LIST", "SET", "ZSET", "STREAM"]
+
+function formatTtl(seconds: number): string {
+  if (seconds >= 86400) return `${Math.round(seconds / 86400)}d`
+  if (seconds >= 3600) return `${Math.round(seconds / 3600)}h`
+  if (seconds >= 60) return `${Math.round(seconds / 60)}m`
+  return `${seconds}s`
 }
 
 function getTypeLabel(t: (key: string) => string, type: string): string {
@@ -73,6 +102,12 @@ function getTypeLabel(t: (key: string) => string, type: string): string {
     case "PROCEDURE": return t('sidebar.group_procedures')
     case "TRIGGER": return t('sidebar.group_triggers')
     case "COLLECTION": return t('sidebar.group_collections')
+    case "STRING": return t('sidebar.group_strings')
+    case "HASH": return t('sidebar.group_hashes')
+    case "LIST": return t('sidebar.group_lists')
+    case "SET": return t('sidebar.group_sets')
+    case "ZSET": return t('sidebar.group_zsets')
+    case "STREAM": return t('sidebar.group_streams')
     default: return t('sidebar.group_other')
   }
 }
@@ -87,8 +122,8 @@ interface SidebarProps {
   onDuplicateConnection: (id: string) => void
   onDeleteConnection: (id: string) => void
   onLoadTables: (id: string, database: string) => void
-  onTableClick: (sql: string, database?: string, table?: string) => void
-  onDatabaseClick: (database: string) => void
+  onTableClick: (sql: string, connectionId: string, database?: string, table?: string) => void
+  onDatabaseClick: (database: string, connectionId: string) => void
   onInsertSql: (sql: string) => void
    databases: Record<string, DatabaseInfo[]>
   schemas?: Record<string, Record<string, DatabaseInfo[]>>
@@ -103,6 +138,10 @@ interface SidebarProps {
   onTruncateTable: (database: string, table: string) => void
   onRenameTable: (database: string, table: string) => void
   onNewObject: (type: string, database: string) => void
+  redisScanCursor: Record<string, number>
+  onRedisSearch: (connectionId: string, database: string, pattern: string, typeFilter: string) => void
+  onRedisLoadMore: (connectionId: string, database: string) => void
+  onRedisKeyAction: (action: "rename" | "duplicate" | "expire" | "persist" | "delete", database: string, key: string) => void
 }
 
 export function Sidebar({
@@ -131,6 +170,10 @@ export function Sidebar({
   onTruncateTable,
   onRenameTable,
   onNewObject,
+  redisScanCursor,
+  onRedisSearch,
+  onRedisLoadMore,
+  onRedisKeyAction,
 }: SidebarProps) {
   const { t } = useTranslation()
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
@@ -169,9 +212,9 @@ export function Sidebar({
                onEditConnection={() => onEditConnection(conn.id)}
                onDuplicateConnection={() => onDuplicateConnection(conn.id)}
                onDeleteConnection={() => onDeleteConnection(conn.id)}
-                onLoadTables={(db) => onLoadTables(conn.id, db)}
-                 onTableClick={(sql, db, table) => onTableClick(sql, db, table)}
-                 onDatabaseClick={(db) => onDatabaseClick(db)}
+onLoadTables={(db) => onLoadTables(conn.id, db)}
+                  onTableClick={(sql, cId, db, table) => onTableClick(sql, cId ?? conn.id, db, table)}
+                  onDatabaseClick={(db) => onDatabaseClick(db, conn.id)}
                 onInsertSql={(sql) => onInsertSql(sql)}
                  onNewTable={(db) => onNewTable(db)}
                  onNewDatabase={(connId) => onNewDatabase(connId)}
@@ -188,6 +231,10 @@ export function Sidebar({
               isLoading={loading[conn.id] || false}
               tableLoading={loading}
               connId={conn.id}
+              redisScanCursor={redisScanCursor}
+              onRedisSearch={onRedisSearch}
+              onRedisLoadMore={onRedisLoadMore}
+              onRedisKeyAction={onRedisKeyAction}
             />
           ))}
         </div>
@@ -235,6 +282,10 @@ function ConnectionItem({
   onTruncateTable,
   onRenameTable,
   onNewObject,
+  redisScanCursor,
+  onRedisSearch,
+  onRedisLoadMore,
+  onRedisKeyAction,
 }: {
   connection: Connection
   isActive: boolean
@@ -245,8 +296,8 @@ function ConnectionItem({
   onDuplicateConnection: () => void
   onDeleteConnection: () => void
   onLoadTables: (database: string) => void
-  onTableClick: (sql: string, database?: string, table?: string) => void
-  onDatabaseClick: (database: string) => void
+  onTableClick: (sql: string, connectionId: string, database?: string, table?: string) => void
+  onDatabaseClick: (database: string, connectionId: string) => void
   onInsertSql: (sql: string) => void
   databases: DatabaseInfo[]
   schemas: Record<string, DatabaseInfo[]>
@@ -263,12 +314,31 @@ function ConnectionItem({
   onTruncateTable: (database: string, table: string) => void
   onRenameTable: (database: string, table: string) => void
   onNewObject: (type: string, database: string) => void
+  redisScanCursor?: Record<string, number>
+  onRedisSearch?: (connectionId: string, database: string, pattern: string, typeFilter: string) => void
+  onRedisLoadMore?: (connectionId: string, database: string) => void
+  onRedisKeyAction?: (action: "delete" | "rename" | "duplicate" | "expire" | "persist", database: string, key: string) => void
 }) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const [expandedDbs, setExpandedDbs] = useState<Set<string>>(new Set())
   const [collapsedTypes, setCollapsedTypes] = useState<Set<string>>(new Set())
   const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(new Set())
+  const [selectedObjKey, setSelectedObjKey] = useState<string | null>(null)
+  const [redisSearch, setRedisSearch] = useState<Record<string, string>>({})
+  const [redisTypeFilter, setRedisTypeFilter] = useState<Record<string, string>>({})
+  const isRedis = connection.config.type === "redis"
+
+  function onRedisSearchDb(db: string, pattern: string, typeFilter: string) {
+    setRedisSearch((prev) => ({ ...prev, [db]: pattern }))
+    setRedisTypeFilter((prev) => ({ ...prev, [db]: typeFilter }))
+    setExpandedDbs((prev) => new Set(prev).add(db))
+    if (!onRedisSearch) return
+    if (!tables[db] && !tableLoading[`${connId}:${db}`]) {
+      onLoadTables(db)
+    }
+    onRedisSearch(connId, db, pattern.trim(), typeFilter)
+  }
 
   function toggleDb(dbName: string) {
     setExpandedDbs((prev) => {
@@ -281,7 +351,7 @@ function ConnectionItem({
       return next
     })
     // Selecting a database name switches the active database immediately.
-    onDatabaseClick(dbName)
+    onDatabaseClick(dbName, connId)
     if (!expandedDbs.has(dbName) && !tables[dbName] && !tableLoading[`${connId}:${dbName}`]) {
       onLoadTables(dbName)
     }
@@ -289,7 +359,7 @@ function ConnectionItem({
 
   function groupByType(objects: TableInfo[]): [string, TableInfo[]][] {
     const groups = new Map<string, TableInfo[]>()
-    const order = ["TABLE", "BASE TABLE", "VIEW", "FUNCTION", "PROCEDURE", "TRIGGER", "COLLECTION"]
+    const order = ["TABLE", "BASE TABLE", "VIEW", "FUNCTION", "PROCEDURE", "TRIGGER", "COLLECTION", ...REDIS_TYPE_ORDER]
     for (const obj of objects) {
       const key = obj.object_type.toUpperCase()
       if (!groups.has(key)) groups.set(key, [])
@@ -360,6 +430,7 @@ function ConnectionItem({
                 const qualified = obj.schema ? `${q(obj.schema)}.${q(obj.name)}` : q(obj.name)
                 const previewSql = buildSelectPreview(obj.name, connection.config.type)
                 const isRoutine = obj.object_type === "FUNCTION" || obj.object_type === "PROCEDURE" || obj.object_type === "TRIGGER"
+                const objKey = `${databaseName}:${obj.object_type}:${obj.name}`
                 let defSql = ""
                 if (isRoutine) {
                   const dbType = connection.config.type
@@ -380,25 +451,87 @@ function ConnectionItem({
                 <ContextMenu key={obj.name}>
                   <ContextMenuTrigger asChild>
                     <div
-                      className="flex items-center gap-1.5 rounded px-2 py-0.5 text-xs cursor-pointer hover:bg-sidebar-accent/50"
+                      className={cn(
+                        "flex items-center gap-1.5 rounded px-2 py-0.5 text-xs cursor-pointer hover:bg-sidebar-accent/50",
+                        selectedObjKey === objKey && "bg-sidebar-accent text-sidebar-accent-foreground",
+                      )}
                       onClick={(e) => {
                         e.stopPropagation()
+                        setSelectedObjKey(objKey)
+                      }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation()
                         if (isRoutine && defSql) onInsertSql(defSql)
-                        else onTableClick(previewSql, databaseName, obj.name)
+                        else onTableClick(previewSql, connId, databaseName, obj.name)
                       }}
                     >
                       <Icon className={cn("h-3 w-3 shrink-0", color)} />
-                      <span className="truncate" title={obj.name}>{obj.name}</span>
+                      <span className="truncate min-w-0" title={obj.name}>{obj.name}</span>
+                      {obj.ttl != null && connection.config.type === "redis" && (
+                        <span
+                          className={cn(
+                            "ml-auto shrink-0 flex items-center gap-0.5 rounded px-1 text-[9px] tabular-nums",
+                            obj.ttl <= 0
+                              ? "text-muted-foreground/50"
+                              : obj.ttl < 3600 ? "text-amber-500" : "text-muted-foreground/70"
+                          )}
+                          title={t('sidebar.redis_ttl_title', { seconds: obj.ttl })}
+                        >
+                          <Timer className="h-2.5 w-2.5" />
+                          {obj.ttl <= 0 ? "∞" : formatTtl(obj.ttl)}
+                        </span>
+                      )}
+                      {(obj.size_bytes != null || obj.row_count != null) && (
+                        <span className="ml-auto shrink-0 text-[9px] text-muted-foreground/60 tabular-nums">
+                          {obj.size_bytes != null ? formatBytes(obj.size_bytes) : ""}
+                          {obj.size_bytes != null && obj.row_count != null ? " · " : ""}
+                          {obj.row_count != null ? formatCount(obj.row_count) : ""}
+                        </span>
+                      )}
                     </div>
                   </ContextMenuTrigger>
                   <ContextMenuContent>
-                    {obj.object_type === "TABLE" || obj.object_type === "BASE TABLE" ? (
+                    {connection.config.type === "redis" ? (
+                      <>
+                        <ContextMenuItem onClick={() => onTableClick(previewSql, connId, databaseName, obj.name)}>
+                          <ExternalLink className="h-3 w-3 mr-2" />
+                          {t('sidebar.browse_data')}
+                        </ContextMenuItem>
+                        <ContextMenuSeparator />
+                        <ContextMenuItem onClick={() => onRedisKeyAction?.("rename", databaseName, obj.name)}>
+                          <Pencil className="h-3 w-3 mr-2" />
+                          {t('sidebar.redis_rename_key')}
+                        </ContextMenuItem>
+                        <ContextMenuItem onClick={() => onRedisKeyAction?.("duplicate", databaseName, obj.name)}>
+                          <CopyPlus className="h-3 w-3 mr-2" />
+                          {t('sidebar.redis_duplicate_key')}
+                        </ContextMenuItem>
+                        <ContextMenuItem onClick={() => onRedisKeyAction?.("expire", databaseName, obj.name)}>
+                          <Timer className="h-3 w-3 mr-2" />
+                          {t('sidebar.redis_set_ttl')}
+                        </ContextMenuItem>
+                        {obj.ttl != null && obj.ttl > 0 && (
+                          <ContextMenuItem onClick={() => onRedisKeyAction?.("persist", databaseName, obj.name)}>
+                            <Zap className="h-3 w-3 mr-2" />
+                            {t('sidebar.redis_persist')}
+                          </ContextMenuItem>
+                        )}
+                        <ContextMenuSeparator />
+                        <ContextMenuItem
+                          className="text-destructive"
+                          onClick={() => onRedisKeyAction?.("delete", databaseName, obj.name)}
+                        >
+                          <Trash2 className="h-3 w-3 mr-2" />
+                          {t('sidebar.redis_delete_key')}
+                        </ContextMenuItem>
+                      </>
+                    ) : obj.object_type === "TABLE" || obj.object_type === "BASE TABLE" ? (
                       <>
                         <ContextMenuItem onClick={() => onDesignTable(databaseName, obj.name)}>
                           <Pencil className="h-3 w-3 mr-2" />
                           {t('sidebar.design_table')}
                         </ContextMenuItem>
-                        <ContextMenuItem onClick={() => onTableClick(previewSql, databaseName, obj.name)}>
+                        <ContextMenuItem onClick={() => onTableClick(previewSql, connId, databaseName, obj.name)}>
                           <ExternalLink className="h-3 w-3 mr-2" />
                           {t('sidebar.browse_data')}
                         </ContextMenuItem>
@@ -456,7 +589,7 @@ function ConnectionItem({
                       </>
                     ) : (
                       <>
-                        <ContextMenuItem onClick={() => onTableClick(previewSql, databaseName, obj.name)}>
+                        <ContextMenuItem onClick={() => onTableClick(previewSql, connId, databaseName, obj.name)}>
                           <ExternalLink className="h-3 w-3 mr-2" />
                           {t('sidebar.browse_data')}
                         </ContextMenuItem>
@@ -516,7 +649,7 @@ function ConnectionItem({
                 isLoading ? "bg-yellow-400" : connection.connected ? "bg-green-500" : "bg-gray-400"
               )} />
               <Database className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="truncate" title={connection.config.name}>{connection.config.name}</span>
+              <span className="truncate min-w-0" title={connection.config.name}>{connection.config.name}</span>
             </div>
             <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 shrink-0">
               {DB_DISPLAY_NAMES[connection.config.type]}
@@ -614,23 +747,27 @@ function ConnectionItem({
                         <ChevronRight className="h-3 w-3 shrink-0" />
                       )}
                       <Database className="h-3 w-3 shrink-0 text-amber-500" />
-                      <span className="truncate" title={db.name}>{db.name}</span>
+                      <span className="truncate min-w-0" title={db.name}>{db.name}</span>
                     </div>
                   </ContextMenuTrigger>
                   <ContextMenuContent>
-                    <ContextMenuItem onClick={() => onNewTable(db.name)}>
-                      <Table className="h-3 w-3 mr-2" />
-                      {t('sidebar.new_table')}
-                    </ContextMenuItem>
+                    {connection.config.type !== "redis" && (
+                      <ContextMenuItem onClick={() => onNewTable(db.name)}>
+                        <Table className="h-3 w-3 mr-2" />
+                        {t('sidebar.new_table')}
+                      </ContextMenuItem>
+                    )}
                     <ContextMenuSeparator />
                     <ContextMenuItem onClick={() => { if (!tables[db.name]) onLoadTables(db.name); toggleDb(db.name) }}>
                       <RefreshCw className="h-3 w-3 mr-2" />
                       {t('sidebar.refresh')}
                     </ContextMenuItem>
-                    <ContextMenuItem onClick={() => onInsertSql(`USE \`${db.name}\`;`)}>
-                      <PenLine className="h-3 w-3 mr-2" />
-                      {t('sidebar.open_in_editor')}
-                    </ContextMenuItem>
+                    {connection.config.type !== "redis" && (
+                      <ContextMenuItem onClick={() => onInsertSql(`USE \`${db.name}\`;`)}>
+                        <PenLine className="h-3 w-3 mr-2" />
+                        {t('sidebar.open_in_editor')}
+                      </ContextMenuItem>
+                    )}
                     <ContextMenuSeparator />
                     <ContextMenuItem onClick={() => navigator.clipboard.writeText(db.name)}>
                       <Copy className="h-3 w-3 mr-2" />
@@ -679,7 +816,7 @@ function ConnectionItem({
                                   <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
                                 )}
                                 <Layers className="h-3 w-3 shrink-0 text-cyan-500" />
-                                <span className="truncate" title={schema.name}>{schema.name}</span>
+                                <span className="truncate min-w-0" title={schema.name}>{schema.name}</span>
                                 <span className="text-[10px] text-muted-foreground/60">({schemaObjects.length})</span>
                               </div>
                               {isSchemaExpanded && (
@@ -694,6 +831,39 @@ function ConnectionItem({
                           )
                         })}
                       </>
+                    ) : isRedis ? (
+                      <div className="space-y-0">
+                        <div className="flex items-center gap-1 px-1 pb-1">
+                          <div className="flex-1 flex items-center gap-1 rounded border border-border/60 bg-sidebar-accent/20 px-1.5">
+                            <Search className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+                            <input
+                              className="w-full h-5 bg-transparent text-[11px] outline-none"
+                              placeholder={t('sidebar.redis_search')}
+                              value={redisSearch[db.name] ?? ""}
+                              onChange={(e) => onRedisSearchDb(db.name, e.target.value, redisTypeFilter[db.name] ?? "")}
+                            />
+                          </div>
+                          <select
+                            className="h-5 rounded border border-border/60 bg-transparent text-[11px] px-1 outline-none"
+                            value={redisTypeFilter[db.name] ?? ""}
+                            onChange={(e) => onRedisSearchDb(db.name, redisSearch[db.name] ?? "", e.target.value)}
+                          >
+                            <option value="">{t('sidebar.redis_all_types')}</option>
+                            {REDIS_TYPE_ORDER.map((ty) => (
+                              <option key={ty} value={ty}>{ty}</option>
+                            ))}
+                          </select>
+                        </div>
+                        {renderTypeGroups(db.name, dbTables, db.name)}
+                        {(redisScanCursor && redisScanCursor[`${connId}:${db.name}`] > 0) && (
+                          <button
+                            className="w-full mt-0.5 rounded px-2 py-0.5 text-[11px] text-primary hover:bg-sidebar-accent/40"
+                            onClick={() => onRedisLoadMore?.(connId, db.name)}
+                          >
+                            {t('sidebar.redis_load_more')}
+                          </button>
+                        )}
+                      </div>
                     ) : (
                       <>{renderTypeGroups(db.name, dbTables, db.name)}</>
                     )}

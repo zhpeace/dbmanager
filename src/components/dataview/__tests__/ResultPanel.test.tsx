@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { ResultPanel } from "../ResultPanel"
 import type { ExecResult } from "@/lib/db"
@@ -38,9 +38,12 @@ it("switches to info tab and shows metadata", async () => {
   render(<ResultPanel results={[mockResult]} />)
   await user.click(screen.getByText("Info"))
   await waitFor(() => {
-    expect(screen.getByText("1.2s")).toBeInTheDocument()
+    expect(screen.getByRole("tabpanel")).toBeInTheDocument()
   })
-  expect(screen.getByText("3")).toBeInTheDocument()
+  const panel = screen.getByRole("tabpanel")
+  expect(within(panel).getByText("1.2s")).toBeInTheDocument()
+  expect(within(panel).getByText("2")).toBeInTheDocument()
+  expect(within(panel).getByText("3")).toBeInTheDocument()
 })
 
 it("shows column names in info tab", async () => {

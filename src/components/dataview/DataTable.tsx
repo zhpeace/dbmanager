@@ -361,7 +361,7 @@ export function DataTable({
             <tbody>
               {table.getRowModel().rows.length === 0 ? (
                 <tr>
-                  <td colSpan={columns.length + 1} className="h-20 text-center text-sm text-muted-foreground">
+                  <td colSpan={columns.length + 1} className="h-40 text-center align-middle text-sm text-muted-foreground">
                     {t('datatable.no_rows')}
                   </td>
                 </tr>

@@ -10,7 +10,8 @@ import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Loader2, ArrowRight, CheckCircle, XCircle, ChevronDown, Plus, Trash2, Undo2 } from "lucide-react"
 import type { Connection, DatabaseInfo, TableInfo, TransferOptions, TransferResult, ColumnMapping, CheckpointState } from "@/lib/db"
-import { saveCheckpoint, getCheckpoint, clearCheckpoint } from "@/lib/db"
+import { saveCheckpoint, getCheckpoint, clearCheckpoint, getConnectionSecret } from "@/lib/db"
+import { formatBytes, formatCount } from "@/lib/utils"
 
 interface TransferDialogProps {
   open: boolean
@@ -21,6 +22,35 @@ interface TransferDialogProps {
 export function TransferDialog({ open, onOpenChange, connections }: TransferDialogProps) {
   const { t } = useTranslation()
   const connected = connections.filter((c) => c.connected)
+
+  async function resolvePassword(conn: Connection): Promise<string> {
+    if (conn.config.password) return conn.config.password
+    try {
+      const secret = await getConnectionSecret(conn.id)
+      if (secret) return secret
+    } catch {
+      // ignore
+    }
+    return ""
+  }
+
+  async function ensureDatabase(conn: Connection, database: string): Promise<void> {
+    const type = conn.config.type
+    const needSwitch =
+      (type === "postgresql") && conn.config.database !== database ||
+      type === "mysql" && !conn.config.database
+    if (!needSwitch) return
+    const password = await resolvePassword(conn)
+    await invoke("switch_database", {
+      id: conn.id,
+      host: conn.config.host,
+      port: conn.config.port,
+      user: conn.config.user,
+      password,
+      database,
+      databaseType: type,
+    })
+  }
   const [sourceId, setSourceId] = useState("")
   const [sourceDb, setSourceDb] = useState("")
   const [targetId, setTargetId] = useState("")
@@ -104,10 +134,43 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
     } catch {}
   }
 
+  const handleTargetDbChange = async (db: string) => {
+    setTargetDb(db)
+    const conn = connected.find((c) => c.id === targetId)
+    if (conn) {
+      try {
+        await ensureDatabase(conn, db)
+      } catch (e: any) {
+        setResult({
+          tables_transferred: [],
+          rows_transferred: 0,
+          errors: [String(e)],
+          duration: "0ms",
+          logs: [],
+        })
+      }
+    }
+  }
+
   const handleSourceDbChange = async (db: string) => {
     setSourceDb(db)
     setSelectedTables([])
     setSelectAll(false)
+    const conn = connected.find((c) => c.id === sourceId)
+    if (conn) {
+      try {
+        await ensureDatabase(conn, db)
+      } catch (e: any) {
+        setResult({
+          tables_transferred: [],
+          rows_transferred: 0,
+          errors: [String(e)],
+          duration: "0ms",
+          logs: [],
+        })
+        return
+      }
+    }
     try {
       const tables: TableInfo[] = await invoke("get_tables", { id: sourceId, database: db })
       setSourceTables(tables.filter((t) => t.object_type === "TABLE" || t.object_type === "BASE TABLE" || t.object_type === "COLLECTION"))
@@ -201,7 +264,12 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[800px] max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className="max-w-[800px] max-h-[90vh] overflow-y-auto"
+        hideClose={transferring}
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>{t('transfer.title')}</DialogTitle>
         </DialogHeader>
@@ -218,6 +286,24 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                     )}
                     <span>{t('transfer.result', { rows: result.rows_transferred, tables: result.tables_transferred.length, duration: result.duration })}</span>
                   </div>
+                  {(result.table_stats?.length ?? 0) > 0 && (
+                    <div className="rounded border bg-muted/10 p-2">
+                      <p className="text-xs font-medium mb-1.5">{t('transfer.table_stats')}</p>
+                      <div className="space-y-0.5 max-h-[200px] overflow-y-auto">
+                        {result.table_stats!.map((s, i) => (
+                          <div key={i} className="flex items-center gap-2 text-[10px] font-mono">
+                            <span className="truncate min-w-0 flex-1">{s.table}</span>
+                            <span className="text-muted-foreground tabular-nums w-16 text-right">{formatCount(s.rows)}</span>
+                            <span className="text-muted-foreground tabular-nums w-14 text-right">{formatBytes(s.size_bytes)}</span>
+                            <span className="text-muted-foreground tabular-nums w-14 text-right">{s.duration_ms}ms</span>
+                            <span className={s.status === "ok" ? "text-green-600" : "text-destructive"}>
+                              {s.status === "ok" ? "✓" : "✕"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {result.errors.length > 0 && (
                     <div className="rounded border border-destructive/30 bg-destructive/5 p-2 space-y-1.5">
                       <div className="flex items-center justify-between">
@@ -323,7 +409,7 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                   {targetId && (
                     <>
                       <Label>{t('transfer.database')}</Label>
-                      <Select value={targetDb} onValueChange={setTargetDb}>
+                      <Select value={targetDb} onValueChange={handleTargetDbChange}>
                         <SelectTrigger><SelectValue placeholder={t('transfer.select_target_db')} /></SelectTrigger>
                         <SelectContent>
                           {targetDbs.map((d) => (

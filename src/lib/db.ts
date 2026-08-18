@@ -69,6 +69,9 @@ export interface TableInfo {
   name: string
   object_type: string
   schema?: string
+  size_bytes?: number
+  row_count?: number
+  ttl?: number
 }
 
 export interface ColumnInfo {
@@ -128,12 +131,22 @@ export interface TransferOptions {
   error_mode?: 'skip' | 'stop' | 'skip_table'
 }
 
+export interface TransferStat {
+  table: string
+  rows: number
+  size_bytes: number
+  duration_ms: number
+  status: string
+  error?: string | null
+}
+
 export interface TransferResult {
   tables_transferred: string[]
   rows_transferred: number
   errors: string[]
   duration: string
   logs: string[]
+  table_stats?: TransferStat[]
 }
 
 export interface QueryResult {

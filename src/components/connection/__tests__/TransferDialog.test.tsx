@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, fireEvent } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { TransferDialog } from "../TransferDialog"
 import { invoke } from "@tauri-apps/api/core"
@@ -24,9 +24,18 @@ const defaultProps = {
   connections: [conn1, conn2],
 }
 
+type CommandHandlers = Record<string, unknown>
+
+function mockCommands(handlers: CommandHandlers) {
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd in handlers) return handlers[cmd]
+    return null
+  })
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(invoke).mockResolvedValue(null)
+  mockCommands({})
 })
 
 function getCombobox(text: string): HTMLElement {
@@ -43,7 +52,7 @@ it("renders title and source/target selects", () => {
 
 it("loads source databases after selecting source connection", async () => {
   const user = userEvent.setup()
-  vi.mocked(invoke).mockResolvedValue([{ name: "source_db" }])
+  mockCommands({ get_databases: [{ name: "source_db" }] })
 
   render(<TransferDialog {...defaultProps} />)
   await user.click(getCombobox("Select source"))
@@ -56,7 +65,7 @@ it("loads source databases after selecting source connection", async () => {
 
 it("loads target databases after selecting target connection", async () => {
   const user = userEvent.setup()
-  vi.mocked(invoke).mockResolvedValue([{ name: "target_db" }])
+  mockCommands({ get_databases: [{ name: "target_db" }] })
 
   render(<TransferDialog {...defaultProps} />)
   await user.click(getCombobox("Select target"))
@@ -69,13 +78,14 @@ it("loads target databases after selecting target connection", async () => {
 
 it("renders table checkboxes after selecting source database", async () => {
   const user = userEvent.setup()
-  vi.mocked(invoke)
-    .mockResolvedValueOnce([{ name: "mydb" }])
-    .mockResolvedValueOnce([
+  mockCommands({
+    get_databases: [{ name: "mydb" }],
+    get_tables: [
       { name: "users", object_type: "TABLE" },
       { name: "orders", object_type: "TABLE" },
       { name: "collections", object_type: "COLLECTION" },
-    ])
+    ],
+  })
 
   render(<TransferDialog {...defaultProps} />)
   await user.click(getCombobox("Select source"))
@@ -96,12 +106,13 @@ it("renders table checkboxes after selecting source database", async () => {
 
 it("select all toggles all table checkboxes", async () => {
   const user = userEvent.setup()
-  vi.mocked(invoke)
-    .mockResolvedValueOnce([{ name: "mydb" }])
-    .mockResolvedValueOnce([
+  mockCommands({
+    get_databases: [{ name: "mydb" }],
+    get_tables: [
       { name: "users", object_type: "TABLE" },
       { name: "orders", object_type: "TABLE" },
-    ])
+    ],
+  })
 
   render(<TransferDialog {...defaultProps} />)
   await user.click(getCombobox("Select source"))
@@ -128,10 +139,10 @@ it("disables start button when required fields are missing", () => {
 
 it("enables start button when source, target, and tables selected", async () => {
   const user = userEvent.setup()
-  vi.mocked(invoke)
-    .mockResolvedValueOnce([{ name: "mydb" }])
-    .mockResolvedValueOnce([{ name: "users", object_type: "TABLE" }])
-    .mockResolvedValueOnce([{ name: "target_db" }])
+  mockCommands({
+    get_databases: [{ name: "mydb" }, { name: "target_db" }],
+    get_tables: [{ name: "users", object_type: "TABLE" }],
+  })
 
   render(<TransferDialog {...defaultProps} />)
 
@@ -162,13 +173,11 @@ it("enables start button when source, target, and tables selected", async () => 
 })
 
 function setupTransferMocks(result?: any) {
-  const base = vi.mocked(invoke)
-    .mockResolvedValueOnce([{ name: "mydb" }])
-    .mockResolvedValueOnce([{ name: "users", object_type: "TABLE" }])
-    .mockResolvedValueOnce([{ name: "target_db" }])
-    .mockResolvedValueOnce(null)
-  if (result) base.mockResolvedValueOnce(result)
-  return base
+  mockCommands({
+    get_databases: [{ name: "mydb" }, { name: "target_db" }],
+    get_tables: [{ name: "users", object_type: "TABLE" }],
+    transfer_data: result ?? null,
+  })
 }
 
 async function setupTransferDialog(user: ReturnType<typeof userEvent.setup>) {
@@ -267,5 +276,68 @@ it("calls onOpenChange when cancel is clicked", async () => {
   const user = userEvent.setup()
   render(<TransferDialog {...defaultProps} />)
   await user.click(screen.getByText("Cancel"))
+  expect(mockOnOpenChange).toHaveBeenCalledWith(false)
+})
+
+it("never dismisses on overlay click or Esc; close via explicit button", async () => {
+  const user = userEvent.setup()
+  let resolveTransfer: (v: unknown) => void
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === "transfer_data") {
+      return new Promise((res) => { resolveTransfer = res })
+    }
+    if (cmd === "get_databases") return [{ name: "mydb" }, { name: "target_db" }]
+    if (cmd === "get_tables") return [{ name: "users", object_type: "TABLE" }]
+    return null
+  })
+
+  render(<TransferDialog {...defaultProps} />)
+  await setupTransferDialog(user)
+
+  await waitFor(() => {
+    expect(screen.getByText("users")).toBeInTheDocument()
+  })
+  await user.click(screen.getByText(/Select All/))
+
+  const overlay = screen.getByRole("dialog").previousElementSibling!
+  fireEvent.pointerDown(overlay)
+  fireEvent.pointerUp(overlay)
+  fireEvent.click(overlay)
+  fireEvent.keyDown(document.body, { key: "Escape" })
+  expect(mockOnOpenChange).not.toHaveBeenCalled()
+
+  await user.click(screen.getByRole("button", { name: /Start Transfer/i }))
+
+  await waitFor(() => {
+    expect(invoke).toHaveBeenCalledWith("transfer_data", expect.anything())
+  })
+
+  const overlay2 = screen.getByRole("dialog").previousElementSibling!
+  fireEvent.pointerDown(overlay2)
+  fireEvent.pointerUp(overlay2)
+  fireEvent.click(overlay2)
+  expect(mockOnOpenChange).not.toHaveBeenCalled()
+
+  resolveTransfer!({
+    tables_transferred: ["users"],
+    rows_transferred: 100,
+    errors: [],
+    duration: "1.2s",
+    logs: [],
+  })
+
+  await waitFor(() => {
+    expect(screen.getByText(/Transferred 100 rows/)).toBeInTheDocument()
+  })
+
+  const overlay3 = screen.getByRole("dialog").previousElementSibling!
+  fireEvent.pointerDown(overlay3)
+  fireEvent.pointerUp(overlay3)
+  fireEvent.click(overlay3)
+  expect(mockOnOpenChange).not.toHaveBeenCalled()
+
+  const closeButtons = screen.getAllByRole("button", { name: /Close/i })
+  const footerClose = closeButtons.find(b => b.className.includes("bg-primary"))
+  await user.click(footerClose!)
   expect(mockOnOpenChange).toHaveBeenCalledWith(false)
 })

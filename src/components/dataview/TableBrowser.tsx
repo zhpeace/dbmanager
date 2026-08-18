@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { DataTable, type RowState } from "./DataTable"
 import { ValueEditorDialog } from "./ValueEditorDialog"
 import { BinaryEditorDialog } from "./BinaryEditorDialog"
+import { RedisValuePanel } from "./RedisValuePanel"
 import type { TableData, DatabaseType } from "@/lib/db"
 import { buildXlsx } from "@/lib/xlsx"
 
@@ -16,11 +17,12 @@ interface TableBrowserProps {
   table: string
   dbType: DatabaseType
   onClose?: () => void
+  embedded?: boolean
 }
 
 type NewRow = Record<string, unknown>
 
-export function TableBrowser({ connectionId, database, table, dbType, onClose }: TableBrowserProps) {
+export function TableBrowser({ connectionId, database, table, dbType, onClose, embedded = false }: TableBrowserProps) {
   const { t } = useTranslation()
   const [tableData, setTableData] = useState<TableData | null>(null)
   const [ddl, setDdl] = useState<string>("")
@@ -394,16 +396,36 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose }:
     URL.revokeObjectURL(url)
   }
 
+  const exportJson = () => {
+    if (!tableData) return
+    const visibleRows = mergedRows.filter((_, i) => rowStates[i] !== "deleted")
+    const blob = new Blob([JSON.stringify(visibleRows, null, 2)], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${table}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="h-full flex flex-col">
+      {dbType === "redis" ? (
+        <RedisValuePanel connectionId={connectionId} database={database} table={table} onClose={onClose} />
+      ) : (
+      <>
       <div className="flex items-center justify-between border-b px-3 py-1.5 bg-muted/30">
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <Table2 className="h-3.5 w-3.5 text-primary shrink-0" />
-          <span className="text-xs font-medium truncate" title={table}>{table}</span>
-          {onClose && (
-            <Button size="sm" variant="ghost" className="h-5 w-5 p-0 ml-1 shrink-0" onClick={onClose}>
-              <X className="h-3 w-3" />
-            </Button>
+          {!embedded && (
+            <>
+              <Table2 className="h-3.5 w-3.5 text-primary shrink-0" />
+              <span className="text-xs font-medium truncate" title={table}>{table}</span>
+              {onClose && (
+                <Button size="sm" variant="ghost" className="h-5 w-5 p-0 ml-1 shrink-0" onClick={onClose}>
+                  <X className="h-3 w-3" />
+                </Button>
+              )}
+            </>
           )}
           {tableData && (
             <span className="text-[10px] text-muted-foreground shrink-0">
@@ -455,6 +477,10 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose }:
           <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={exportXlsx}>
             <Download className="h-3 w-3 mr-1" />
             {t('tablebrowser.xlsx')}
+          </Button>
+          <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={exportJson}>
+            <Download className="h-3 w-3 mr-1" />
+            {t('tablebrowser.json')}
           </Button>
           <div className="flex items-center gap-1 text-xs text-muted-foreground">
             <Button
@@ -632,6 +658,8 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose }:
         }}
         onClose={() => setBinaryEditCell(null)}
       />
+      </>
+      )}
     </div>
   )
 }

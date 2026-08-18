@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, fireEvent } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { BackupDialog } from "../BackupDialog"
 import { invoke } from "@tauri-apps/api/core"
@@ -255,4 +255,50 @@ it("calls onOpenChange when close is clicked", async () => {
   const closeBtn = buttons.find(b => b.textContent === "Close")
   await user.click(closeBtn!)
   expect(mockOnOpenChange).toHaveBeenCalledWith(false)
+})
+
+it("never dismisses on overlay click or Esc while running", async () => {
+  const user = userEvent.setup()
+  let resolveBackup: (v: unknown) => void
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === "backup_database") {
+      return new Promise((res) => { resolveBackup = res })
+    }
+    if (cmd === "get_databases") return [{ name: "test_db" }]
+    if (cmd === "get_tables") return [{ name: "users", object_type: "TABLE" }]
+    return null
+  })
+
+  render(<BackupDialog {...defaultProps} />)
+
+  await user.click(getCombobox("Select source"))
+  await user.click(screen.getByText("My MySQL (mysql)"))
+  await waitFor(() => {
+    expect(screen.getByText("Select source database")).toBeInTheDocument()
+  })
+  await user.click(getCombobox("Select source database"))
+  await user.click(screen.getByText("test_db"))
+  await waitFor(() => {
+    expect(screen.getByText("users")).toBeInTheDocument()
+  })
+  await user.click(screen.getByText(/Select All/))
+  await user.type(screen.getByRole("textbox"), "/tmp/backup.sql")
+  await user.click(screen.getByRole("button", { name: /Start Backup/i }))
+
+  await waitFor(() => {
+    expect(invoke).toHaveBeenCalledWith("backup_database", expect.anything())
+  })
+
+  const overlay = screen.getByRole("dialog").previousElementSibling!
+  fireEvent.pointerDown(overlay)
+  fireEvent.pointerUp(overlay)
+  fireEvent.click(overlay)
+  fireEvent.keyDown(document.body, { key: "Escape" })
+  expect(mockOnOpenChange).not.toHaveBeenCalled()
+
+  resolveBackup!([2, "1.0s"])
+
+  await waitFor(() => {
+    expect(screen.getByText(/Backed up 2 tables/)).toBeInTheDocument()
+  })
 })

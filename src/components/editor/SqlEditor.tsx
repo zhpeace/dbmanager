@@ -21,9 +21,16 @@ import { Button } from "@/components/ui/button"
 import { useTheme } from "@/lib/theme"
 import { useTranslation } from "react-i18next"
 import { invoke } from "@tauri-apps/api/core"
-import type { SchemaCache } from "@/lib/db"
+import type { SchemaCache, DatabaseInfo } from "@/lib/db"
 import { formatSql, splitSqlStatements, statementAtOffset, type SqlStatement } from "@/lib/sql"
 import { SQL_SNIPPETS } from "@/lib/snippets"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 interface SqlEditorProps {
   value: string
@@ -46,6 +53,8 @@ interface SqlEditorProps {
   lastExec: { duration: string; count: number } | null
   connectionId?: string | null
   currentDatabase?: string | null
+  databases?: DatabaseInfo[]
+  onChangeDatabase?: (database: string) => void
   dbType: string
   history: string[]
   errorMarker: { line: number; message: string } | null
@@ -72,6 +81,8 @@ export function SqlEditor({
   lastExec,
   connectionId,
   currentDatabase,
+  databases,
+  onChangeDatabase,
   dbType,
   history,
   errorMarker,
@@ -84,6 +95,8 @@ export function SqlEditor({
   const suppressRef = useRef(false)
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
+  const valueRef = useRef(value)
+  valueRef.current = value
   const [historyOpen, setHistoryOpen] = useState(false)
   const [snippetOpen, setSnippetOpen] = useState(false)
 
@@ -99,6 +112,13 @@ export function SqlEditor({
   const handleEditorMount: OnMount = useCallback((editor, monaco) => {
     editorRef.current = editor
     monacoRef.current = monaco
+    // The value effect may run before the editor mounts if the tab was opened
+    // while the editor was still initializing, so apply the current buffer here too.
+    if (valueRef.current && editor.getValue() !== valueRef.current) {
+      suppressRef.current = true
+      editor.setValue(valueRef.current)
+      suppressRef.current = false
+    }
     editor.onDidChangeModelContent(() => {
       if (suppressRef.current) return
       onChangeRef.current(editor.getValue())
@@ -149,6 +169,8 @@ export function SqlEditor({
 
   useEffect(() => {
     if (!connectionId || !currentDatabase) return
+
+    let cancelled = false
 
     const TABLE_CTX_KEYWORDS = ["FROM", "JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN",
       "CROSS JOIN", "FULL JOIN", "STRAIGHT_JOIN", "UPDATE", "INTO", "TABLE", "VIEW"]
@@ -220,6 +242,7 @@ export function SqlEditor({
 
     invoke<SchemaCache>("get_schema_cache", { id: connectionId, database: currentDatabase })
       .then(cache => {
+        if (cancelled) return
         const editor = editorRef.current
         const monaco = monacoRef.current
         if (!editor || !monaco) return
@@ -289,6 +312,11 @@ export function SqlEditor({
         disposerRef.current = () => dispose.dispose()
       })
       .catch(() => {})
+    return () => {
+      cancelled = true
+      disposerRef.current?.()
+      disposerRef.current = null
+    }
   }, [connectionId, currentDatabase])
 
   function getRunTarget(): { sql: string; startLine: number } {
@@ -381,7 +409,25 @@ export function SqlEditor({
   return (
     <div className="flex flex-col h-full" onKeyDown={handleKeyDown}>
       <div className="flex items-center justify-between border-b px-3 py-1.5">
-        <span className="text-xs font-medium text-muted-foreground">{t('editor.title')}</span>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-xs font-medium text-muted-foreground shrink-0">{t('editor.title')}</span>
+          {connectionId && databases && databases.length > 0 && dbType !== "redis" && (
+            <Select
+              value={currentDatabase ?? ""}
+              onValueChange={(v) => v && onChangeDatabase?.(v)}
+            >
+              <SelectTrigger className="h-6 w-auto max-w-[180px] text-xs gap-1 px-2 min-w-0" title={t('editor.select_database')}>
+                <Database className="h-3 w-3 shrink-0" />
+                <SelectValue placeholder={t('editor.select_database')} />
+              </SelectTrigger>
+              <SelectContent>
+                {databases.map((db) => (
+                  <SelectItem key={db.name} value={db.name}>{db.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
         <div className="flex items-center gap-1">
           {lastExec && !executing && (
             <span className="text-[10px] text-muted-foreground hidden sm:inline">
@@ -507,7 +553,7 @@ export function SqlEditor({
             )}
           </div>
           <div className="w-px h-4 bg-border mx-1" />
-          {txActive ? (
+          {dbType !== "redis" && (txActive ? (
             <>
               <Button size="sm" variant="outline" className="h-7 gap-1" onClick={onCommitTransaction} title={t('editor.commit')}>
                 <Check className="h-3.5 w-3.5" />
@@ -523,15 +569,17 @@ export function SqlEditor({
               <Database className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">{t('editor.begin')}</span>
             </Button>
-          )}
+          ))}
           <Button size="sm" variant="ghost" className="h-7 gap-1" onClick={handleFormat} title={t('editor.format')}>
             <Wand2 className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">{t('editor.format')}</span>
           </Button>
+          {dbType !== "redis" && (
           <Button size="sm" variant="ghost" className="h-7 gap-1" onClick={handleExplain} title={t('editor.explain')}>
             <FileSearch className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">{t('editor.explain')}</span>
           </Button>
+          )}
           <Button size="sm" variant="ghost" className="h-7 gap-1" onClick={handleRunAll} title={t('editor.run_all')}>
             <ListTodo className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">{t('editor.run_all')}</span>
@@ -560,6 +608,7 @@ export function SqlEditor({
             wordWrap: "on",
             padding: { top: 8 },
             suggestOnTriggerCharacters: true,
+            wordBasedSuggestions: "off",
           }}
           defaultLanguage="sql"
         />

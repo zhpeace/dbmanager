@@ -122,3 +122,27 @@ it("pins a recent query", async () => {
   await user.click(pinBtn)
   expect(onToggle).toHaveBeenCalledWith("SELECT 1")
 })
+
+it("renders database selector and switches database on selection", async () => {
+  const user = userEvent.setup()
+  const onChangeDatabase = vi.fn()
+  render(
+    <SqlEditor
+      {...baseProps}
+      connectionId="c1"
+      currentDatabase="test"
+      databases={[{ name: "test" }, { name: "prod" }]}
+      onChangeDatabase={onChangeDatabase}
+    />
+  )
+  expect(screen.getByTitle("Select database")).toBeInTheDocument()
+  await user.click(screen.getByTitle("Select database"))
+  const prodOption = await screen.findByText("prod")
+  await user.click(prodOption)
+  expect(onChangeDatabase).toHaveBeenCalledWith("prod")
+})
+
+it("does not render database selector when no connection or no databases", () => {
+  render(<SqlEditor {...baseProps} connectionId={null} databases={[]} />)
+  expect(screen.queryByTitle("Select database")).not.toBeInTheDocument()
+})

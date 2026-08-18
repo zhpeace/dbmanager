@@ -8,6 +8,8 @@ interface TopBarProps {
   connectionId?: string | null
   connectionName?: string | null
   currentDatabase?: string | null
+  connectionMeta?: string | null
+  dbType?: string
   onOpenErDiagram?: () => void
   onOpenImport?: () => void
   onOpenTransfer?: () => void
@@ -23,6 +25,8 @@ export function TopBar({
   connectionId,
   connectionName,
   currentDatabase,
+  connectionMeta,
+  dbType,
   onOpenErDiagram,
   onOpenImport,
   onOpenTransfer,
@@ -34,6 +38,7 @@ export function TopBar({
 }: TopBarProps) {
   const { theme, toggleTheme } = useTheme()
   const { t, i18n } = useTranslation()
+  const isRedis = dbType === "redis"
 
   return (
     <header className="flex h-12 items-center justify-between border-b bg-sidebar px-4">
@@ -43,11 +48,12 @@ export function TopBar({
         </div>
         <span className="text-sm font-semibold">{t('app.title')}</span>
         {connectionId && (
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground pl-2 border-l">
-            {connectionName && <span className="font-medium text-foreground">{connectionName}</span>}
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground pl-2 border-l min-w-0">
+            {connectionName && <span className="font-medium text-foreground truncate">{connectionName}</span>}
+            {connectionMeta && connectionName && <span className="text-muted-foreground/70 whitespace-nowrap">{connectionMeta}</span>}
             {connectionName && currentDatabase && <span>/</span>}
             {currentDatabase && (
-              <span className="font-medium text-foreground">{currentDatabase}</span>
+              <span className="font-medium text-foreground truncate">{currentDatabase}</span>
             )}
             {!currentDatabase && (
               <span>{t('topbar.no_database')}</span>
@@ -67,7 +73,7 @@ export function TopBar({
         >
           {t('topbar.lang_toggle')}
         </Button>
-        {connectionId && (
+        {connectionId && !isRedis && (
           <>
             <Button size="sm" variant="ghost" onClick={onOpenErDiagram}>
               <GitBranch className="h-4 w-4 mr-1" />

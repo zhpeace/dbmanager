@@ -5,7 +5,7 @@ mod secrets;
 use db::AppState;
 use db::DbConnection;
 use db::DbTransaction;
-use db::types::{CheckpointState, CompareResult, DatabaseInfo, FindMatch, QueryResult, SchemaCache, TableData, TableInfo, TransferOptions, TransferResult};
+use db::types::{CheckpointState, CompareResult, DatabaseInfo, FindMatch, QueryResult, RedisKeyInfo, RedisKeyPage, SchemaCache, TableData, TableInfo, TransferOptions, TransferResult};
 use db::scheduler::{ScheduledTask, TaskConfig};
 use tauri::Emitter;
 use tauri::Manager;
@@ -424,6 +424,64 @@ async fn get_table_ddl(
         })?
     };
     conn.get_table_ddl(&database, &table).await
+}
+
+#[tauri::command]
+async fn redis_scan_keys(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    database: String,
+    pattern: Option<String>,
+    cursor: i64,
+    count: i64,
+    type_filter: Option<String>,
+) -> Result<RedisKeyPage, String> {
+    let conn = {
+        let connections = state.connections.lock().await;
+        match connections.get(&id) {
+            Some(DbConnection::Redis(c)) => DbConnection::Redis(c.clone()),
+            Some(_) => return Err("Not a Redis connection".to_string()),
+            None => return Err("Connection not found".to_string()),
+        }
+    };
+    conn.redis_scan_keys(&database, pattern.as_deref(), cursor, count, type_filter.as_deref()).await
+}
+
+#[tauri::command]
+async fn redis_key_info(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    database: String,
+    key: String,
+) -> Result<RedisKeyInfo, String> {
+    let conn = {
+        let connections = state.connections.lock().await;
+        match connections.get(&id) {
+            Some(DbConnection::Redis(c)) => DbConnection::Redis(c.clone()),
+            Some(_) => return Err("Not a Redis connection".to_string()),
+            None => return Err("Connection not found".to_string()),
+        }
+    };
+    conn.redis_key_info(&database, &key).await
+}
+
+#[tauri::command]
+async fn redis_command(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    database: String,
+    command: String,
+    args: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let conn = {
+        let connections = state.connections.lock().await;
+        match connections.get(&id) {
+            Some(DbConnection::Redis(c)) => DbConnection::Redis(c.clone()),
+            Some(_) => return Err("Not a Redis connection".to_string()),
+            None => return Err("Connection not found".to_string()),
+        }
+    };
+    conn.redis_command(&database, &command, &args).await
 }
 
 #[tauri::command]
@@ -913,6 +971,7 @@ async fn duplicate_database(
             errors,
             duration: format!("{:.2}s", start.elapsed().as_secs_f64()),
             logs,
+            table_stats: Vec::new(),
         });
     }
 
@@ -1490,6 +1549,9 @@ pub fn run() {
             get_tables,
             get_table_data,
             get_table_ddl,
+            redis_scan_keys,
+            redis_key_info,
+            redis_command,
             execute_query,
             cancel_query,
             begin_transaction,

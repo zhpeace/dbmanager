@@ -114,7 +114,12 @@ export function BackupDialog({ open, onOpenChange, connections }: BackupDialogPr
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[600px]">
+      <DialogContent
+        className="max-w-[600px]"
+        hideClose={backingUp}
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>{t('backup.title')}</DialogTitle>
         </DialogHeader>
@@ -216,7 +221,9 @@ export function BackupDialog({ open, onOpenChange, connections }: BackupDialogPr
               )}
 
               <DialogFooter className="gap-2">
-                <Button variant="outline" onClick={() => onOpenChange(false)}>{t('backup.close')}</Button>
+                {!backingUp && (
+                  <Button variant="outline" onClick={() => onOpenChange(false)}>{t('backup.close')}</Button>
+                )}
                 <Button
                   onClick={handleBackup}
                   disabled={!sourceId || !sourceDb || selectedTables.length === 0 || !savePath || backingUp}

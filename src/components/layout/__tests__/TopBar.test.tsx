@@ -56,6 +56,19 @@ it("shows connection name and database in breadcrumb", () => {
   expect(screen.getByText("testdb")).toBeInTheDocument()
 })
 
+it("shows user@host:port meta alongside connection name", () => {
+  render(
+    <TopBar
+      {...defaultProps}
+      connectionId="c1"
+      connectionName="My DB"
+      connectionMeta="root@localhost:3306"
+      currentDatabase="testdb"
+    />
+  )
+  expect(screen.getByText("root@localhost:3306")).toBeInTheDocument()
+})
+
 it("shows 'No database selected' when connected but no database chosen", () => {
   render(
     <TopBar

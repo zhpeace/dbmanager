@@ -105,7 +105,12 @@ export function ImportDialog({ open, onOpenChange, connectionId, tables }: Impor
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[400px]">
+      <DialogContent
+        className="w-[400px]"
+        hideClose={importing}
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>{t('import.title')}</DialogTitle>
         </DialogHeader>
@@ -153,7 +158,9 @@ export function ImportDialog({ open, onOpenChange, connectionId, tables }: Impor
           )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>{t('import.close')}</Button>
+          {!importing && (
+            <Button variant="outline" onClick={() => onOpenChange(false)}>{t('import.close')}</Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

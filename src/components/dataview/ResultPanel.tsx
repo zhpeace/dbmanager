@@ -58,6 +58,18 @@ export function ResultPanel({ results }: ResultPanelProps) {
   const single = effective.length === 1
   const active = effective[Math.min(activeIndex, effective.length - 1)]
 
+  const statusBar = (
+    <div className="flex items-center gap-3 border-t bg-muted/30 px-3 py-1 text-[11px] text-muted-foreground">
+      <span>
+        {t('resultpanel.rows')}: <span className="font-mono">{active.rowCount}</span>
+      </span>
+      <span>
+        {t('resultpanel.duration')}: <span className="font-mono">{active.duration}</span>
+      </span>
+      {active.error && <span className="ml-auto truncate max-w-[50%] text-destructive">{active.error}</span>}
+    </div>
+  )
+
   const exportBar = !active.error && active.columns.length > 0 && (
     <div className="flex items-center justify-end gap-1 border-b px-3 py-1">
       <span className="text-[10px] text-muted-foreground mr-auto">
@@ -113,6 +125,7 @@ export function ResultPanel({ results }: ResultPanelProps) {
             />
           )}
         </div>
+        {statusBar}
       </div>
     )
   }
@@ -180,6 +193,7 @@ export function ResultPanel({ results }: ResultPanelProps) {
           )}
         </div>
       </TabsContent>
+      {statusBar}
     </Tabs>
   )
 }

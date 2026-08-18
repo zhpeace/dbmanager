@@ -93,7 +93,12 @@ export function RestoreDialog({ open, onOpenChange, connections }: RestoreDialog
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[600px]">
+      <DialogContent
+        className="max-w-[600px]"
+        hideClose={restoring}
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>{t('restore.title')}</DialogTitle>
         </DialogHeader>
@@ -181,7 +186,9 @@ export function RestoreDialog({ open, onOpenChange, connections }: RestoreDialog
               )}
 
               <DialogFooter className="gap-2">
-                <Button variant="outline" onClick={() => onOpenChange(false)}>{t('restore.close')}</Button>
+                {!restoring && (
+                  <Button variant="outline" onClick={() => onOpenChange(false)}>{t('restore.close')}</Button>
+                )}
                 <Button
                   onClick={handleRestore}
                   disabled={!targetId || !targetDb || !filePath || restoring}

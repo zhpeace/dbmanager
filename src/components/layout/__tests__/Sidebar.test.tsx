@@ -145,7 +145,7 @@ it("calls onDatabaseClick when database is clicked", async () => {
   await userEvent.click(screen.getByText("Test DB"))
   await userEvent.click(screen.getByText("mydb"))
 
-  expect(onDatabaseClick).toHaveBeenCalledWith("mydb")
+  expect(onDatabaseClick).toHaveBeenCalledWith("mydb", "c1")
 })
 
 // ── Table rendering with grouping ──
@@ -179,6 +179,37 @@ it("renders tables grouped by type after expanding database", async () => {
   expect(screen.getByText("Views")).toBeInTheDocument()
   expect(screen.getByText(/\(2\)/)).toBeInTheDocument()
   expect(screen.getByText(/\(1\)/)).toBeInTheDocument()
+})
+
+it("single click selects a table, double click opens it (DBeaver-style)", async () => {
+  const conn = makeConnection()
+  const databases = [{ name: "mydb" }] as DatabaseInfo[]
+  const tableData: TableInfo[] = [
+    { name: "users", object_type: "TABLE" },
+  ]
+  const onTableClick = vi.fn()
+
+  render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+      tables={{ c1: { mydb: tableData } }}
+      onTableClick={onTableClick}
+    />
+  )
+
+  await userEvent.click(screen.getByText("Test DB"))
+  await userEvent.click(screen.getByText("mydb"))
+  const tableEl = screen.getByText("users")
+
+  await userEvent.click(tableEl)
+  expect(onTableClick).not.toHaveBeenCalled()
+
+  await userEvent.dblClick(tableEl)
+  expect(onTableClick).toHaveBeenCalledTimes(1)
+  expect(onTableClick.mock.calls[0][0]).toContain("users")
 })
 
 // ── Database context menu: mysql gets drop/duplicate items ──

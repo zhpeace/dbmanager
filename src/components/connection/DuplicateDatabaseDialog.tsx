@@ -100,7 +100,12 @@ export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sour
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[480px]">
+      <DialogContent
+        className="max-w-[480px]"
+        hideClose={duplicating}
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>{t('dialog.duplicate_database')}</DialogTitle>
         </DialogHeader>
@@ -164,9 +169,11 @@ export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sour
           )}
         </div>
         <DialogFooter className="gap-2">
-          <Button variant="outline" size="sm" onClick={() => { onOpenChange(false); onDone() }} disabled={duplicating}>
-            {t('dialog.close')}
-          </Button>
+          {!duplicating && (
+            <Button variant="outline" size="sm" onClick={() => { onOpenChange(false); onDone() }}>
+              {t('dialog.close')}
+            </Button>
+          )}
           {!result && (
             <Button size="sm" onClick={handleDuplicate} disabled={!!validationError || duplicating}>
               {duplicating ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}

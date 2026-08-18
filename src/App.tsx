@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
+import { invokeWithTimeout } from "@/lib/invoke"
 import { open, save } from "@tauri-apps/plugin-dialog"
 import { useTranslation } from "react-i18next"
 import { TopBar } from "@/components/layout/TopBar"
@@ -18,6 +19,13 @@ import { SchedulerDialog } from "@/components/connection/SchedulerDialog"
 import { NewDatabaseDialog } from "@/components/connection/NewDatabaseDialog"
 import { DuplicateDatabaseDialog } from "@/components/connection/DuplicateDatabaseDialog"
 import { cn } from "@/lib/utils"
+import { ChevronLeft, ChevronRight, MoreHorizontal } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { ResizeHandle } from "@/components/ui/resize-handle"
 import { CreateTableDialog } from "@/components/connection/CreateTableDialog"
 import { DesignTableDialog } from "@/components/connection/DesignTableDialog"
@@ -67,15 +75,73 @@ function AppContent() {
   const [databases, setDatabases] = useState<Record<string, DatabaseInfo[]>>({})
   const [schemas, setSchemas] = useState<Record<string, Record<string, DatabaseInfo[]>>>({})
   const [tables, setTables] = useState<Record<string, Record<string, TableInfo[]>>>({})
+  const [redisScanCursor, setRedisScanCursor] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState<Record<string, boolean>>({})
-  const [tabs, setTabs] = useState<{ id: string; title: string; sql: string; filePath: string | null; browse?: { database: string; table: string } | null }[]>(
-    () => [{ id: crypto.randomUUID(), title: t('editor.tab_query') + " 1", sql: "", filePath: null }]
+  const [tabs, setTabs] = useState<{ id: string; title: string; sql: string; filePath: string | null; browse?: { connectionId: string; database: string; table: string } | null; database?: Record<string, string | null> }[]>(
+    () => [{ id: crypto.randomUUID(), title: t('editor.tab_query') + " 1", sql: "", filePath: null, database: {} }]
   )
+  const backendDbRef = useRef<string | null>(null)
   const [activeTabId, setActiveTabId] = useState<string>(() => "")
   const activeTabIdRef = useRef<string>("")
+  const lastTabByConnRef = useRef<Record<string, string>>({})
+  const activeConnIdRef = useRef<string>("")
   useEffect(() => {
     activeTabIdRef.current = activeTabId || tabs[0]?.id || ""
+    const tb = tabs.find((x) => x.id === (activeTabId || tabs[0]?.id || ""))
+    if (tb) {
+      const connId = tb.browse?.connectionId
+      if (connId) lastTabByConnRef.current[connId] = tb.id
+    }
+
+    // Safety invariant: the active connection may never leave a browse tab
+    // bound to a *different* connection active, since that renders the other
+    // connection's SQL preview in the editor. Applies to every code path that
+    // changes activeConnectionId, not just sidebar clicks.
+    if (activeConnectionId && activeConnIdRef.current !== activeConnectionId) {
+      activeConnIdRef.current = activeConnectionId
+      const cur = tabs.find((x) => x.id === (activeTabId || tabs[0]?.id || ""))
+      if (cur?.browse?.connectionId && cur.browse.connectionId !== activeConnectionId) {
+        const queryTab = tabs.find((t) => !t.browse)
+        if (queryTab && queryTab.id !== cur.id) setActiveTabId(queryTab.id)
+      }
+    }
+  }, [activeConnectionId, activeTabId, tabs])
+  const tabBarRef = useRef<HTMLDivElement>(null)
+  const tabRefs = useRef(new Map<string, HTMLDivElement>())
+  useEffect(() => {
+    const bar = tabBarRef.current
+    const el = tabRefs.current.get(activeTabId || tabs[0]?.id || "")
+    if (!bar || !el) return
+    const barRect = bar.getBoundingClientRect()
+    const elRect = el.getBoundingClientRect()
+    if (elRect.right > barRect.right - 1) {
+      bar.scrollTo({ left: bar.scrollLeft + (elRect.right - barRect.right) + 8, behavior: "smooth" })
+    } else if (elRect.left < barRect.left + 1) {
+      bar.scrollTo({ left: bar.scrollLeft + (elRect.left - barRect.left) - 8, behavior: "smooth" })
+    }
   }, [activeTabId, tabs])
+  const [tabOverflow, setTabOverflow] = useState(false)
+  const checkTabOverflow = useCallback(() => {
+    const el = tabBarRef.current
+    setTabOverflow(!!el && el.scrollWidth > el.clientWidth + 1)
+  }, [])
+  useEffect(() => {
+    checkTabOverflow()
+    const el = tabBarRef.current
+    let ro: ResizeObserver | null = null
+    if (el) {
+      ro = new ResizeObserver(checkTabOverflow)
+      ro.observe(el)
+    }
+    window.addEventListener("resize", checkTabOverflow)
+    return () => {
+      ro?.disconnect()
+      window.removeEventListener("resize", checkTabOverflow)
+    }
+  }, [checkTabOverflow, tabs.length])
+  const scrollTabs = useCallback((dir: 1 | -1) => {
+    tabBarRef.current?.scrollBy({ left: dir * 240, behavior: "smooth" })
+  }, [])
   useEffect(() => {
     setActiveTabId((prev) => prev || tabs[0]?.id || "")
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -237,6 +303,9 @@ function AppContent() {
 
       const dbs: DatabaseInfo[] = await invoke("get_databases", { id: conn.id })
       setDatabases((prev) => ({ ...prev, [conn.id]: dbs }))
+      if (conn.config.type === "mysql" || conn.config.type === "postgresql") {
+        backendDbRef.current = conn.config.database || null
+      }
 
       const current = connectionsRef.current
       const updated = current.map((c) =>
@@ -272,17 +341,43 @@ function AppContent() {
     await connectToDatabase(connection)
   }
 
-  async function handleSelectConnection(id: string) {
-    setActiveConnectionId(id)
-    setTabs((prev) => prev.map((tb) => ({ ...tb, browse: null })))
+async function handleSelectConnection(id: string, restoreBrowse = false) {
+  setActiveConnectionId(id)
+  if (id !== activeConnectionId) {
     setActiveBottomTab("results")
-    const conn = connectionsRef.current.find((c) => c.id === id)
-    if (!conn) return
+  }
+  const conn = connectionsRef.current.find((c) => c.id === id)
 
-    if (!conn.connected) {
-      await connectToDatabase(conn)
+  // Only a direct sidebar connection click should restore that connection's
+  // last browse tab; opening a table or switching via the tab bar sets its own
+  // active tab explicitly. Run before the (possibly slow) connect so a stale
+  // browse tab from another connection can never render its SQL preview.
+  if (restoreBrowse) {
+    const lastId = lastTabByConnRef.current[id]
+    const tab = lastId ? tabs.find((t) => t.id === lastId && t.browse?.connectionId === id) : undefined
+    if (tab) {
+      setActiveTabId(tab.id)
+      setActiveBottomTab("browse")
+    } else {
+      // No browse tab for this connection yet - don't leave another
+      // connection's stale browse tab active (it would render its SQL
+      // preview in the editor). Fall back to a plain query tab, creating
+      // one if every open tab is a browse tab.
+      const queryTab = tabs.find((t) => !t.browse)
+      if (queryTab) {
+        setActiveTabId(queryTab.id)
+      } else {
+        openInNewTab("")
+      }
     }
   }
+
+  if (!conn) return
+
+  if (!conn.connected) {
+    await connectToDatabase(conn)
+  }
+}
 
   async function handleDisconnect(id: string) {
     try {
@@ -320,9 +415,17 @@ function AppContent() {
     }
   }
 
-  function handleDatabaseClick(database: string) {
-    setActiveTabBrowse({ database, table: "" })
-  }
+function handleDatabaseClick(database: string, connectionId: string) {
+  const tb = activeTab()
+  if (!tb) return
+  const currentId = activeTabIdRef.current || tabs[0]?.id || ""
+  if (tb.browse?.table) return
+  setTabs((prev) =>
+    prev.map((t2) =>
+      t2.id === currentId ? { ...t2, browse: { connectionId, database, table: "" } } : t2
+    )
+  )
+}
 
   async function handleLoadTables(id: string, database: string) {
     setLoading((prev) => ({ ...prev, [`${id}:${database}`]: true }))
@@ -342,12 +445,30 @@ function AppContent() {
           database,
           databaseType: conn.config.type,
         })
+        backendDbRef.current = database
       }
-      const result: TableInfo[] = await invoke("get_tables", { id, database })
-      setTables((prev) => ({
-        ...prev,
-        [id]: { ...(prev[id] || {}), [database]: result },
-      }))
+      if (conn?.config.type === "redis") {
+        const tabKey = `${id}:${database}`
+        const page = await invokeWithTimeout<{ keys: TableInfo[]; cursor: number }>("redis_scan_keys", {
+          id,
+          database,
+          pattern: "*",
+          cursor: 0,
+          count: 200,
+          typeFilter: null,
+        })
+        setTables((prev) => ({
+          ...prev,
+          [id]: { ...(prev[id] || {}), [database]: page.keys },
+        }))
+        setRedisScanCursor((prev) => ({ ...prev, [tabKey]: page.cursor }))
+      } else {
+        const result: TableInfo[] = await invoke("get_tables", { id, database })
+        setTables((prev) => ({
+          ...prev,
+          [id]: { ...(prev[id] || {}), [database]: result },
+        }))
+      }
       if (conn?.config.type === "postgresql") {
         const schemasResult: DatabaseInfo[] = await invoke("get_schemas", { id })
         setSchemas((prev) => ({
@@ -359,6 +480,117 @@ function AppContent() {
       alert(t('app.load_tables_failed', { error: String(e) }))
     }
     setLoading((prev) => ({ ...prev, [`${id}:${database}`]: false }))
+  }
+
+  async function redisScan(tabKey: string, conn: Connection, database: string, pattern: string, typeFilter: string) {
+    try {
+      const page = await invokeWithTimeout<{ keys: TableInfo[]; cursor: number }>("redis_scan_keys", {
+        id: conn.id,
+        database,
+        pattern: pattern || "*",
+        cursor: 0,
+        count: 200,
+        typeFilter: typeFilter || null,
+      })
+      setTables((prev) => ({ ...prev, [conn.id]: { ...(prev[conn.id] || {}), [database]: page.keys } }))
+      setRedisScanCursor((prev) => ({ ...prev, [tabKey]: page.cursor }))
+    } catch (e: any) {
+      setErrorBanner(t('app.load_tables_failed', { error: String(e) }))
+    }
+  }
+
+  async function handleRedisSearch(connectionId: string, database: string, pattern: string, typeFilter: string) {
+    const conn = connectionsRef.current.find((c) => c.id === connectionId)
+    if (!conn || conn.config.type !== "redis") return
+    const tabKey = `${connectionId}:${database}`
+    setLoading((prev) => ({ ...prev, [tabKey]: true }))
+    try {
+      await redisScan(tabKey, conn, database, pattern, typeFilter)
+    } finally {
+      setLoading((prev) => ({ ...prev, [tabKey]: false }))
+    }
+  }
+
+  async function handleRedisLoadMore(connectionId: string, database: string) {
+    const conn = connectionsRef.current.find((c) => c.id === connectionId)
+    if (!conn || conn.config.type !== "redis") return
+    const tabKey = `${connectionId}:${database}`
+    const cursor = redisScanCursor[tabKey] ?? 0
+    if (cursor <= 0) return
+    try {
+      const page = await invokeWithTimeout<{ keys: TableInfo[]; cursor: number }>("redis_scan_keys", {
+        id: conn.id,
+        database,
+        pattern: "*",
+        cursor,
+        count: 200,
+        typeFilter: null,
+      })
+      setTables((prev) => ({
+        ...prev,
+        [conn.id]: { ...(prev[conn.id] || {}), [database]: [...(prev[conn.id]?.[database] || []), ...page.keys] },
+      }))
+      setRedisScanCursor((prev) => ({ ...prev, [tabKey]: page.cursor }))
+    } catch (e: any) {
+      setErrorBanner(t('app.load_tables_failed', { error: String(e) }))
+    }
+  }
+
+  function handleRedisKeyPrompt(action: string, database: string, key: string) {
+    if (action === "rename") {
+      const newKey = window.prompt(t('sidebar.redis_rename_key'), key)
+      if (newKey && newKey !== key) {
+        runRedisAction("rename", database, key, [newKey])
+      }
+    } else if (action === "duplicate") {
+      const newKey = window.prompt(t('sidebar.redis_duplicate_key'), `${key}_copy`)
+      if (newKey && newKey !== key) {
+        runRedisAction("duplicate", database, key, [newKey])
+      }
+    } else if (action === "expire") {
+      const secs = window.prompt(t('sidebar.redis_set_ttl'), "300")
+      const n = Number(secs)
+      if (secs !== null && !Number.isNaN(n) && n > 0) {
+        runRedisAction("expire", database, key, [String(Math.floor(n))])
+      }
+    } else if (action === "persist") {
+      runRedisAction("persist", database, key, [])
+    } else if (action === "delete") {
+      if (window.confirm(t('sidebar.redis_delete_key'))) {
+        runRedisAction("delete", database, key, [key])
+      }
+    }
+  }
+
+  async function runRedisAction(action: string, database: string, key: string, args: string[]) {
+    if (!activeConnectionId) return
+    const id = activeConnectionId
+    const cmd = action === "rename"
+      ? "RENAME"
+      : action === "duplicate"
+        ? "COPY"
+        : action === "expire"
+          ? "EXPIRE"
+          : action === "persist"
+            ? "PERSIST"
+            : "DEL"
+    try {
+      if (action === "delete") {
+        await invokeWithTimeout("redis_command", { id, database, command: "DEL", args: [key] })
+      } else {
+        await invokeWithTimeout("redis_command", { id, database, command: cmd, args: [key, ...args] })
+      }
+      const conn = connectionsRef.current.find((c) => c.id === id)
+      if (conn?.config.type === "redis") {
+        const cur = activeConnection?.config.database ? [currentDatabase || ""] : databases[id]?.map((d) => d.name) || []
+        for (const db of cur) {
+          const fullPattern = redisScanCursor[`${id}:${db}`] !== undefined ? "*" : null
+          if (db) await redisScan(`${id}:${db}`, conn, db, fullPattern ?? "*", "")
+        }
+      }
+    } catch (e: any) {
+      setErrorBanner(t('dialog.failed', { error: String(e) }))
+    }
   }
 
   async function handleRefresh(id: string) {
@@ -383,6 +615,32 @@ function AppContent() {
 
   async function runSql(sql: string, opts?: { startLine?: number; plan?: boolean }) {
     if (!activeConnectionId) return
+    const conn = connectionsRef.current.find((c) => c.id === activeConnectionId)
+    const tabDbs = activeTab()?.database
+    const tabDb = tabDbs ? tabDbs[activeConnectionId] : null
+    const targetDb = tabDb ?? conn?.config.database ?? null
+    if (
+      conn && targetDb &&
+      (conn.config.type === "mysql" || conn.config.type === "postgresql") &&
+      backendDbRef.current !== targetDb
+    ) {
+      try {
+        const password = await resolvePassword(conn)
+        await invoke("switch_database", {
+          id: conn.id,
+          host: conn.config.host,
+          port: conn.config.port,
+          user: conn.config.user,
+          password,
+          database: targetDb,
+          databaseType: conn.config.type,
+        })
+        backendDbRef.current = targetDb
+      } catch (e: any) {
+        setErrorBanner(t('app.connection_failed', { error: String(e) }))
+        return
+      }
+    }
     setActiveBottomTab("results")
     setErrorMarker(null)
     const statements = splitSqlStatements(sql)
@@ -556,7 +814,15 @@ function AppContent() {
     try {
       const content = await invoke<string>("read_text_file", { path: res })
       const id = crypto.randomUUID()
-      setTabs((prev) => [...prev, { id, title: fileBasename(res), sql: content, filePath: res, browse: null }])
+      const connId = activeConnectionId
+      setTabs((prev) => [...prev, {
+        id,
+        title: fileBasename(res),
+        sql: content,
+        filePath: res,
+        browse: null,
+        database: connId ? { [connId]: activeConnection?.config.database || null } : {},
+      }])
       setActiveTabId(id)
     } catch (e: any) {
       setErrorBanner(String(e))
@@ -630,7 +896,7 @@ function AppContent() {
 
   function handleOpenFoundRow(table: string) {
     if (!activeConnection) return
-    openTableTab(buildSelectPreview(table, activeConnection.config.type), currentDatabase || undefined, table)
+    openTableTab(buildSelectPreview(table, activeConnection.config.type), activeConnection.id, currentDatabase || undefined, table)
   }
 
   function handleNewDatabase(connectionId: string) {
@@ -783,22 +1049,57 @@ function AppContent() {
     setTabs((prev) => prev.map((tb) => (tb.id === id ? { ...tb, sql } : tb)))
   }
 
-  function setActiveTabBrowse(browse: { database: string; table: string } | null) {
+  function setActiveTabBrowse(browse: { connectionId: string; database: string; table: string } | null) {
     const id = activeTabIdRef.current || tabs[0]?.id
     if (!id) return
     setTabs((prev) => prev.map((tb) => (tb.id === id ? { ...tb, browse } : tb)))
   }
 
-  function openTableTab(sql: string, database?: string, table?: string) {
-    if (!database || !table) return
-    const existing = tabs.find((tb) => tb.browse?.database === database && tb.browse?.table === table)
+  function setActiveTabDatabase(database: string | null) {
+    const id = activeTabIdRef.current || tabs[0]?.id
+    const connId = activeConnectionId
+    if (!id || !connId) return
+    setTabs((prev) =>
+      prev.map((tb) =>
+        tb.id === id ? { ...tb, database: { ...(tb.database || {}), [connId]: database } } : tb
+      )
+    )
+    backendDbRef.current = database
+  }
+
+  async function handleDatabaseChange(database: string) {
+    const conn = connectionsRef.current.find((c) => c.id === activeConnectionId)
+    if (!conn) return
+    setActiveTabDatabase(database)
+    try {
+      const password = await resolvePassword(conn)
+      await invoke("switch_database", {
+        id: conn.id,
+        host: conn.config.host,
+        port: conn.config.port,
+        user: conn.config.user,
+        password,
+        database,
+        databaseType: conn.config.type,
+      })
+    } catch (e: any) {
+      setErrorBanner(t('app.connection_failed', { error: String(e) }))
+    }
+  }
+
+  function openTableTab(sql: string, connectionId: string, database?: string, table?: string) {
+    if (!connectionId || !database || !table) return
+    if (connectionId !== activeConnectionId) {
+      handleSelectConnection(connectionId)
+    }
+    const existing = tabs.find((tb) => tb.browse?.connectionId === connectionId && tb.browse?.database === database && tb.browse?.table === table)
     if (existing) {
       setActiveTabId(existing.id)
       setActiveBottomTab("browse")
       return
     }
     const id = crypto.randomUUID()
-    setTabs((prev) => [...prev, { id, title: table, sql, filePath: null, browse: { database, table } }])
+    setTabs((prev) => [...prev, { id, title: table, sql, filePath: null, browse: { connectionId, database, table } }])
     setActiveTabId(id)
     setActiveBottomTab("browse")
   }
@@ -806,7 +1107,14 @@ function AppContent() {
   function openInNewTab(sql: string) {
     const id = crypto.randomUUID()
     const n = tabs.length + 1
-    setTabs((prev) => [...prev, { id, title: t('editor.tab_query') + " " + n, sql, filePath: null }])
+    const connId = activeConnectionId
+    setTabs((prev) => [...prev, {
+      id,
+      title: t('editor.tab_query') + " " + n,
+      sql,
+      filePath: null,
+      database: connId ? { [connId]: activeConnection?.config.database || null } : {},
+    }])
     setActiveTabId(id)
   }
 
@@ -820,7 +1128,7 @@ function AppContent() {
       if (next.length === 0) {
         const nid = crypto.randomUUID()
         setActiveTabId(nid)
-        return [{ id: nid, title: t('editor.tab_query') + " 1", sql: "", filePath: null }]
+        return [{ id: nid, title: t('editor.tab_query') + " 1", sql: "", filePath: null, database: {} }]
       }
       if (id === activeTabId) {
         const idx = prev.findIndex((tb) => tb.id === id)
@@ -852,7 +1160,11 @@ function AppContent() {
 
   const activeConnection = connections.find((c) => c.id === activeConnectionId)
   const activeBrowse = activeTab()?.browse
-  const currentDatabase = activeBrowse?.database || activeConnection?.config.database || null
+  const tabDbs = activeTab()?.database
+  const currentDatabase = (activeConnectionId && tabDbs ? tabDbs[activeConnectionId] : undefined) ?? activeConnection?.config.database ?? null
+  const connectionMeta = activeConnection?.config && activeConnection.config.type !== "sqlite"
+    ? `${activeConnection.config.user || ""}@${activeConnection.config.host || ""}:${activeConnection.config.port ?? ""}`
+    : null
   const currentTables = (activeConnectionId && tables[activeConnectionId] && currentDatabase)
     ? tables[activeConnectionId][currentDatabase] || []
     : []
@@ -885,6 +1197,8 @@ function AppContent() {
         connectionId={activeConnectionId}
         connectionName={activeConnection?.config.name || null}
         currentDatabase={currentDatabase}
+        connectionMeta={connectionMeta}
+        dbType={activeConnection?.config.type || undefined}
         onOpenErDiagram={handleOpenErDiagram}
         onOpenImport={handleOpenImport}
         onOpenTransfer={handleOpenTransfer}
@@ -898,7 +1212,7 @@ function AppContent() {
         <Sidebar
           connections={connections}
           activeConnectionId={activeConnectionId}
-          onSelectConnection={handleSelectConnection}
+          onSelectConnection={(id) => handleSelectConnection(id, true)}
           onDisconnect={handleDisconnect}
           onRefresh={handleRefresh}
           onEditConnection={handleEditConnection}
@@ -906,8 +1220,8 @@ function AppContent() {
           onDeleteConnection={handleDeleteConnection}
           onLoadTables={handleLoadTables}
           onDatabaseClick={handleDatabaseClick}
-          onTableClick={(sql, database, table) => {
-            openTableTab(sql, database, table)
+          onTableClick={(sql, connectionId, database, table) => {
+            openTableTab(sql, connectionId, database, table)
           }}
           onInsertSql={(sql) => openInNewTab(sql)}
           databases={databases}
@@ -923,6 +1237,10 @@ function AppContent() {
           onTruncateTable={handleTruncate}
           onRenameTable={handleRename}
           onNewObject={handleNewObject}
+          redisScanCursor={redisScanCursor}
+          onRedisSearch={handleRedisSearch}
+          onRedisLoadMore={handleRedisLoadMore}
+          onRedisKeyAction={handleRedisKeyPrompt}
         />
         <main className="flex-1 flex flex-col min-w-0">
           {errorBanner && (
@@ -941,81 +1259,157 @@ function AppContent() {
               <ErDiagram connectionId={activeConnectionId!} database={currentDatabase || ""} />
             ) : (
               <div className="flex-1 flex flex-col min-h-0">
-                <div className="flex items-center border-b bg-muted/30 overflow-x-auto">
-                  {tabs.map((tb) => (
-                    <div
-                      key={tb.id}
-                      className={cn(
-                        "flex items-center gap-1 px-3 py-1.5 text-xs border-r cursor-pointer whitespace-nowrap",
-                        tb.id === (activeTabId || tabs[0]?.id)
-                          ? "bg-background text-foreground font-medium"
-                          : "text-muted-foreground hover:bg-background/60",
-                      )}
-                      onClick={() => setActiveTabId(tb.id)}
+                <div className="flex items-center border-b bg-muted/30">
+                  {tabOverflow && (
+                    <button
+                      className="h-7 w-6 flex items-center justify-center shrink-0 text-muted-foreground hover:bg-background/60"
+                      onClick={() => scrollTabs(-1)}
+                      title={t('editor.scroll_tabs_left')}
                     >
-                      <span>{tb.title}</span>
-                      <button
-                        className="ml-1 h-4 w-4 flex items-center justify-center rounded hover:bg-muted-foreground/20"
-                        onClick={(e) => { e.stopPropagation(); closeTab(tb.id) }}
+                      <ChevronLeft className="h-4 w-4" />
+                    </button>
+                  )}
+                  <div ref={tabBarRef} className="flex-1 flex items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                    {tabs.map((tb) => (
+                      <div
+                        key={tb.id}
+                        ref={(el) => {
+                          if (el) tabRefs.current.set(tb.id, el)
+                          else tabRefs.current.delete(tb.id)
+                        }}
+                        className={cn(
+                          "flex items-center gap-1 pl-3 pr-2 py-1.5 text-xs border-r cursor-pointer w-[170px] shrink-0 overflow-hidden",
+                          tb.id === (activeTabId || tabs[0]?.id)
+                            ? "bg-background text-foreground font-medium"
+                            : "text-muted-foreground hover:bg-background/60",
+                        )}
+                        onClick={() => {
+                          if (tb.browse?.connectionId && tb.browse.connectionId !== activeConnectionId) {
+                            handleSelectConnection(tb.browse.connectionId)
+                          }
+                          setActiveTabId(tb.id)
+                        }}
+                        title={tb.title}
                       >
-                        ✕
+                        <span className="flex-1 truncate">{tb.title}</span>
+                        <button
+                          className="ml-1 h-4 w-4 flex items-center justify-center rounded hover:bg-muted-foreground/20 shrink-0"
+                          onClick={(e) => { e.stopPropagation(); closeTab(tb.id) }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  {tabOverflow && (
+                    <button
+                      className="h-7 w-6 flex items-center justify-center shrink-0 text-muted-foreground hover:bg-background/60"
+                      onClick={() => scrollTabs(1)}
+                      title={t('editor.scroll_tabs_right')}
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                  )}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        className="h-7 w-7 flex items-center justify-center shrink-0 text-muted-foreground hover:bg-background/60"
+                        title={t('editor.list_tabs')}
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
                       </button>
-                    </div>
-                  ))}
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="max-h-80 overflow-y-auto">
+                      {tabs.map((tb) => (
+                        <DropdownMenuItem
+                          key={tb.id}
+                          onClick={() => {
+                            if (tb.browse?.connectionId && tb.browse.connectionId !== activeConnectionId) {
+                              handleSelectConnection(tb.browse.connectionId)
+                            }
+                            setActiveTabId(tb.id)
+                          }}
+                          className={cn(
+                            "truncate",
+                            tb.id === (activeTabId || tabs[0]?.id) && "bg-accent font-medium",
+                          )}
+                        >
+                          {tb.title}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
-                <div className="flex-1 min-h-0 border-b">
-                  <SqlEditor
-                    onExecute={(sql, startLine) => handleExecute(sql, startLine)}
-                    onRunAll={handleRunAll}
-                    onExplain={handleExplain}
-                    onCancel={handleCancel}
-                    onSave={handleSave}
-                    onOpen={handleOpen}
-                    onHistoryRun={handleHistoryRun}
-                    onToggleFavorite={handleToggleFavorite}
-                    favorites={sqlFavorites}
-                    onNewTab={newTab}
-                    onBeginTransaction={handleBeginTransaction}
-                    onCommitTransaction={handleCommitTransaction}
-                    onRollbackTransaction={handleRollbackTransaction}
-                    txActive={activeConnectionId ? !!txActive[activeConnectionId] : false}
-                    executing={executing}
-                    lastExec={lastExec}
-                    value={activeTab()?.sql || ""}
-                    onChange={setActiveTabSql}
-                    connectionId={activeConnectionId}
-                    currentDatabase={currentDatabase}
-                    dbType={connDbType(activeConnectionId)}
-                    history={sqlHistory}
-                    errorMarker={errorMarker}
-                  />
-                </div>
-                <ResizeHandle
-                  orientation="horizontal"
-                  onDragStart={() => { bottomPanelStartHeight.current = bottomPanelHeight }}
-                  onDelta={(delta) => {
-                    setBottomPanelHeight(() =>
-                      Math.min(
-                        Math.max(bottomPanelStartHeight.current - delta, BOTTOM_PANEL_MIN),
-                        Math.round(window.innerHeight * 0.8)
-                      )
-                    )
-                  }}
-                  className="-mb-1 -mt-1"
-                />
-                <div className="min-h-0 flex flex-col" style={{ height: bottomPanelHeight }}>
-                  {activeBottomTab === "browse" && activeBrowse?.table && activeConnectionId ? (
+                {activeBrowse?.table && activeBrowse?.connectionId === activeConnectionId ? (
+                  <div className="flex-1 min-h-0">
                     <TableBrowser
-                      connectionId={activeConnectionId}
+                      connectionId={activeBrowse.connectionId}
                       database={activeBrowse.database}
                       table={activeBrowse.table}
                       dbType={activeConnection!.config.type}
-                      onClose={() => { setActiveTabBrowse(null); setActiveBottomTab("results") }}
+                      embedded
+                      onClose={() => closeTab(activeTabId)}
                     />
-                  ) : (
-                    <ResultPanel results={queryResults} />
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex-1 min-h-0 border-b">
+                      <SqlEditor
+                        onExecute={(sql, startLine) => handleExecute(sql, startLine)}
+                        onRunAll={handleRunAll}
+                        onExplain={handleExplain}
+                        onCancel={handleCancel}
+                        onSave={handleSave}
+                        onOpen={handleOpen}
+                        onHistoryRun={handleHistoryRun}
+                        onToggleFavorite={handleToggleFavorite}
+                        favorites={sqlFavorites}
+                        onNewTab={newTab}
+                        onBeginTransaction={handleBeginTransaction}
+                        onCommitTransaction={handleCommitTransaction}
+                        onRollbackTransaction={handleRollbackTransaction}
+                        txActive={activeConnectionId ? !!txActive[activeConnectionId] : false}
+                        executing={executing}
+                        lastExec={lastExec}
+                        value={activeTab()?.sql || ""}
+                        onChange={setActiveTabSql}
+                        connectionId={activeConnectionId}
+                        currentDatabase={currentDatabase}
+                        databases={databases[activeConnectionId || ""] || []}
+                        onChangeDatabase={handleDatabaseChange}
+                        dbType={connDbType(activeConnectionId)}
+                        history={sqlHistory}
+                        errorMarker={errorMarker}
+                      />
+                    </div>
+                    <ResizeHandle
+                      orientation="horizontal"
+                      onDragStart={() => { bottomPanelStartHeight.current = bottomPanelHeight }}
+                      onDelta={(delta) => {
+                        setBottomPanelHeight(() =>
+                          Math.min(
+                            Math.max(bottomPanelStartHeight.current - delta, BOTTOM_PANEL_MIN),
+                            Math.round(window.innerHeight * 0.8)
+                          )
+                        )
+                      }}
+                      className="-mb-1 -mt-1"
+                    />
+                    <div className="min-h-0 flex flex-col" style={{ height: bottomPanelHeight }}>
+                      {activeBottomTab === "browse" && activeBrowse?.table && activeBrowse?.connectionId === activeConnectionId ? (
+                        <TableBrowser
+                          connectionId={activeBrowse.connectionId}
+                          database={activeBrowse.database}
+                          table={activeBrowse.table}
+                          dbType={activeConnection!.config.type}
+                          onClose={() => { setActiveTabBrowse(null); setActiveBottomTab("results") }}
+                        />
+                      ) : (
+                        <ResultPanel results={queryResults} />
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
             )
           ) : (

@@ -171,6 +171,42 @@ it("shows pagination info", async () => {
   })
 })
 
+it("renders and exports JSON of visible rows", async () => {
+  const createURLMock = vi.fn(() => "blob:mock")
+  const revokeMock = vi.fn()
+  const originalCreate = URL.createObjectURL
+  const originalRevoke = URL.revokeObjectURL
+  const originalClick = globalThis.HTMLAnchorElement.prototype.click
+  URL.createObjectURL = createURLMock as any
+  URL.revokeObjectURL = revokeMock as any
+  globalThis.HTMLAnchorElement.prototype.click = function () {}
+
+  vi.mocked(invoke)
+    .mockResolvedValueOnce(mockTableData)
+    .mockResolvedValueOnce("")
+  render(<TableBrowser {...defaultProps} />)
+  await waitFor(() => {
+    expect(screen.getByText("Alice")).toBeInTheDocument()
+  })
+  const jsonBtn = screen.getByRole("button", { name: /JSON/i })
+  expect(jsonBtn).toBeInTheDocument()
+
+  fireEvent.click(jsonBtn)
+  expect(createURLMock).toHaveBeenCalled()
+
+  const blobArg = createURLMock.mock.calls[0]?.[0] as Blob | undefined
+  expect(blobArg).toBeInstanceOf(Blob)
+  const jsonText = await blobArg!.text()
+  const parsed = JSON.parse(jsonText)
+  expect(parsed).toHaveLength(2)
+  expect(parsed[0].name).toBe("Alice")
+  expect(parsed[1].name).toBe("Bob")
+
+  URL.createObjectURL = originalCreate
+  URL.revokeObjectURL = originalRevoke
+  globalThis.HTMLAnchorElement.prototype.click = originalClick
+})
+
 it("shows sortable column headers", async () => {
   vi.mocked(invoke)
     .mockResolvedValueOnce(mockTableData)

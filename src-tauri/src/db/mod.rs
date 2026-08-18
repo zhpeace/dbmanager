@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use sqlx::{Row, Column};
 use mongodb::Client as MongoClient;
 use std::sync::Arc;
-use types::{ColumnInfo, DatabaseInfo, FindMatch, ForeignKeyInfo, IndexInfo, QueryResult, SchemaCache, TableData, TableInfo, TableSchemaInfo, ViewInfo, RoutineInfo, TriggerInfo};
+use types::{ColumnInfo, DatabaseInfo, FindMatch, ForeignKeyInfo, IndexInfo, QueryResult, RedisKeyInfo, RedisKeyPage, SchemaCache, TableData, TableInfo, TableSchemaInfo, ViewInfo, RoutineInfo, TriggerInfo};
 
 #[derive(Clone)]
 pub enum DbConnection {
@@ -459,6 +459,96 @@ fn build_row_handles(
         .collect()
 }
 
+fn split_resp_args(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some(q) => {
+                if ch == '\\' {
+                    if let Some(next) = chars.next() {
+                        cur.push(next);
+                    }
+                } else if ch == q {
+                    quote = None;
+                } else {
+                    cur.push(ch);
+                }
+            }
+            None => {
+                if ch == '\'' || ch == '"' {
+                    quote = Some(ch);
+                } else if ch.is_whitespace() {
+                    if !cur.is_empty() {
+                        args.push(std::mem::take(&mut cur));
+                    }
+                } else {
+                    cur.push(ch);
+                }
+            }
+        }
+    }
+    if !cur.is_empty() {
+        args.push(cur);
+    }
+    args
+}
+
+fn redis_reply_to_string(v: &redis::Value) -> Option<String> {
+    match v {
+        redis::Value::BulkString(bytes) => Some(String::from_utf8_lossy(bytes).to_string()),
+        redis::Value::SimpleString(s) => Some(s.clone()),
+        redis::Value::Okay => Some("OK".to_string()),
+        redis::Value::Int(i) => Some(i.to_string()),
+        _ => None,
+    }
+}
+
+fn redis_reply_to_i64(v: &redis::Value) -> Option<i64> {
+    match v {
+        redis::Value::Int(i) => Some(*i),
+        redis::Value::BulkString(bytes) => {
+            String::from_utf8_lossy(bytes).trim().parse::<i64>().ok()
+        }
+        _ => None,
+    }
+}
+
+fn redis_value_to_json(v: &redis::Value) -> serde_json::Value {
+    match v {
+        redis::Value::Nil => serde_json::Value::Null,
+        redis::Value::Int(i) => serde_json::json!(i),
+        redis::Value::BulkString(bytes) => serde_json::json!(String::from_utf8_lossy(bytes).to_string()),
+        redis::Value::SimpleString(s) => serde_json::json!(s.clone()),
+        redis::Value::Okay => serde_json::json!("OK"),
+        redis::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(redis_value_to_json).collect())
+        }
+        redis::Value::Map(pairs) => {
+            let mut map = serde_json::Map::new();
+            for (k, val) in pairs {
+                let key = redis_reply_to_string(k).unwrap_or_else(|| "?".to_string());
+                map.insert(key, redis_value_to_json(val));
+            }
+            serde_json::Value::Object(map)
+        }
+        redis::Value::Attribute { data, .. } => redis_value_to_json(data),
+        redis::Value::Set(items) => {
+            serde_json::Value::Array(items.iter().map(redis_value_to_json).collect())
+        }
+        redis::Value::Double(f) => serde_json::json!(f),
+        redis::Value::Boolean(b) => serde_json::json!(b),
+        redis::Value::VerbatimString { text, .. } => serde_json::json!(text.clone()),
+        redis::Value::BigNumber(n) => serde_json::json!(n.to_string()),
+        redis::Value::Push { data, .. } => {
+            serde_json::Value::Array(data.iter().map(redis_value_to_json).collect())
+        }
+        redis::Value::ServerError(e) => serde_json::json!(format!("{} {}", e.code(), e.details().unwrap_or(""))),
+    }
+}
+
 impl DbConnection {
     /// Resolve a PG `database` argument to the schema it refers to.
     ///
@@ -667,7 +757,8 @@ impl DbConnection {
             DbConnection::MySql(pool) => {
                 let mut result: Vec<TableInfo> = Vec::new();
                 let tbl_sql = format!(
-                    "SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES \
+                    "SELECT TABLE_NAME, TABLE_TYPE, DATA_LENGTH + INDEX_LENGTH, TABLE_ROWS \
+                     FROM information_schema.TABLES \
                      WHERE TABLE_SCHEMA = '{}' ORDER BY TABLE_TYPE, TABLE_NAME",
                     database.replace('\'', "\\'")
                 );
@@ -679,10 +770,15 @@ impl DbConnection {
                     let raw_name: Vec<u8> = r.get::<Vec<u8>, _>(0);
                     let raw: Vec<u8> = r.get::<Vec<u8>, _>(1);
                     let type_str = String::from_utf8_lossy(&raw).to_string();
+                    let total_size: Option<u64> = r.try_get(2).ok().flatten();
+                    let table_rows: Option<i64> = r.try_get(3).ok().flatten();
                     result.push(TableInfo {
                         name: String::from_utf8_lossy(&raw_name).to_string(),
                         object_type: type_str.trim_start_matches("SYSTEM ").to_string(),
                         schema: Some(database.to_string()),
+                        size_bytes: total_size,
+                        row_count: table_rows,
+                        ttl: None,
                     });
                 }
                 let routine_sql = format!(
@@ -700,6 +796,9 @@ impl DbConnection {
                             name: r.get::<String, _>(0),
                             object_type: obj_type.to_string(),
                             schema: Some(database.to_string()),
+                            size_bytes: None,
+                            row_count: None,
+                        ttl: None,
                         });
                     }
                 }
@@ -717,6 +816,9 @@ impl DbConnection {
                             name: r.get::<String, _>(0),
                             object_type: "TRIGGER".to_string(),
                             schema: Some(database.to_string()),
+                            size_bytes: None,
+                            row_count: None,
+                        ttl: None,
                         });
                     }
                 }
@@ -727,23 +829,34 @@ impl DbConnection {
             DbConnection::Pg(pool) => {
                 let mut result: Vec<TableInfo> = Vec::new();
                 let rows = sqlx::query(
-                    "SELECT schemaname, tablename, 'TABLE' FROM pg_catalog.pg_tables \
-                     WHERE schemaname NOT LIKE 'pg_%' AND schemaname <> 'information_schema' \
-                     AND schemaname NOT IN ('blockchain','cstore','db4ai','dbe_perf','dbe_pldebugger','dbe_pldeveloper','dbe_sql_util','pkg_service','snapshot','sqladvisor') \
-                     UNION ALL \
-                     SELECT schemaname, viewname, 'VIEW' FROM pg_catalog.pg_views \
-                     WHERE schemaname NOT LIKE 'pg_%' AND schemaname <> 'information_schema' \
-                     AND schemaname NOT IN ('blockchain','cstore','db4ai','dbe_perf','dbe_pldebugger','dbe_pldeveloper','dbe_sql_util','pkg_service','snapshot','sqladvisor') \
+                    "SELECT s.schemaname, s.tablename, s.tbl, \
+                            COALESCE(pg_total_relation_size(c.oid), 0), \
+                            COALESCE(st.n_live_tup, 0) \
+                     FROM ( \
+                       SELECT schemaname, tablename, 'TABLE' AS tbl FROM pg_catalog.pg_tables \
+                       UNION ALL \
+                       SELECT schemaname, viewname, 'VIEW' AS tbl FROM pg_catalog.pg_views \
+                     ) s \
+                     LEFT JOIN pg_catalog.pg_class c ON c.relname = s.tablename \
+                     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace AND n.nspname = s.schemaname \
+                     LEFT JOIN pg_catalog.pg_stat_user_tables st ON st.schemaname = s.schemaname AND st.relname = s.tablename \
+                     WHERE s.schemaname NOT LIKE 'pg_%' AND s.schemaname <> 'information_schema' \
+                     AND s.schemaname NOT IN ('blockchain','cstore','db4ai','dbe_perf','dbe_pldebugger','dbe_pldeveloper','dbe_sql_util','pkg_service','snapshot','sqladvisor') \
                      ORDER BY 2, 1",
                 )
                 .fetch_all(pool)
                 .await
                 .map_err(|e| e.to_string())?;
                 for r in rows {
+                    let size_bytes: i64 = r.try_get(3).unwrap_or(0);
+                    let row_count: i64 = r.try_get(4).unwrap_or(0);
                     result.push(TableInfo {
                         name: r.get::<String, _>(1),
                         object_type: r.get::<String, _>(2),
                         schema: Some(r.get::<String, _>(0)),
+                        size_bytes: Some(size_bytes.max(0) as u64),
+                        row_count: Some(row_count),
+                        ttl: None,
                     });
                 }
                 let func_rows = sqlx::query(
@@ -760,6 +873,9 @@ impl DbConnection {
                             name: r.get::<String, _>(1),
                             object_type: r.get::<String, _>(2),
                             schema: Some(r.get::<String, _>(0)),
+                            size_bytes: None,
+                            row_count: None,
+                        ttl: None,
                         });
                     }
                 }
@@ -779,6 +895,9 @@ impl DbConnection {
                             name: r.get::<String, _>(1),
                             object_type: "TRIGGER".to_string(),
                             schema: Some(r.get::<String, _>(0)),
+                            size_bytes: None,
+                            row_count: None,
+                        ttl: None,
                         });
                     }
                 }
@@ -791,26 +910,57 @@ impl DbConnection {
                 .fetch_all(pool)
                 .await
                 .map_err(|e| e.to_string())?;
-                Ok(rows
-                    .into_iter()
-                    .map(|r| TableInfo {
-                        name: r.get::<String, _>(0),
-                        object_type: r.get::<String, _>(1).to_uppercase(),
+                let mut result: Vec<TableInfo> = Vec::new();
+                for r in rows {
+                    let name: String = r.get(0);
+                    let otype: String = r.get(1);
+                    let mut row_count: Option<i64> = None;
+                    if otype == "table" && !name.starts_with("sqlite_") {
+                        let q = format!("SELECT COUNT(*) FROM \"{}\"", name.replace('"', "\"\""));
+                        if let Ok(c) = sqlx::raw_sql(&q).fetch_one(pool).await {
+                            row_count = c.try_get(0).ok();
+                        }
+                    }
+                    result.push(TableInfo {
+                        name,
+                        object_type: otype.to_uppercase(),
                         schema: None,
-                    })
-                    .collect())
+                        size_bytes: None,
+                        row_count,
+                        ttl: None,
+                    });
+                }
+                Ok(result)
             }
             DbConnection::Mongo(client, db_name) => {
                 let db = client.database(db_name);
-                let names = db
-                    .list_collection_names()
+                let mut collections = db
+                    .list_collections()
                     .await
                     .map_err(|e| e.to_string())?;
-                Ok(names.into_iter().map(|n| TableInfo {
-                    name: n,
-                    object_type: "COLLECTION".to_string(),
-                    schema: Some(db_name.clone()),
-                }).collect())
+                let mut result: Vec<TableInfo> = Vec::new();
+                while collections.advance().await.map_err(|e| e.to_string())? {
+                    let coll = collections.deserialize_current().map_err(|e| e.to_string())?;
+                    let name = coll.name.clone();
+                    let coll_ref = db.collection::<mongodb::bson::Document>(&name);
+                    let count = coll_ref.estimated_document_count().await.ok();
+                    let size_bytes = match db.run_command(
+                        mongodb::bson::doc! { "collStats": name.clone() },
+                    ).await {
+                        Ok(stats) => stats.get_i64("size").ok().or_else(|| stats.get_i64("storageSize").ok())
+                            .map(|v| v.max(0) as u64),
+                        Err(_) => None,
+                    };
+                    result.push(TableInfo {
+                        name,
+                        object_type: "COLLECTION".to_string(),
+                        schema: Some(db_name.clone()),
+                        size_bytes,
+                        row_count: count.map(|v| v as i64),
+                        ttl: None,
+                    });
+                }
+                Ok(result)
             }
             DbConnection::Oracle(conn) => {
                 let conn = conn.clone();
@@ -833,13 +983,35 @@ impl DbConnection {
                         owner.replace('\'', "''"),
                     );
                     let mut stmt = conn.query(&sql, &[]).map_err(|e| e.to_string())?;
-                    let mut result = Vec::new();
+                    let mut result: Vec<TableInfo> = Vec::new();
                     while let Some(row) = stmt.next() {
                         let row = row.map_err(|e| e.to_string())?;
+                        let name = row.get::<usize, String>(0).unwrap_or_default();
+                        let otype = row.get::<usize, String>(1).unwrap_or_default();
+                        let (size_bytes, row_count) = if otype == "TABLE" {
+                            let size_q = format!(
+                                "SELECT COALESCE((SELECT SUM(bytes) FROM user_segments WHERE segment_name = :1 AND segment_type = 'TABLE'), 0), \
+                                        COALESCE((SELECT num_rows FROM user_tables WHERE table_name = :1), 0) FROM dual"
+                            );
+                            let mut size_stmt = conn.query(&size_q, &[&name]).map_err(|e| e.to_string())?;
+                            let mut size_bytes = None;
+                            let mut row_count = None;
+                            while let Some(srow) = size_stmt.next() {
+                                let srow = srow.map_err(|e| e.to_string())?;
+                                size_bytes = srow.get::<usize, f64>(0).ok().map(|v| v.max(0.0) as u64);
+                                row_count = srow.get::<usize, f64>(1).ok().map(|v| v.max(0.0) as i64);
+                            }
+                            (size_bytes, row_count)
+                        } else {
+                            (None, None)
+                        };
                         result.push(TableInfo {
-                            name: row.get::<usize, String>(0).unwrap_or_default(),
-                            object_type: row.get::<usize, String>(1).unwrap_or_default(),
+                            name,
+                            object_type: otype,
                             schema: Some(database.clone()),
+                            size_bytes,
+                            row_count,
+                        ttl: None,
                         });
                     }
                     Ok(result)
@@ -854,17 +1026,37 @@ impl DbConnection {
                 let mut keys = Vec::new();
                 loop {
                     let result: (i64, Vec<String>) = redis::cmd("SCAN")
-                        .arg(cursor).arg("COUNT").arg(100)
+                        .arg(cursor).arg("COUNT").arg(200)
                         .query_async(&mut conn).await.map_err(|e| e.to_string())?;
                     cursor = result.0;
                     for key in result.1 {
                         keys.push(TableInfo {
-                            name: key,
+                            name: key.clone(),
                             object_type: "KEY".to_string(),
                             schema: Some(database.to_string()),
+                            size_bytes: None,
+                            row_count: None,
+                            ttl: None,
                         });
                     }
                     if cursor == 0 { break; }
+                }
+                if !keys.is_empty() {
+                    let mut pipe = redis::pipe();
+                    for key in &keys {
+                        pipe.cmd("TYPE").arg(&key.name);
+                        pipe.cmd("TTL").arg(&key.name);
+                    }
+                    let replies: Vec<redis::Value> = pipe
+                        .query_async(&mut conn)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    for (i, key) in keys.iter_mut().enumerate() {
+                        let typ = redis_reply_to_string(&replies[i * 2]).unwrap_or_else(|| "unknown".to_string());
+                        let ttl = redis_reply_to_i64(&replies[i * 2 + 1]);
+                        key.object_type = typ.to_uppercase();
+                        key.ttl = if ttl.is_some_and(|t| t >= 0) { ttl } else { None };
+                    }
                 }
                 Ok(keys)
             }
@@ -896,39 +1088,150 @@ impl DbConnection {
         match self {
             DbConnection::MySql(pool) => {
                 use futures_util::TryStreamExt;
-                let mut stream = sqlx::raw_sql(&query).fetch(pool);
-                let mut rows = Vec::new();
-                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                use sqlx::Either;
+                use sqlx::Executor;
+                let mut stream = sqlx::raw_sql(&query).fetch_many(pool);
+                let mut rows: Vec<sqlx::mysql::MySqlRow> = Vec::new();
+                let mut affected: u64 = 0;
+                while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
                     if is_cancelled() {
                         return Err("Query cancelled".to_string());
                     }
-                    rows.push(row);
+                    match item {
+                        Either::Left(qr) => affected += qr.rows_affected(),
+                        Either::Right(row) => rows.push(row),
+                    }
                 }
-                Ok(mysql_rows_to_result(rows, &start))
+                let duration =
+                    format!("{:.2}ms", start.elapsed().as_secs_f64() * 1000.0);
+                if !rows.is_empty() {
+                    Ok(mysql_rows_to_result(rows, &start))
+                } else if affected > 0 {
+                    Ok(QueryResult {
+                        columns: vec![],
+                        rows: vec![],
+                        row_count: affected as usize,
+                        duration,
+                        error: None,
+                    })
+                } else {
+                    let cols = match pool.acquire().await {
+                        Ok(mut c) => match c.describe(&query).await {
+                            Ok(d) => d
+                                .columns()
+                                .iter()
+                                .map(|c| c.name().to_string())
+                                .collect::<Vec<_>>(),
+                            Err(_) => Vec::new(),
+                        },
+                        Err(_) => Vec::new(),
+                    };
+                    Ok(QueryResult {
+                        columns: cols,
+                        rows: vec![],
+                        row_count: 0,
+                        duration,
+                        error: None,
+                    })
+                }
             }
             DbConnection::Pg(pool) => {
                 use futures_util::TryStreamExt;
-                let mut stream = sqlx::raw_sql(&query).fetch(pool);
-                let mut rows = Vec::new();
-                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                use sqlx::Either;
+                use sqlx::Executor;
+                let mut stream = sqlx::raw_sql(&query).fetch_many(pool);
+                let mut rows: Vec<sqlx::postgres::PgRow> = Vec::new();
+                let mut affected: u64 = 0;
+                while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
                     if is_cancelled() {
                         return Err("Query cancelled".to_string());
                     }
-                    rows.push(row);
+                    match item {
+                        Either::Left(qr) => affected += qr.rows_affected(),
+                        Either::Right(row) => rows.push(row),
+                    }
                 }
-                Ok(pg_rows_to_result(rows, &start))
+                let duration =
+                    format!("{:.2}ms", start.elapsed().as_secs_f64() * 1000.0);
+                if !rows.is_empty() {
+                    Ok(pg_rows_to_result(rows, &start))
+                } else if affected > 0 {
+                    Ok(QueryResult {
+                        columns: vec![],
+                        rows: vec![],
+                        row_count: affected as usize,
+                        duration,
+                        error: None,
+                    })
+                } else {
+                    let cols = match pool.acquire().await {
+                        Ok(mut c) => match c.describe(&query).await {
+                            Ok(d) => d
+                                .columns()
+                                .iter()
+                                .map(|c| c.name().to_string())
+                                .collect::<Vec<_>>(),
+                            Err(_) => Vec::new(),
+                        },
+                        Err(_) => Vec::new(),
+                    };
+                    Ok(QueryResult {
+                        columns: cols,
+                        rows: vec![],
+                        row_count: 0,
+                        duration,
+                        error: None,
+                    })
+                }
             }
             DbConnection::Sqlite(pool) => {
                 use futures_util::TryStreamExt;
-                let mut stream = sqlx::raw_sql(&query).fetch(pool);
-                let mut rows = Vec::new();
-                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                use sqlx::Either;
+                use sqlx::Executor;
+                let mut stream = sqlx::raw_sql(&query).fetch_many(pool);
+                let mut rows: Vec<sqlx::sqlite::SqliteRow> = Vec::new();
+                let mut affected: u64 = 0;
+                while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
                     if is_cancelled() {
                         return Err("Query cancelled".to_string());
                     }
-                    rows.push(row);
+                    match item {
+                        Either::Left(qr) => affected += qr.rows_affected(),
+                        Either::Right(row) => rows.push(row),
+                    }
                 }
-                Ok(sqlite_rows_to_result(rows, &start))
+                let duration =
+                    format!("{:.2}ms", start.elapsed().as_secs_f64() * 1000.0);
+                if !rows.is_empty() {
+                    Ok(sqlite_rows_to_result(rows, &start))
+                } else if affected > 0 {
+                    Ok(QueryResult {
+                        columns: vec![],
+                        rows: vec![],
+                        row_count: affected as usize,
+                        duration,
+                        error: None,
+                    })
+                } else {
+                    let cols = match pool.acquire().await {
+                        Ok(mut c) => match c.describe(&query).await {
+                            Ok(d) => d
+                                .columns()
+                                .iter()
+                                .map(|c| c.name().to_string())
+                                .collect::<Vec<_>>(),
+                            Err(_) => Vec::new(),
+                        },
+                        Err(_) => Vec::new(),
+                    };
+                    Ok(QueryResult {
+                        columns: cols,
+                        rows: vec![],
+                        row_count: 0,
+                        duration,
+                        error: None,
+                    })
+                }
             }
             DbConnection::Mongo(_client, _db) => {
                 Err("SQL queries are not supported for MongoDB connections".to_string())
@@ -984,22 +1287,21 @@ impl DbConnection {
             }
             DbConnection::Redis(conn) => {
                 let mut conn = conn.clone();
-                let parts: Vec<&str> = query.split_whitespace().collect();
+                let parts: Vec<String> = split_resp_args(&query);
                 if parts.is_empty() {
                     return Err("Empty command".to_string());
                 }
                 let cmd = parts[0].to_uppercase();
-                let args: Vec<&str> = parts[1..].to_vec();
                 let mut redis_cmd = redis::Cmd::new();
                 redis_cmd.arg(cmd.as_str());
-                for arg in &args {
-                    redis_cmd.arg(arg);
+                for arg in &parts[1..] {
+                    redis_cmd.arg(arg.as_str());
                 }
-                let result: Result<String, redis::RedisError> = redis_cmd.query_async(&mut conn).await;
+                let result: Result<redis::Value, redis::RedisError> = redis_cmd.query_async(&mut conn).await;
                 match result {
                     Ok(val) => Ok(QueryResult {
                         columns: vec!["result".to_string()],
-                        rows: vec![serde_json::json!({"result": val})],
+                        rows: vec![serde_json::json!({"result": redis_value_to_json(&val)})],
                         row_count: 1,
                         duration: format!("{:.2}ms", start.elapsed().as_secs_f64() * 1000.0),
                         error: None,
@@ -1299,9 +1601,9 @@ impl DbConnection {
                             name: r.get::<String, _>(0),
                             data_type: r.get::<String, _>(1),
                             nullable: r.get::<String, _>(2) == "YES",
-                            key: r.get::<String, _>(3),
+                            key: r.get::<Option<String>, _>(3).unwrap_or_default(),
                             default_value: r.get::<Option<String>, _>(4),
-                            extra: r.get::<String, _>(5),
+                            extra: r.get::<Option<String>, _>(5).unwrap_or_default(),
                         }
                     }).collect()
                 } else {
@@ -1553,26 +1855,128 @@ impl DbConnection {
                 let _ = redis::cmd("SELECT").arg(db_index).query_async::<()>(&mut conn).await;
                 let key_type: String = redis::cmd("TYPE").arg(table).query_async(&mut conn).await.map_err(|e| e.to_string())?;
                 let ttl: i64 = redis::cmd("TTL").arg(table).query_async(&mut conn).await.unwrap_or(-1);
-                let value: serde_json::Value = Self::get_redis_value(&mut conn, table, &key_type).await?;
-                let value_str = serde_json::to_string(&value).unwrap_or_default();
-                let cols = vec![
-                    ColumnInfo { name: "key".into(), data_type: "string".into(), nullable: false, key: "PRI".into(), default_value: None, extra: String::new() },
-                    ColumnInfo { name: "type".into(), data_type: "string".into(), nullable: true, key: String::new(), default_value: None, extra: String::new() },
-                    ColumnInfo { name: "ttl".into(), data_type: "integer".into(), nullable: true, key: String::new(), default_value: None, extra: String::new() },
-                    ColumnInfo { name: "value".into(), data_type: key_type.clone(), nullable: true, key: String::new(), default_value: None, extra: String::new() },
-                ];
-                let json_rows = vec![serde_json::json!({
-                    "key": table,
-                    "type": key_type,
-                    "ttl": ttl,
-                    "value": value_str,
-                })];
-                let primary_keys = vec!["key".to_string()];
+                let offset = (page - 1) * page_size;
+                let desc = sort_column.map(|s| s.eq_ignore_ascii_case("score"))
+                    .unwrap_or(false) && sort_order.map(|s| s.eq_ignore_ascii_case("desc")).unwrap_or(false);
+
+                let make_cols = |cols: Vec<(&str, &str)>| {
+                    cols.into_iter().map(|(name, dtype)| ColumnInfo {
+                        name: name.to_string(), data_type: dtype.to_string(),
+                        nullable: true, key: String::new(), default_value: None, extra: String::new(),
+                    }).collect()
+                };
+
+                let (cols, json_rows, total): (Vec<ColumnInfo>, Vec<serde_json::Value>, i64) = match key_type.as_str() {
+                    "string" => {
+                        let val: Option<String> = redis::cmd("GET").arg(table).query_async(&mut conn).await.map_err(|e| e.to_string())?;
+                        let has = val.is_some();
+                        let rows = if let Some(v) = val {
+                            vec![serde_json::json!({"value": v})]
+                        } else { vec![] };
+                        (make_cols(vec![("value", "string")]), rows, if has { 1 } else { 0 })
+                    }
+                    "list" => {
+                        let total: i64 = redis::cmd("LLEN").arg(table).query_async(&mut conn).await.unwrap_or(0);
+                        let end = offset + page_size - 1;
+                        let vals: Vec<String> = redis::cmd("LRANGE").arg(table).arg(offset).arg(end)
+                            .query_async(&mut conn).await.map_err(|e| e.to_string())?;
+                        let rows = vals.into_iter().enumerate()
+                            .map(|(i, v)| serde_json::json!({"index": offset + i as i64, "value": v}))
+                            .collect();
+                        (make_cols(vec![("index", "integer"), ("value", "string")]), rows, total)
+                    }
+                    "set" => {
+                        let total: i64 = redis::cmd("SCARD").arg(table).query_async(&mut conn).await.unwrap_or(0);
+                        let mut members = Vec::new();
+                        let mut cursor = 0i64;
+                        loop {
+                            let result: (i64, Vec<String>) = redis::cmd("SSCAN").arg(table).arg(cursor)
+                                .arg("COUNT").arg(500).query_async(&mut conn).await.map_err(|e| e.to_string())?;
+                            cursor = result.0;
+                            members.extend(result.1);
+                            if cursor == 0 { break; }
+                        }
+                        let slice: Vec<&String> = members.iter().skip(offset as usize).take(page_size as usize).collect();
+                        let rows = slice.into_iter().map(|m| serde_json::json!({"member": m})).collect();
+                        (make_cols(vec![("member", "string")]), rows, total)
+                    }
+                    "hash" => {
+                        let total: i64 = redis::cmd("HLEN").arg(table).query_async(&mut conn).await.unwrap_or(0);
+                        let vals: Vec<(String, String)> = redis::cmd("HGETALL").arg(table)
+                            .query_async(&mut conn).await.map_err(|e| e.to_string())?;
+                        let rows = vals.into_iter().skip(offset as usize).take(page_size as usize)
+                            .map(|(f, v)| serde_json::json!({"field": f, "value": v}))
+                            .collect();
+                        (make_cols(vec![("field", "string"), ("value", "string")]), rows, total)
+                    }
+                    "zset" => {
+                        let total: i64 = redis::cmd("ZCARD").arg(table).query_async(&mut conn).await.unwrap_or(0);
+                        let end = offset + page_size - 1;
+                        let vals: Vec<(String, f64)> = if desc {
+                            redis::cmd("ZREVRANGE").arg(table).arg(offset).arg(end).arg("WITHSCORES")
+                                .query_async(&mut conn).await.map_err(|e| e.to_string())?
+                        } else {
+                            redis::cmd("ZRANGE").arg(table).arg(offset).arg(end).arg("WITHSCORES")
+                                .query_async(&mut conn).await.map_err(|e| e.to_string())?
+                        };
+                        let rows = vals.into_iter().map(|(m, s)| serde_json::json!({"member": m, "score": s})).collect();
+                        (make_cols(vec![("member", "string"), ("score", "double")]), rows, total)
+                    }
+                    "stream" => {
+                        let total: i64 = redis::cmd("XLEN").arg(table).query_async(&mut conn).await.unwrap_or(0);
+                        let vals: Vec<(String, Vec<(String, Vec<(String, String)>)>)> =
+                            redis::cmd("XRANGE").arg(table).arg("-").arg("+").arg("COUNT").arg(offset + page_size)
+                                .query_async(&mut conn).await.map_err(|e| e.to_string())?;
+                        let rows = vals.into_iter().skip(offset as usize).take(page_size as usize).map(|(id, fields)| {
+                            let fmap: serde_json::Map<String, serde_json::Value> = fields.into_iter().flat_map(|(_k, v_pairs)| {
+                                v_pairs.into_iter().map(|(fk, fv)| (fk, serde_json::json!(fv)))
+                            }).collect();
+                            serde_json::json!({"id": id, "fields": serde_json::Value::Object(fmap)})
+                        }).collect();
+                        (make_cols(vec![("id", "string"), ("fields", "object")]), rows, total)
+                    }
+                    "none" => {
+                        (make_cols(vec![("value", "string")]), Vec::new(), 0)
+                    }
+                    _ => {
+                        let val: Option<String> = redis::cmd("GET").arg(table).query_async(&mut conn).await.map_err(|e| e.to_string())?;
+                        let has = val.is_some();
+                        let rows = if let Some(v) = val {
+                            vec![serde_json::json!({"value": v})]
+                        } else { vec![] };
+                        (make_cols(vec![("value", "string")]), rows, if has { 1 } else { 0 })
+                    }
+                };
+                let cols = {
+                    let mut c = cols;
+                    for (name, dtype) in [("key", "string"), ("type", "string"), ("ttl", "integer")] {
+                        if !c.iter().any(|cc| cc.name == name) {
+                            c.push(ColumnInfo {
+                                name: name.to_string(), data_type: dtype.to_string(),
+                                nullable: true, key: String::new(), default_value: None, extra: String::new(),
+                            });
+                        }
+                    }
+                    c
+                };
+                let json_rows = {
+                    let mut rows = json_rows;
+                    for r in rows.iter_mut() {
+                        if r.is_object() {
+                            let obj = r.as_object_mut().unwrap();
+                            obj.entry("key").or_insert(serde_json::json!(table));
+                            obj.entry("type").or_insert(serde_json::json!(key_type));
+                            obj.entry("ttl").or_insert(serde_json::json!(ttl));
+                        }
+                    }
+                    rows
+                };
+                let primary_keys: Vec<String> = Vec::new();
                 let row_handles = build_row_handles(&json_rows, &primary_keys);
                 Ok(TableData {
                     columns: cols,
                     rows: json_rows,
-                    total: 1,
+                    total,
                     duration: format!("{:.2}ms", start.elapsed().as_secs_f64() * 1000.0),
                     primary_keys,
                     row_handles,
@@ -1618,6 +2022,125 @@ impl DbConnection {
             }
             _ => Ok(serde_json::json!("(unknown type)")),
         }
+    }
+
+    pub async fn redis_scan_keys(
+        &self,
+        database: &str,
+        pattern: Option<&str>,
+        cursor: i64,
+        count: i64,
+        type_filter: Option<&str>,
+    ) -> Result<RedisKeyPage, String> {
+        let conn = match self {
+            DbConnection::Redis(c) => c.clone(),
+            _ => return Err("Not a Redis connection".to_string()),
+        };
+        let mut conn = conn;
+        let db_index: i64 = database.trim_start_matches("db").parse().unwrap_or(0);
+        let _ = redis::cmd("SELECT").arg(db_index).query_async::<()>(&mut conn).await;
+        let pattern = pattern.unwrap_or("*");
+        let chunk = count.max(1).min(500);
+        let mut cur = cursor.max(0);
+        let mut keys = Vec::new();
+        let mut rounds = 0;
+        while keys.len() < count.max(1) as usize && rounds < 50 {
+            rounds += 1;
+            let result: (i64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cur).arg("MATCH").arg(pattern).arg("COUNT").arg(chunk)
+                .query_async(&mut conn).await.map_err(|e| e.to_string())?;
+            cur = result.0;
+            let batch = result.1;
+            if batch.is_empty() {
+                if cur == 0 { break; }
+                continue;
+            }
+            let mut pipe = redis::pipe();
+            for key in &batch {
+                pipe.cmd("TYPE").arg(key);
+                pipe.cmd("TTL").arg(key);
+            }
+            let replies: Vec<redis::Value> = pipe
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| e.to_string())?;
+            for (i, key) in batch.iter().enumerate() {
+                let typ = redis_reply_to_string(&replies[i * 2]).unwrap_or_else(|| "unknown".to_string());
+                if let Some(tf) = type_filter {
+                    if !tf.is_empty() && !tf.eq_ignore_ascii_case(&typ) { continue; }
+                }
+                let ttl = redis_reply_to_i64(&replies[i * 2 + 1]);
+                keys.push(TableInfo {
+                    name: key.clone(),
+                    object_type: typ.to_uppercase(),
+                    schema: Some(database.to_string()),
+                    size_bytes: None,
+                    row_count: None,
+                    ttl: if ttl.is_some_and(|t| t >= 0) { ttl } else { None },
+                });
+                if keys.len() >= count.max(1) as usize { break; }
+            }
+            if cur == 0 { break; }
+        }
+        Ok(RedisKeyPage { keys, cursor: cur })
+    }
+
+    pub async fn redis_key_info(&self, database: &str, key: &str) -> Result<RedisKeyInfo, String> {
+        let conn = match self {
+            DbConnection::Redis(c) => c.clone(),
+            _ => return Err("Not a Redis connection".to_string()),
+        };
+        let mut conn = conn;
+        let db_index: i64 = database.trim_start_matches("db").parse().unwrap_or(0);
+        let _ = redis::cmd("SELECT").arg(db_index).query_async::<()>(&mut conn).await;
+        let key_type: String = redis::cmd("TYPE").arg(key).query_async(&mut conn).await.map_err(|e| e.to_string())?;
+        let ttl: i64 = redis::cmd("TTL").arg(key).query_async(&mut conn).await.unwrap_or(-1);
+        let encoding: String = redis::cmd("OBJECT").arg("ENCODING").arg(key).query_async(&mut conn).await.unwrap_or_default();
+        let refcount: i64 = redis::cmd("OBJECT").arg("REFCOUNT").arg(key).query_async(&mut conn).await.unwrap_or(-1);
+        let idletime: i64 = redis::cmd("OBJECT").arg("IDLETIME").arg(key).query_async(&mut conn).await.unwrap_or(-1);
+        let memory_usage: Option<i64> = redis::cmd("MEMORY").arg("USAGE").arg(key).query_async(&mut conn).await.ok();
+        let n_elements: i64 = match key_type.as_str() {
+            "hash" => redis::cmd("HLEN").arg(key).query_async(&mut conn).await.unwrap_or(0),
+            "list" => redis::cmd("LLEN").arg(key).query_async(&mut conn).await.unwrap_or(0),
+            "set" => redis::cmd("SCARD").arg(key).query_async(&mut conn).await.unwrap_or(0),
+            "zset" => redis::cmd("ZCARD").arg(key).query_async(&mut conn).await.unwrap_or(0),
+            "stream" => redis::cmd("XLEN").arg(key).query_async(&mut conn).await.unwrap_or(0),
+            _ => 1,
+        };
+        Ok(RedisKeyInfo {
+            key: key.to_string(),
+            key_type,
+            ttl,
+            value: serde_json::Value::Null,
+            size: memory_usage.unwrap_or(0) as usize,
+            encoding,
+            refcount,
+            idletime,
+            memory_usage,
+            n_elements,
+        })
+    }
+
+    pub async fn redis_command(
+        &self,
+        database: &str,
+        command: &str,
+        args: &[String],
+    ) -> Result<serde_json::Value, String> {
+        let conn = match self {
+            DbConnection::Redis(c) => c.clone(),
+            _ => return Err("Not a Redis connection".to_string()),
+        };
+        let mut conn = conn;
+        let db_index: i64 = database.trim_start_matches("db").parse().unwrap_or(0);
+        let _ = redis::cmd("SELECT").arg(db_index).query_async::<()>(&mut conn).await;
+        let mut cmd = redis::Cmd::new();
+        cmd.arg(command);
+        for a in args {
+            cmd.arg(a.as_str());
+        }
+        let result: redis::Value = cmd.query_async(&mut conn).await.map_err(|e| format!("Redis error: {}", e))?;
+        Ok(redis_value_to_json(&result))
     }
 
     pub async fn get_table_ddl(&self, database: &str, table: &str) -> Result<String, String> {
@@ -2753,6 +3276,15 @@ fn create_table_sql(table: &str, columns: &[ColumnInfo], source_type: &str, targ
         let mut has_default = c.default_value.is_some() && !c.default_value.as_ref().unwrap().is_empty();
         let mut default_val = c.default_value.as_deref().unwrap_or("").to_string();
 
+        if source_type == "postgresql" && !default_val.is_empty() {
+            if let Some(idx) = default_val.rfind("::") {
+                default_val = default_val[..idx].trim().to_string();
+            }
+            if default_val.trim() == "NULL" {
+                has_default = false;
+            }
+        }
+
         if is_auto_increment(c, source_type) {
             has_default = false;
         } else if has_default {
@@ -3194,6 +3726,7 @@ pub async fn transfer_data(
     let mut rows_transferred = 0i64;
     let mut errors = Vec::new();
     let mut logs: Vec<String> = Vec::new();
+    let mut table_stats: Vec<types::TransferStat> = Vec::new();
     let mut stored_fks: HashMap<String, Vec<ForeignKeyInfo>> = HashMap::new();
 
     let source_type = match source {
@@ -3218,7 +3751,21 @@ pub async fn transfer_data(
         .map(|cp| cp.split(',').collect())
         .unwrap_or_default();
 
+    let mut source_size_map: HashMap<String, u64> = HashMap::new();
+    if let Ok(sizes) = source.get_tables(&opts.source_database).await {
+        for t in sizes {
+            if t.object_type == "TABLE" || t.object_type == "COLLECTION" {
+                if let Some(sz) = t.size_bytes {
+                    source_size_map.insert(t.name.to_lowercase(), sz);
+                }
+            }
+        }
+    }
+
     'table_loop: for table in &opts.tables {
+        let table_start = std::time::Instant::now();
+        let rows_before = rows_transferred;
+        let size_bytes: u64 = source_size_map.get(&table.to_lowercase()).copied().unwrap_or(0);
         macro_rules! check_error_mode {
             () => {
                 match opts.error_mode {
@@ -3229,6 +3776,7 @@ pub async fn transfer_data(
                             errors,
                             duration: format!("{:.2}s", start.elapsed().as_secs_f64()),
                             logs,
+                            table_stats,
                         });
                     }
                     types::ErrorMode::SkipTable => {
@@ -3546,9 +4094,25 @@ pub async fn transfer_data(
                 }
                     { let _msg = format!("Completed table: {}", table); if let Some(ref _tx) = log_tx { let _ = _tx.send(_msg.clone()); } logs.push(_msg); }
                 tables_transferred.push(table.clone());
+                table_stats.push(types::TransferStat {
+                    table: table.clone(),
+                    rows: rows_transferred - rows_before,
+                    size_bytes,
+                    duration_ms: table_start.elapsed().as_millis() as u64,
+                    status: "ok".to_string(),
+                    error: None,
+                });
             }
             Err(e) => {
                 errors.push(format!("Failed to get schema: {}", e));
+                table_stats.push(types::TransferStat {
+                    table: table.clone(),
+                    rows: 0,
+                    size_bytes: 0,
+                    duration_ms: table_start.elapsed().as_millis() as u64,
+                    status: "error".to_string(),
+                    error: Some(e),
+                });
             }
         }
     }
@@ -3568,6 +4132,7 @@ pub async fn transfer_data(
                                 errors,
                                 duration: format!("{:.2}s", start.elapsed().as_secs_f64()),
                                 logs,
+                                table_stats,
                             });
                         }
                     }
@@ -3611,6 +4176,7 @@ pub async fn transfer_data(
         errors,
         duration: format!("{:.2}s", start.elapsed().as_secs_f64()),
         logs,
+        table_stats,
     })
 }
 
@@ -5702,6 +6268,35 @@ mod tests {
             "CURRENT_TIMESTAMP should not be quoted. SQL: {}", sql);
     }
 
+    #[test]
+    fn test_create_table_sql_strips_postgres_casts() {
+        let cols = vec![
+            types::ColumnInfo {
+                name: "tenant_id".into(),
+                data_type: "character varying".into(),
+                key: "".into(),
+                default_value: Some("NULL::character varying".into()),
+                nullable: true,
+                extra: "".into(),
+            },
+            types::ColumnInfo {
+                name: "payload".into(),
+                data_type: "text".into(),
+                key: "".into(),
+                default_value: Some("'{}'::text".into()),
+                nullable: true,
+                extra: "".into(),
+            },
+        ];
+        let sql = create_table_sql("t", &cols, "postgresql", "sqlite", Some("main"));
+        assert!(!sql.contains("::"), "PG cast should be stripped for SQLite. SQL: {}", sql);
+        assert!(!sql.contains("NULL::"), "NULL cast should be dropped entirely. SQL: {}", sql);
+        assert!(sql.contains("'{}'"),
+            "value cast should keep the literal. SQL: {}", sql);
+        let count_of_default = sql.matches("DEFAULT").count();
+        assert_eq!(count_of_default, 1, "only the literal default should remain. SQL: {}", sql);
+    }
+
     #[ignore]
     #[tokio::test]
     async fn test_duplicate_database_mysql() {
@@ -5915,6 +6510,32 @@ mod tests {
         assert!(!cache.tables.is_empty(), "should find tables");
         let t = cache.tables.iter().find(|t| t.table == "sc_t").unwrap();
         assert!(!t.columns.is_empty(), "should find columns");
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_empty_select_returns_columns() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE er_t (id INT, name TEXT)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO er_t (id, name) VALUES (1, 'a'), (2, 'b')")
+            .execute(&pool).await.unwrap();
+        let conn = DbConnection::Sqlite(pool);
+
+        let result = conn.execute_query("SELECT * FROM er_t WHERE 1=0").await.unwrap();
+        assert_eq!(result.rows.len(), 0, "should return no rows");
+        assert_eq!(
+            result.columns,
+            vec!["id".to_string(), "name".to_string()],
+            "0-row SELECT should still expose column names"
+        );
+
+        let result = conn.execute_query("UPDATE er_t SET name = 'x' WHERE 1=0").await.unwrap();
+        assert_eq!(result.columns.len(), 0, "DML should have no columns");
+        assert_eq!(result.row_count, 0, "no rows affected");
+
+        let result = conn.execute_query("UPDATE er_t SET name = 'y' WHERE id = 2").await.unwrap();
+        assert_eq!(result.columns.len(), 0, "DML should have no columns");
+        assert_eq!(result.row_count, 1, "should report affected row count");
     }
 
     #[tokio::test]
