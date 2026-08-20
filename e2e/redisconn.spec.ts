@@ -133,3 +133,55 @@ test('after redis and mysql both have browse tabs, clicking the mysql connection
   await expect(page.getByText('42', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
   await expect(page.locator('main').getByText(/SELECT \* FROM/)).toHaveCount(0)
 })
+
+test('query tab mixed in with browse tabs never leaks another connection preview', async ({ page }) => {
+  await openApp(page)
+
+  // Open a MySQL table browse tab.
+  await page.locator('span[title="MySQL"]').first().click()
+  await page.locator('span[title="shop"]').first().click()
+  await page.locator('span[title="abc_newtable_4"]').first().waitFor({ state: 'visible', timeout: 15_000 })
+  await page.locator('span[title="abc_newtable_4"]').first().dblclick()
+  await expect(page.getByText('42', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
+
+  // Open a Redis key browse tab.
+  await page.locator('span[title="Redis"]').first().click()
+  await page.locator('span[title="0"]').first().click()
+  await page.locator('span[title="session:user:1"]').first().waitFor({ state: 'visible', timeout: 15_000 })
+  await page.locator('span[title="session:user:1"]').first().dblclick()
+  await expect(page.locator('button:has-text("Refresh")').first()).toBeVisible({ timeout: 15_000 })
+
+  // Activate the plain query tab.
+  await page.locator('div[title="Query 1"]').first().click()
+  await expect(page.getByRole('textbox', { name: 'Editor content' })).toBeVisible({ timeout: 15_000 })
+
+  // Switch connections back and forth - none may show a cross-connection preview.
+  await page.locator('span[title="Redis"]').first().click()
+  await page.waitForTimeout(300)
+  await page.locator('span[title="MySQL"]').first().click()
+  await page.waitForTimeout(300)
+  await page.locator('span[title="Redis"]').first().click()
+  await page.waitForTimeout(300)
+  await expect(page.locator('button:has-text("Refresh")').first()).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('main').getByText(/SELECT \* FROM/)).toHaveCount(0)
+  await expect(page.locator('main').getByText('satoken')).toHaveCount(0)
+})
+
+test('reconnecting a disconnected connection restores its browse tab', async ({ page }) => {
+  await openApp(page)
+
+  // Open a MySQL table browse tab, then disconnect the connection.
+  await page.locator('span[title="MySQL"]').first().click()
+  await page.locator('span[title="shop"]').first().click()
+  await page.locator('span[title="abc_newtable_4"]').first().waitFor({ state: 'visible', timeout: 15_000 })
+  await page.locator('span[title="abc_newtable_4"]').first().dblclick()
+  await expect(page.getByText('42', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
+
+  await page.locator('span[title="MySQL"]').first().click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Disconnect', exact: true }).click()
+
+  // Click the MySQL connection to reconnect - its browse tab must come back.
+  await page.locator('span[title="MySQL"]').first().click()
+  await expect(page.getByText('42', { exact: true }).first()).toBeVisible({ timeout: 15_000 })
+  await expect(page.locator('main').getByText(/SELECT \* FROM/)).toHaveCount(0)
+})
