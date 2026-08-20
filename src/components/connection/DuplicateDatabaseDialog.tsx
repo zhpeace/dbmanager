@@ -34,7 +34,7 @@ function validateName(name: string, dbType: string, sourceDb: string): string | 
   if (trimmed.toLowerCase() === sourceDb.toLowerCase()) return "same_name"
   const maxLen = MAX_LENGTH[dbType] ?? 64
   if (trimmed.length > maxLen) return "name_too_long"
-  if (/[\/\\\.\x00-\x1f]/.test(trimmed)) return "name_invalid"
+  if (/\p{Cc}/u.test(trimmed) || /[/\\]/.test(trimmed) || trimmed.includes(".")) return "name_invalid"
   return null
 }
 

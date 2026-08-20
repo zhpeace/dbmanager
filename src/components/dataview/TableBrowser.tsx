@@ -78,6 +78,7 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
     } finally {
       setLoading(false)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- helper fns are recreated per render; adding them would loop via useEffect(loadData)
   }, [connectionId, database, table, page, pageSize, sortColumn, sortOrder, filters])
 
   useEffect(() => {
@@ -139,6 +140,7 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
 
   const qualified = useMemo(() => {
     return table.includes(".") ? table.split(".").map(quoteId).join(".") : quoteId(table)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- quoteId is a local helper recreated per render
   }, [table, dbType])
 
   function buildWhereClause(handle: Record<string, unknown>): { where: string; error?: string } {
@@ -260,6 +262,7 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
     } finally {
       setLoading(false)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- local helper fns (escapeVal/quoteId/buildWhereClause/binaryLiteral) are recreated per render
   }, [tableData, hasUnsaved, dirtyRows, newRows, deletedRows, qualified, connectionId, t, loadData, binaryColumns])
 
   const handleRollback = useCallback(() => {

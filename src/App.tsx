@@ -49,9 +49,9 @@ import type {
   ExecResult,
   DatabaseType,
 } from "@/lib/db"
-import { createObjectTemplate, getConnectionSecret, saveConnectionSecret, deleteConnectionSecret, buildSelectPreview, type LicenseStatus } from "@/lib/db"
+import { createObjectTemplate, getConnectionSecret, saveConnectionSecret, deleteConnectionSecret, buildSelectPreview, loadLicenseStatus, type LicenseStatus } from "@/lib/db"
 import { splitSqlStatements, parseErrorLine, buildExplainSql } from "@/lib/sql"
-import { LicenseDialog, loadLicenseStatus } from "@/components/connection/LicenseDialog"
+import { LicenseDialog } from "@/components/connection/LicenseDialog"
 
 const STORAGE_KEY = "dbmanager-connections"
 
@@ -225,6 +225,7 @@ function AppContent() {
       Promise.all(connected.map((c) => connectToDatabase(c)))
         .catch(() => {})
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount; connectToDatabase is recreated per render
   }, [])
 
   function saveConnections(conns: Connection[]) {

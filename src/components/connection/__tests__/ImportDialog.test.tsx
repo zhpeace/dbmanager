@@ -27,11 +27,6 @@ function getCombobox(text: string): HTMLElement {
   return el.closest('[role="combobox"]')!
 }
 
-function selectOption(text: string) {
-  const option = screen.getByText(text)
-  return option.closest('[role="option"]') ?? option
-}
-
 it("renders title and table select", () => {
   render(<ImportDialog {...defaultProps} />)
   expect(screen.getByText("Import Data")).toBeInTheDocument()

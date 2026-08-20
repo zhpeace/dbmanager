@@ -1,3 +1,4 @@
+// oxlint-disable react/only-export-components
 import { createContext, useContext, useEffect, useState } from "react"
 
 type Theme = "dark" | "light"

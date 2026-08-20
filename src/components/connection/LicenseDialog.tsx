@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { activateLicense, getLicenseStatus, type LicenseStatus } from "@/lib/db"
+import { activateLicense, type LicenseStatus } from "@/lib/db"
 
 export function LicenseDialog({
   open,
@@ -80,12 +80,4 @@ export function LicenseDialog({
       </DialogContent>
     </Dialog>
   )
-}
-
-export async function loadLicenseStatus(): Promise<LicenseStatus> {
-  try {
-    return await getLicenseStatus()
-  } catch {
-    return { activated: false, key: null }
-  }
 }

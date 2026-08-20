@@ -279,7 +279,7 @@ export function DataTable({
       minSize: 60,
       maxSize: 1200,
     }))
-  }, [columns, sortColumn, sortOrder, isExternalSort, onSort, editingCell, editValue, onCellEdit, onCellEditStart, onMoveNext, commitEdit, rowStates, onLargeEdit, largeValueThreshold, onBinaryEdit, binaryColumns])
+  }, [columns, sortColumn, sortOrder, isExternalSort, onSort, editingCell, editValue, onCellEditStart, onMoveNext, commitEdit, rowStates, onLargeEdit, largeValueThreshold, onBinaryEdit, binaryColumns, t])
 
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({})
 

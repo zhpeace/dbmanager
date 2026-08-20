@@ -1,3 +1,4 @@
+// oxlint-disable react/only-export-components
 import { useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { ChevronRight, ChevronDown } from "lucide-react"

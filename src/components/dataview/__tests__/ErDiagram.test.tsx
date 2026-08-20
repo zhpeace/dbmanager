@@ -1,5 +1,4 @@
 import { render, screen, waitFor } from "@testing-library/react"
-import userEvent from "@testing-library/user-event"
 import { invoke } from "@tauri-apps/api/core"
 import { ErDiagram } from "../ErDiagram"
 import type { SchemaCache } from "@/lib/db"

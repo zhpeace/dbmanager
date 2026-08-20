@@ -433,6 +433,14 @@ export async function getLicenseStatus(): Promise<LicenseStatus> {
   return invoke<LicenseStatus>("get_license_status")
 }
 
+export async function loadLicenseStatus(): Promise<LicenseStatus> {
+  try {
+    return await getLicenseStatus()
+  } catch {
+    return { activated: false, key: null }
+  }
+}
+
 export interface CheckpointState {
   completed_tables: string[]
   failed_tables: string[]

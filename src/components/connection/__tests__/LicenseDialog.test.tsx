@@ -1,8 +1,8 @@
 import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { LicenseDialog, loadLicenseStatus } from "../LicenseDialog"
+import { LicenseDialog } from "../LicenseDialog"
 import { invoke } from "@tauri-apps/api/core"
-import { getLicenseStatus } from "@/lib/db"
+import { loadLicenseStatus } from "@/lib/db"
 
 const mockOnActivated = vi.fn()
 
