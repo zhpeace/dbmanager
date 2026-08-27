@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ResizeHandle } from "@/components/ui/resize-handle"
 import { CreateTableDialog } from "@/components/connection/CreateTableDialog"
-import { DesignTableDialog } from "@/components/connection/DesignTableDialog"
+
 import { FindInTablesDialog } from "@/components/connection/FindInTablesDialog"
 import {
   Dialog,
@@ -77,7 +77,7 @@ function AppContent() {
   const [tables, setTables] = useState<Record<string, Record<string, TableInfo[]>>>({})
   const [redisScanCursor, setRedisScanCursor] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState<Record<string, boolean>>({})
-  const [tabs, setTabs] = useState<{ id: string; title: string; sql: string; filePath: string | null; browse?: { connectionId: string; database: string; table: string } | null; database?: Record<string, string | null> }[]>(
+  const [tabs, setTabs] = useState<{ id: string; title: string; sql: string; filePath: string | null; browse?: { connectionId: string; database: string; table: string; defaultTab?: string; objectType?: string } | null; database?: Record<string, string | null> }[]>(
     () => [{ id: crypto.randomUUID(), title: t('editor.tab_query') + " 1", sql: "", filePath: null, database: {} }]
   )
   const backendDbRef = useRef<string | null>(null)
@@ -196,7 +196,6 @@ function AppContent() {
   const [errorBanner, setErrorBanner] = useState<string | null>(null)
 
   const [createDialog, setCreateDialog] = useState<{ database: string } | null>(null)
-  const [designDialog, setDesignDialog] = useState<{ database: string; table: string } | null>(null)
   const [pendingDrop, setPendingDrop] = useState<{ type: string; name: string; database: string } | null>(null)
   const [renameTarget, setRenameTarget] = useState<{ database: string; table: string } | null>(null)
   const [renameValue, setRenameValue] = useState("")
@@ -299,6 +298,15 @@ function AppContent() {
           port: conn.config.port,
           password: password || null,
           database: String(conn.config.database ?? "0"),
+        })
+      } else if (conn.config.type === "dameng") {
+        await invoke("connect_dameng", {
+          id: conn.id,
+          host: conn.config.host,
+          port: conn.config.port,
+          user: conn.config.user,
+          password,
+          database: conn.config.database ?? "",
         })
       }
 
@@ -940,7 +948,9 @@ function handleDatabaseClick(database: string, connectionId: string) {
   }
 
   function handleDesignTable(database: string, table: string) {
-    setDesignDialog({ database, table })
+    const connId = activeConnectionId
+    if (!connId) return
+    openTableTab(buildSelectPreview(table, activeConnection!.config.type), connId, database, table, "columns")
   }
 
   async function handleExportTable(database: string, table: string, format: "csv" | "json" | "insert") {
@@ -1050,7 +1060,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
     setTabs((prev) => prev.map((tb) => (tb.id === id ? { ...tb, sql } : tb)))
   }
 
-  function setActiveTabBrowse(browse: { connectionId: string; database: string; table: string } | null) {
+  function setActiveTabBrowse(browse: { connectionId: string; database: string; table: string; defaultTab?: string } | null) {
     const id = activeTabIdRef.current || tabs[0]?.id
     if (!id) return
     setTabs((prev) => prev.map((tb) => (tb.id === id ? { ...tb, browse } : tb)))
@@ -1088,7 +1098,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
     }
   }
 
-  function openTableTab(sql: string, connectionId: string, database?: string, table?: string) {
+  function openTableTab(sql: string, connectionId: string, database?: string, table?: string, defaultTab?: string, objectType?: string) {
     if (!connectionId || !database || !table) return
     if (connectionId !== activeConnectionId) {
       handleSelectConnection(connectionId)
@@ -1096,11 +1106,14 @@ function handleDatabaseClick(database: string, connectionId: string) {
     const existing = tabs.find((tb) => tb.browse?.connectionId === connectionId && tb.browse?.database === database && tb.browse?.table === table)
     if (existing) {
       setActiveTabId(existing.id)
+      if (defaultTab || objectType) {
+        setTabs((prev) => prev.map((tb) => tb.id === existing.id ? { ...tb, browse: { ...tb.browse!, defaultTab: defaultTab ?? tb.browse!.defaultTab, objectType: objectType ?? tb.browse!.objectType } } : tb))
+      }
       setActiveBottomTab("browse")
       return
     }
     const id = crypto.randomUUID()
-    setTabs((prev) => [...prev, { id, title: table, sql, filePath: null, browse: { connectionId, database, table } }])
+    setTabs((prev) => [...prev, { id, title: table, sql, filePath: null, browse: { connectionId, database, table, defaultTab, objectType } }])
     setActiveTabId(id)
     setActiveBottomTab("browse")
   }
@@ -1221,8 +1234,8 @@ function handleDatabaseClick(database: string, connectionId: string) {
           onDeleteConnection={handleDeleteConnection}
           onLoadTables={handleLoadTables}
           onDatabaseClick={handleDatabaseClick}
-          onTableClick={(sql, connectionId, database, table) => {
-            openTableTab(sql, connectionId, database, table)
+          onTableClick={(sql, connectionId, database, table, objectType) => {
+            openTableTab(sql, connectionId, database, table, undefined, objectType)
           }}
           onInsertSql={(sql) => openInNewTab(sql)}
           databases={databases}
@@ -1349,6 +1362,10 @@ function handleDatabaseClick(database: string, connectionId: string) {
                       table={activeBrowse.table}
                       dbType={activeConnection!.config.type}
                       embedded
+                      defaultTab={activeBrowse.defaultTab as any}
+                      objectType={activeBrowse.objectType}
+                      onRunSql={runSql}
+                      onInsertSql={(sql) => openInNewTab(sql)}
                       onClose={() => closeTab(activeTabId)}
                     />
                   </div>
@@ -1403,6 +1420,10 @@ function handleDatabaseClick(database: string, connectionId: string) {
                           database={activeBrowse.database}
                           table={activeBrowse.table}
                           dbType={activeConnection!.config.type}
+                          defaultTab={activeBrowse.defaultTab as any}
+                          objectType={activeBrowse.objectType}
+                          onRunSql={runSql}
+                          onInsertSql={(sql) => openInNewTab(sql)}
                           onClose={() => { setActiveTabBrowse(null); setActiveBottomTab("results") }}
                         />
                       ) : (
@@ -1498,17 +1519,6 @@ function handleDatabaseClick(database: string, connectionId: string) {
           database={createDialog.database}
           dbType={connDbType(activeConnectionId) as any}
           onCreated={() => refreshTables(activeConnectionId!, createDialog.database)}
-        />
-      )}
-      {designDialog && activeConnectionId && (
-        <DesignTableDialog
-          open={true}
-          onOpenChange={(o) => { if (!o) setDesignDialog(null) }}
-          connectionId={activeConnectionId}
-          database={designDialog.database}
-          table={designDialog.table}
-          dbType={connDbType(activeConnectionId) as any}
-          onChanged={() => refreshTables(activeConnectionId!, designDialog.database)}
         />
       )}
       <Dialog open={!!pendingDrop} onOpenChange={(o) => { if (!o) setPendingDrop(null) }}>

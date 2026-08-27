@@ -19,6 +19,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
+import { isNumericType, toInputValue, fromInputValue, temporalKind, isStructuredTextType } from "@/lib/db"
 
 export type RowState = "modified" | "added" | "deleted"
 
@@ -44,6 +45,7 @@ interface DataTableProps {
   tableName?: string
   primaryKeys?: string[]
   copyEnabled?: boolean
+  columnTypes?: Record<string, string>
 }
 
 export function DataTable({
@@ -68,6 +70,7 @@ export function DataTable({
   tableName,
   primaryKeys,
   copyEnabled = true,
+  columnTypes,
 }: DataTableProps) {
   const { t } = useTranslation()
   const [internalSorting, setInternalSorting] = useState<SortingState>([])
@@ -105,6 +108,9 @@ export function DataTable({
     const rowData = data[row]
     if (!rowData) return
     setCopyCell(null)
+    const numericColumns = columnTypes
+      ? new Set(columns.filter((c) => isNumericType(columnTypes[c])))
+      : undefined
     if (kind === "cell") {
       copyText(cellString(rowData[col]))
       return
@@ -122,11 +128,11 @@ export function DataTable({
       return
     }
     if (kind === "insert" && tableName) {
-      copyText(toInsert(tableName, columns, [rowData]))
+      copyText(toInsert(tableName, columns, [rowData], numericColumns))
       return
     }
     if (kind === "update" && tableName) {
-      copyText(toUpdate(tableName, columns, rowData, primaryKeys))
+      copyText(toUpdate(tableName, columns, rowData, primaryKeys, numericColumns))
     }
   }
 
@@ -135,21 +141,26 @@ export function DataTable({
     if (editingCell) {
       const row = data[editingCell.row]
       const v = row ? row[editingCell.col] : undefined
-      setEditValue(v === null || v === undefined ? "" : String(v))
+      const type = columnTypes?.[editingCell.col]
+      setEditValue(
+        v === null || v === undefined ? "" : temporalKind(type) ? toInputValue(type, v) : String(v)
+      )
     }
-  }, [editingCell, data])
+  }, [editingCell, data, columnTypes])
 
   const commitEdit = useCallback(
     (rowIdx: number, col: string, original: string) => {
       if (commitHandled.current) return
       commitHandled.current = true
       if (editValue !== original) {
-        onCellEdit?.(rowIdx, col, editValue)
+        const type = columnTypes?.[col]
+        const out = temporalKind(type) && editValue !== "" ? fromInputValue(type, editValue) : editValue
+        onCellEdit?.(rowIdx, col, out)
       } else {
         onCellEditStart?.(-1, "")
       }
     },
-    [editValue, onCellEdit, onCellEditStart]
+    [editValue, onCellEdit, onCellEditStart, columnTypes]
   )
 
   const cols = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
@@ -198,9 +209,17 @@ export function DataTable({
         }
 
         if (isEditing) {
-          const original = value === null ? "" : value === undefined ? "" : String(value)
+          const type = columnTypes?.[col]
+          const kind = temporalKind(type)
+          const original = value === null || value === undefined
+            ? ""
+            : kind
+              ? toInputValue(type, value)
+              : String(value)
+          const inputType = kind === "date" ? "date" : kind === "time" ? "time" : kind === "datetime" ? "datetime-local" : "text"
           return (
             <input
+              type={inputType}
               className="w-full min-w-0 bg-transparent text-xs outline-none border border-primary rounded px-1"
               value={editValue}
               onChange={(e) => setEditValue(e.target.value)}
@@ -261,7 +280,9 @@ export function DataTable({
                 onBinaryEdit(rowIdx, col)
                 return
               }
-              if (isLarge && onLargeEdit) {
+              const isTemporal = !!temporalKind(columnTypes?.[col])
+              const isStructured = isStructuredTextType(columnTypes?.[col])
+              if ((isLarge || isTemporal || isStructured) && onLargeEdit) {
                 onLargeEdit(rowIdx, col)
                 return
               }
@@ -279,7 +300,7 @@ export function DataTable({
       minSize: 60,
       maxSize: 1200,
     }))
-  }, [columns, sortColumn, sortOrder, isExternalSort, onSort, editingCell, editValue, onCellEditStart, onMoveNext, commitEdit, rowStates, onLargeEdit, largeValueThreshold, onBinaryEdit, binaryColumns, t])
+  }, [columns, sortColumn, sortOrder, isExternalSort, onSort, editingCell, editValue, onCellEditStart, onMoveNext, commitEdit, rowStates, onLargeEdit, largeValueThreshold, onBinaryEdit, binaryColumns, columnTypes, t])
 
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({})
 

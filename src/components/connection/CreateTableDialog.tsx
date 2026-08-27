@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
 import type { ColumnDef, DatabaseType } from "@/lib/db"
 
-const COMMON_TYPES = [
+export const COMMON_TYPES = [
   "INT",
   "BIGINT",
   "VARCHAR(255)",

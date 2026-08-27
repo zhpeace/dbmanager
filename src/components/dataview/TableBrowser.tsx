@@ -1,15 +1,38 @@
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { useTranslation } from "react-i18next"
-import { ChevronLeft, ChevronRight, Table2, Info, Code, Download, X, Plus, Trash2, Save, RotateCcw, RefreshCw, Filter, FilterX } from "lucide-react"
+import { ChevronLeft, ChevronRight, Table2, Info, Code, Download, X, Plus, Trash2, Save, RotateCcw, RefreshCw, Filter, FilterX, ChevronsUpDown, Wand2, PenLine } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { DataTable, type RowState } from "./DataTable"
 import { ValueEditorDialog } from "./ValueEditorDialog"
 import { BinaryEditorDialog } from "./BinaryEditorDialog"
 import { RedisValuePanel } from "./RedisValuePanel"
-import type { TableData, DatabaseType } from "@/lib/db"
+import type { TableData, DatabaseType, ColumnDef, IndexInfo, ForeignKeyInfo, ColumnInfo } from "@/lib/db"
+import { COMMON_TYPES } from "@/components/connection/CreateTableDialog"
+import {
+  isNumericType,
+  getSchemaCache,
+  alterAddColumn,
+  alterDropColumn,
+  alterModifyColumn,
+  alterRenameColumn,
+  createIndex,
+  dropIndex,
+  addForeignKey,
+  dropForeignKey,
+} from "@/lib/db"
 import { buildXlsx } from "@/lib/xlsx"
+import { formatSql } from "@/lib/sql"
+import { cn } from "@/lib/utils"
+import Editor from "@monaco-editor/react"
+import { useTheme } from "@/lib/theme"
+
+type EditableColumn = ColumnDef & { origName?: string }
 
 interface TableBrowserProps {
   connectionId: string
@@ -18,14 +41,23 @@ interface TableBrowserProps {
   dbType: DatabaseType
   onClose?: () => void
   embedded?: boolean
+  defaultTab?: "data" | "columns" | "indexes" | "fks" | "ddl"
+  objectType?: string
+  onRunSql?: (sql: string) => Promise<void>
+  onInsertSql?: (sql: string) => void
 }
 
 type NewRow = Record<string, unknown>
 
-export function TableBrowser({ connectionId, database, table, dbType, onClose, embedded = false }: TableBrowserProps) {
+export function TableBrowser({ connectionId, database, table, dbType, onClose, embedded = false, defaultTab, objectType, onRunSql, onInsertSql }: TableBrowserProps) {
   const { t } = useTranslation()
+  const { theme } = useTheme()
+  const isView = objectType === "VIEW"
+  const editable = !isView
   const [tableData, setTableData] = useState<TableData | null>(null)
   const [ddl, setDdl] = useState<string>("")
+  const [ddlBusy, setDdlBusy] = useState(false)
+  const [ddlMsg, setDdlMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(100)
   const [sortColumn, setSortColumn] = useState<string | null>(null)
@@ -42,6 +74,22 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
   const [newRows, setNewRows] = useState<NewRow[]>([])
   const [deletedRows, setDeletedRows] = useState<Set<number>>(new Set())
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set())
+
+  // --- 结构维护（列/索引/外键）：本地编辑 + 「应用」统一提交 ALTER ---
+  const [structColumns, setStructColumns] = useState<EditableColumn[]>([])
+  const [structOrigColumns, setStructOrigColumns] = useState<EditableColumn[]>([])
+  const [structIndexes, setStructIndexes] = useState<IndexInfo[]>([])
+  const [structOrigIndexes, setStructOrigIndexes] = useState<IndexInfo[]>([])
+  const [structFks, setStructFks] = useState<ForeignKeyInfo[]>([])
+  const [structOrigFks, setStructOrigFks] = useState<ForeignKeyInfo[]>([])
+  const [otherTables, setOtherTables] = useState<string[]>([])
+  const [structBusy, setStructBusy] = useState(false)
+  const [structError, setStructError] = useState<string | null>(null)
+  const [structSuccess, setStructSuccess] = useState(false)
+  const structSuccessTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [newCol, setNewCol] = useState<ColumnDef>({ name: "", data_type: "VARCHAR(255)", nullable: true, primary_key: false, default_value: null })
+  const [newIdx, setNewIdx] = useState<{ name: string; columns: string[]; unique: boolean }>({ name: "", columns: [], unique: false })
+  const [newFk, setNewFk] = useState<{ name: string; column: string; refTable: string; refColumn: string }>({ name: "", column: "", refTable: "", refColumn: "" })
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -91,6 +139,156 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
       .catch(() => {})
   }, [connectionId, database, table])
 
+  const loadSchema = useCallback(async () => {
+    try {
+      const cache = await getSchemaCache(connectionId, database)
+      const tbl = cache.tables.find((x) => x.table === table)
+      if (!tbl) return
+      const defs: EditableColumn[] = tbl.columns.map((c: ColumnInfo) => ({
+        name: c.name,
+        data_type: c.data_type,
+        nullable: c.nullable,
+        primary_key: c.key === "PRI",
+        default_value: c.default_value ?? null,
+        origName: c.name,
+      }))
+      setStructColumns(defs)
+      setStructOrigColumns(defs.map((d) => ({ ...d })))
+      setStructIndexes(tbl.indexes ?? [])
+      setStructOrigIndexes(tbl.indexes ?? [])
+      setStructFks(tbl.foreign_keys ?? [])
+      setStructOrigFks(tbl.foreign_keys ?? [])
+      setOtherTables(cache.tables.map((x) => x.table).filter((x) => x !== table))
+    } catch (e: any) {
+      setStructError(String(e))
+    }
+  }, [connectionId, database, table])
+
+  useEffect(() => {
+    loadSchema()
+  }, [loadSchema])
+
+  useEffect(() => () => {
+    if (structSuccessTimer.current) clearTimeout(structSuccessTimer.current)
+  }, [])
+
+  async function runStructDdl(steps: (() => Promise<unknown>)[]) {
+    setStructBusy(true)
+    setStructError(null)
+    setStructSuccess(false)
+    try {
+      for (const fn of steps) await fn()
+      await loadSchema()
+      await loadData()
+      setStructOrigColumns(structColumns.map((d) => ({ ...d })))
+      setStructOrigIndexes(structIndexes)
+      setStructOrigFks(structFks)
+      setStructSuccess(true)
+      if (structSuccessTimer.current) clearTimeout(structSuccessTimer.current)
+      structSuccessTimer.current = setTimeout(() => setStructSuccess(false), 3000)
+    } catch (e: any) {
+      setStructError(t('dialog.failed', { error: String(e) }))
+      setStructSuccess(false)
+    } finally {
+      setStructBusy(false)
+    }
+  }
+
+  function applyColumns() {
+    const orig = new Map(structOrigColumns.map((c) => [c.origName ?? c.name, c]))
+    const steps: (() => Promise<unknown>)[] = []
+    for (const o of structOrigColumns) {
+      const key = o.origName ?? o.name
+      if (!structColumns.some((c) => (c.origName ?? c.name) === key)) {
+        steps.push(() => alterDropColumn(connectionId, database, table, key))
+      }
+    }
+    for (const c of structColumns) {
+      const on = c.origName
+      if (!on) {
+        steps.push(() => alterAddColumn(connectionId, database, table, c))
+        continue
+      }
+      const o = orig.get(on)
+      if (!o) {
+        steps.push(() => alterAddColumn(connectionId, database, table, c))
+        continue
+      }
+      if (c.name !== o.name) {
+        steps.push(() => alterRenameColumn(connectionId, database, table, o.name, c.name))
+      }
+      const changed =
+        c.data_type !== o.data_type ||
+        c.nullable !== o.nullable ||
+        c.primary_key !== o.primary_key ||
+        (c.default_value ?? null) !== (o.default_value ?? null)
+      if (changed) {
+        steps.push(() => alterModifyColumn(connectionId, database, table, c))
+      }
+    }
+    return runStructDdl(steps)
+  }
+
+  function applyIndexes() {
+    const orig = new Map(structOrigIndexes.map((i) => [i.name, i]))
+    const steps: (() => Promise<unknown>)[] = []
+    for (const i of structOrigIndexes) {
+      if (!structIndexes.some((x) => x.name === i.name)) {
+        steps.push(() => dropIndex(connectionId, database, table, i.name))
+      }
+    }
+    for (const i of structIndexes) {
+      if (!orig.has(i.name)) {
+        const cols = (i.columns ?? []).join(",").split(",").map((s) => s.trim()).filter(Boolean)
+        steps.push(() => createIndex(connectionId, database, table, i.name, cols, i.unique))
+      }
+    }
+    return runStructDdl(steps)
+  }
+
+  function applyFks() {
+    const key = (f: ForeignKeyInfo) => f.constraint_name ?? f.column_name
+    const orig = new Map(structOrigFks.map((f) => [key(f), f]))
+    const steps: (() => Promise<unknown>)[] = []
+    for (const f of structOrigFks) {
+      if (!structFks.some((x) => key(x) === key(f))) {
+        steps.push(() => dropForeignKey(connectionId, database, table, key(f)))
+      }
+    }
+    for (const f of structFks) {
+      if (!orig.has(key(f))) {
+        steps.push(() =>
+          addForeignKey(connectionId, database, table, f.constraint_name ?? f.column_name, f.column_name, f.ref_table, f.ref_column),
+        )
+      }
+    }
+    return runStructDdl(steps)
+  }
+
+  function formatDdl() {
+    try {
+      setDdl(formatSql(ddl, dbType))
+      setDdlMsg(null)
+    } catch (e: any) {
+      setDdlMsg({ type: "err", text: String(e) })
+    }
+  }
+
+  async function applyDdl() {
+    if (!onRunSql) return
+    setDdlBusy(true)
+    setDdlMsg(null)
+    try {
+      await onRunSql(ddl)
+      await loadSchema()
+      setDdlMsg({ type: "ok", text: t('dialog.success') })
+    } catch (e: any) {
+      setDdlMsg({ type: "err", text: String(e) })
+    } finally {
+      setDdlBusy(false)
+    }
+  }
+
   function quoteId(s: string): string {
     if (dbType === "mysql" || dbType === "sqlite") {
       return "`" + s.replace(/`/g, "``") + "`"
@@ -101,11 +299,15 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
     return s
   }
 
-  function escapeVal(v: unknown): string {
+  function escapeVal(v: unknown, numeric?: boolean): string {
     if (v === null || v === undefined) return "NULL"
     if (typeof v === "number") return String(v)
     if (typeof v === "boolean") return dbType === "postgresql" ? `'${v}'` : (v ? "1" : "0")
-    return "'" + String(v).replace(/'/g, "''") + "'"
+    const s = String(v)
+    // Numeric columns: keep big integers / decimals unquoted so the exact
+    // value round-trips (PostgreSQL rejects a quoted bigint literal).
+    if (numeric && /^[-+]?(\d+(\.\d+)?|\.\d+)$/.test(s.trim())) return s
+    return "'" + s.replace(/'/g, "''") + "'"
   }
 
   function parseNumOrStr(v: string): string | number {
@@ -121,6 +323,22 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
     return tableData.columns
       .filter((c) => /blob|binary|bytea|bytes|raw|image/i.test(c.data_type))
       .map((c) => c.name)
+  }, [tableData])
+
+  const numericColumns = useMemo(() => {
+    if (!tableData) return new Set<string>()
+    return new Set(
+      tableData.columns
+        .filter((c) => isNumericType(c.data_type))
+        .map((c) => c.name)
+    )
+  }, [tableData])
+
+  const columnTypes = useMemo(() => {
+    if (!tableData) return {} as Record<string, string>
+    const m: Record<string, string> = {}
+    for (const c of tableData.columns) m[c.name] = c.data_type
+    return m
   }, [tableData])
 
   function binaryLiteral(v: unknown): string {
@@ -155,7 +373,7 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
     if (pks.length === 0) {
       return { where: "", error: t('tablebrowser.no_pk') }
     }
-    const conds = pks.map((pk) => `${quoteId(pk)} = ${escapeVal(handle[pk])}`)
+    const conds = pks.map((pk) => `${quoteId(pk)} = ${escapeVal(handle[pk], numericColumns.has(pk))}`)
     return { where: `WHERE ${conds.join(" AND ")}` }
   }
 
@@ -228,7 +446,7 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
         return
       }
       for (const [col, val] of Object.entries(cells)) {
-        const lit = binaryColumns.includes(col) ? binaryLiteral(val) : escapeVal(val)
+        const lit = binaryColumns.includes(col) ? binaryLiteral(val) : escapeVal(val, numericColumns.has(col))
         sql.push(`UPDATE ${qualified} SET ${quoteId(col)} = ${lit} ${where}`)
       }
     }
@@ -236,7 +454,7 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
     for (const row of newRows) {
       const cols = Object.keys(row).filter((c) => row[c] !== undefined)
       if (cols.length === 0) continue
-      const vals = cols.map((c) => binaryColumns.includes(c) ? binaryLiteral(row[c]) : escapeVal(row[c]))
+      const vals = cols.map((c) => binaryColumns.includes(c) ? binaryLiteral(row[c]) : escapeVal(row[c], numericColumns.has(c)))
       sql.push(`INSERT INTO ${qualified} (${cols.map(quoteId).join(", ")}) VALUES (${vals.join(", ")})`)
     }
 
@@ -534,7 +752,7 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
           ))}
         </div>
       )}
-      <Tabs defaultValue="data" className="flex-1 flex flex-col min-h-0">
+      <Tabs defaultValue={defaultTab ?? "data"} className="flex-1 flex flex-col min-h-0">
         <div className="border-b px-3">
           <TabsList className="bg-transparent h-9">
             <TabsTrigger value="data" className="text-xs data-[state=active]:bg-background">
@@ -545,6 +763,16 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
               <Info className="h-3.5 w-3.5 mr-1" />
               {t('tablebrowser.tab_columns')}
             </TabsTrigger>
+            {!isView && (
+              <TabsTrigger value="indexes" className="text-xs data-[state=active]:bg-background">
+                {t('tablebrowser.tab_indexes')}
+              </TabsTrigger>
+            )}
+            {!isView && (
+              <TabsTrigger value="fks" className="text-xs data-[state=active]:bg-background">
+                {t('tablebrowser.tab_fks')}
+              </TabsTrigger>
+            )}
             <TabsTrigger value="ddl" className="text-xs data-[state=active]:bg-background">
               <Code className="h-3.5 w-3.5 mr-1" />
               {t('tablebrowser.tab_ddl')}
@@ -572,6 +800,7 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
               onLargeEdit={(row, col) => setLargeEditCell({ row, col })}
               onBinaryEdit={(row, col) => setBinaryEditCell({ row, col })}
               binaryColumns={binaryColumns}
+              columnTypes={columnTypes}
               rowStates={rowStates}
               selectedRows={selectedRows}
               onSelectionChange={handleSelectionChange}
@@ -584,49 +813,406 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
             </div>
           )}
         </TabsContent>
-        <TabsContent value="columns" className="flex-1 mt-0 min-h-0 overflow-auto">
-          <table className="w-full text-xs border-collapse">
-            <thead className="sticky top-0 bg-muted/80">
-              <tr className="border-b">
-                <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">{t('tablebrowser.col_name')}</th>
-                <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">{t('tablebrowser.col_type')}</th>
-                <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">{t('tablebrowser.col_nullable')}</th>
-                <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">{t('tablebrowser.col_key')}</th>
-                <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">{t('tablebrowser.col_default')}</th>
-                <th className="text-left px-3 py-1.5 font-medium text-muted-foreground">{t('tablebrowser.col_extra')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tableData?.columns.map((col) => (
-                <tr key={col.name} className="border-b hover:bg-accent/30">
-                  <td className="px-3 py-1 font-medium">{col.name}</td>
-                  <td className="px-3 py-1 text-muted-foreground">{col.data_type}</td>
-                  <td className="px-3 py-1">{col.nullable ? t('tablebrowser.yes') : t('tablebrowser.no')}</td>
-                  <td className="px-3 py-1 text-muted-foreground">{col.key || t('datatable.empty')}</td>
-                  <td className="px-3 py-1 text-muted-foreground font-mono">{col.default_value ?? t('datatable.empty')}</td>
-                  <td className="px-3 py-1 text-muted-foreground">{col.extra || t('datatable.empty')}</td>
+        <TabsContent value="columns" className="flex-1 mt-0 min-h-0 flex flex-col">
+          <div className="flex-1 overflow-auto">
+            <table className="w-full table-fixed text-xs border-collapse">
+              <thead className="sticky top-0 bg-muted/80">
+                <tr className="border-b">
+                  <th className="text-left px-2 py-1.5 font-medium w-10">#</th>
+                  <th className="text-left px-2 py-1.5 font-medium w-56 truncate">{t('dialog.col_name')}</th>
+                  <th className="text-left px-2 py-1.5 font-medium w-44">{t('dialog.col_type')}</th>
+                  <th className="text-center px-2 py-1.5 font-medium w-16">{t('dialog.col_nullable')}</th>
+                  <th className="text-center px-2 py-1.5 font-medium w-12">{t('dialog.col_pk')}</th>
+                  <th className="text-left px-2 py-1.5 font-medium w-36">{t('dialog.col_default')}</th>
+                  <th className="w-8" />
+                  <th />
                 </tr>
-              ))}
-              {(!tableData || tableData.columns.length === 0) && (
-                <tr>
-                  <td colSpan={6} className="px-3 py-4 text-center text-muted-foreground">
-                    {t('tablebrowser.no_columns')}
-                  </td>
+              </thead>
+              <tbody>
+                {structColumns.map((col, i) => (
+                  <tr key={i} className="border-b">
+                    <td className="px-2 py-1 text-muted-foreground">{i + 1}</td>
+                    <td className="px-2 py-1">
+                      <Input
+                        value={col.name}
+                        disabled={!editable}
+                        onChange={(e) => setStructColumns((p) => p.map((c, idx) => (idx === i ? { ...c, name: e.target.value } : c)))}
+                        className="h-7 text-xs"
+                      />
+                    </td>
+                    <td className="px-2 py-1">
+                      <TypeCombobox
+                        value={col.data_type}
+                        disabled={structBusy || !editable}
+                        onChange={(v) => setStructColumns((p) => p.map((c, idx) => (idx === i ? { ...c, data_type: v } : c)))}
+                      />
+                    </td>
+                    <td className="px-2 py-1 text-center">
+                      <Checkbox
+                        checked={col.nullable}
+                        disabled={!editable}
+                        onCheckedChange={(v) => setStructColumns((p) => p.map((c, idx) => (idx === i ? { ...c, nullable: v === true } : c)))}
+                      />
+                    </td>
+                    <td className="px-2 py-1 text-center">
+                      <Checkbox
+                        checked={col.primary_key}
+                        disabled={!editable}
+                        onCheckedChange={(v) =>
+                          setStructColumns((p) => p.map((c, idx) => (idx === i ? { ...c, primary_key: v === true, nullable: v === true ? false : c.nullable } : c)))
+                        }
+                      />
+                    </td>
+                    <td className="px-2 py-1">
+                      <Input
+                        value={col.default_value ?? ""}
+                        disabled={!editable}
+                        onChange={(e) => setStructColumns((p) => p.map((c, idx) => (idx === i ? { ...c, default_value: e.target.value || null } : c)))}
+                        className="h-7 text-xs"
+                      />
+                    </td>
+                    <td className="px-2 py-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        title={t('dialog.design_drop_col')}
+                        disabled={!editable || structBusy}
+                        onClick={() => setStructColumns((p) => p.filter((_, idx) => idx !== i))}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                      </Button>
+                    </td>
+                    <td />
+                  </tr>
+                ))}
+                {structColumns.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="px-3 py-4 text-center text-muted-foreground">
+                      {t('tablebrowser.no_columns')}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {editable && (
+            <div className="flex items-end gap-2 border-t p-2">
+              <div className="flex-1">
+                <label className="text-[10px] text-muted-foreground">{t('dialog.col_name')}</label>
+                <Input value={newCol.name} onChange={(e) => setNewCol((p) => ({ ...p, name: e.target.value }))} className="h-7 text-xs" />
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] text-muted-foreground">{t('dialog.col_type')}</label>
+                <TypeCombobox
+                  value={newCol.data_type}
+                  disabled={structBusy}
+                  onChange={(v) => setNewCol((p) => ({ ...p, data_type: v }))}
+                />
+              </div>
+              <Button
+                size="sm"
+                className="text-xs"
+                disabled={!newCol.name.trim() || structBusy}
+                onClick={() => {
+                  setStructColumns((p) => [...p, { ...newCol, name: newCol.name.trim(), origName: undefined }])
+                  setNewCol({ name: "", data_type: "VARCHAR(255)", nullable: true, primary_key: false, default_value: null })
+                }}
+              >
+                <Plus className="h-3.5 w-3.5 mr-1" />
+                {t('dialog.design_add')}
+              </Button>
+            </div>
+          )}
+          <div className="flex items-center gap-2 border-t px-2 py-2">
+            {editable ? (
+              <>
+                <Button size="sm" onClick={applyColumns} disabled={structBusy}>
+                  <Save className="h-3.5 w-3.5 mr-1" />
+                  {t('dialog.apply')}
+                </Button>
+                <Button size="sm" variant="outline" onClick={loadSchema} disabled={structBusy}>
+                  <RotateCcw className="h-3.5 w-3.5 mr-1" />
+                  {t('dialog.reset')}
+                </Button>
+                {structError && <span className="text-xs text-destructive break-all">{structError}</span>}
+                {structSuccess && <span className="text-xs text-emerald-600">{t('dialog.success')}</span>}
+              </>
+            ) : (
+              <span className="text-xs text-muted-foreground">{t('tablebrowser.view_columns_readonly')}</span>
+            )}
+          </div>
+        </TabsContent>
+
+        <TabsContent value="indexes" className="flex-1 mt-0 min-h-0 flex flex-col">
+          <div className="flex-1 overflow-auto border rounded m-2">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-muted/80">
+                <tr className="border-b">
+                  <th className="text-left px-2 py-1.5 font-medium">{t('dialog.idx_name')}</th>
+                  <th className="text-left px-2 py-1.5 font-medium">{t('dialog.idx_columns')}</th>
+                  <th className="text-center px-2 py-1.5 font-medium w-16">{t('dialog.idx_unique')}</th>
+                  <th className="w-8" />
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {structIndexes.map((idx, i) => (
+                  <tr key={i} className="border-b">
+                    <td className="px-2 py-1">{idx.name}</td>
+                    <td className="px-2 py-1">{(idx.columns ?? []).join(", ")}</td>
+                    <td className="px-2 py-1 text-center">{idx.unique ? "✓" : ""}</td>
+                    <td className="px-2 py-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        title={t('dialog.idx_drop')}
+                        disabled={structBusy}
+                        onClick={() => setStructIndexes((p) => p.filter((_, x) => x !== i))}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {structIndexes.length === 0 && (
+              <p className="p-3 text-xs text-muted-foreground">{t('dialog.no_indexes')}</p>
+            )}
+          </div>
+          <div className="flex items-end gap-2 border rounded p-2 m-2 mt-0">
+            <div className="flex-1">
+              <label className="text-[10px] text-muted-foreground">{t('dialog.idx_name')}</label>
+              <Input
+                value={newIdx.name}
+                onChange={(e) => setNewIdx((p) => ({ ...p, name: e.target.value }))}
+                className="h-7 text-xs"
+                placeholder={`idx_${table}_`}
+              />
+            </div>
+            <div className="flex-[2]">
+              <label className="text-[10px] text-muted-foreground">{t('dialog.idx_columns')}</label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="h-7 w-full justify-between text-xs font-normal" disabled={structBusy}>
+                    <span className="truncate">
+                      {newIdx.columns.length > 0 ? newIdx.columns.join(", ") : t('dialog.idx_pick_columns')}
+                    </span>
+                    <ChevronsUpDown className="h-3.5 w-3.5 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-56 p-2">
+                  <div className="max-h-52 overflow-auto space-y-1">
+                    {structColumns.length === 0 && (
+                      <p className="text-xs text-muted-foreground px-1">{t('dialog.no_columns')}</p>
+                    )}
+                    {structColumns.map((c) => {
+                      const checked = newIdx.columns.includes(c.name)
+                      return (
+                        <label key={c.name} className="flex items-center gap-2 text-xs px-1 py-0.5 rounded hover:bg-accent cursor-pointer">
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={(v) =>
+                              setNewIdx((p) => ({
+                                ...p,
+                                columns: v === true ? [...p.columns, c.name] : p.columns.filter((n) => n !== c.name),
+                              }))
+                            }
+                          />
+                          <span className="truncate">{c.name}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </PopoverContent>
+              </Popover>
+            </div>
+            <div className="flex items-center gap-1 pb-1.5">
+              <Checkbox checked={newIdx.unique} onCheckedChange={(v) => setNewIdx((p) => ({ ...p, unique: v === true }))} id="new-idx-unique" />
+              <label htmlFor="new-idx-unique" className="text-xs">{t('dialog.idx_unique')}</label>
+            </div>
+            <Button
+              size="sm"
+              className="text-xs"
+              disabled={!newIdx.name.trim() || newIdx.columns.length === 0 || structBusy}
+              onClick={() => {
+                const name = newIdx.name.trim()
+                const cols = newIdx.columns
+                setStructIndexes((p) => [...p, { name, columns: cols, unique: newIdx.unique, index_type: "" }])
+                setNewIdx({ name: "", columns: [], unique: false })
+              }}
+            >
+              <Plus className="h-3.5 w-3.5 mr-1" />
+              {t('dialog.idx_add')}
+            </Button>
+          </div>
+          <div className="flex items-center gap-2 px-2 pb-2">
+            <Button size="sm" onClick={applyIndexes} disabled={structBusy}>
+              <Save className="h-3.5 w-3.5 mr-1" />
+              {t('dialog.apply')}
+            </Button>
+            <Button size="sm" variant="outline" onClick={loadSchema} disabled={structBusy}>
+              <RotateCcw className="h-3.5 w-3.5 mr-1" />
+              {t('dialog.reset')}
+            </Button>
+            {structError && <span className="text-xs text-destructive break-all">{structError}</span>}
+            {structSuccess && <span className="text-xs text-emerald-600">{t('dialog.success')}</span>}
+          </div>
+        </TabsContent>
+
+        <TabsContent value="fks" className="flex-1 mt-0 min-h-0 flex flex-col">
+          <div className="flex-1 overflow-auto border rounded m-2">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-muted/80">
+                <tr className="border-b">
+                  <th className="text-left px-2 py-1.5 font-medium">{t('dialog.fk_name')}</th>
+                  <th className="text-left px-2 py-1.5 font-medium">{t('dialog.fk_column')}</th>
+                  <th className="text-left px-2 py-1.5 font-medium">{t('dialog.fk_ref_table')}</th>
+                  <th className="text-left px-2 py-1.5 font-medium">{t('dialog.fk_ref_column')}</th>
+                  <th className="w-8" />
+                </tr>
+              </thead>
+              <tbody>
+                {structFks.map((fk, i) => (
+                  <tr key={i} className="border-b">
+                    <td className="px-2 py-1">{fk.constraint_name ?? fk.column_name}</td>
+                    <td className="px-2 py-1">{fk.column_name}</td>
+                    <td className="px-2 py-1">{fk.ref_table}</td>
+                    <td className="px-2 py-1">{fk.ref_column}</td>
+                    <td className="px-2 py-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        title={t('dialog.fk_drop')}
+                        disabled={structBusy}
+                        onClick={() => setStructFks((p) => p.filter((_, x) => x !== i))}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {structFks.length === 0 && (
+              <p className="p-3 text-xs text-muted-foreground">{t('dialog.no_fks')}</p>
+            )}
+          </div>
+          <div className="flex items-end gap-2 border rounded p-2 m-2 mt-0">
+            <div className="flex-1">
+              <label className="text-[10px] text-muted-foreground">{t('dialog.fk_name')}</label>
+              <Input value={newFk.name} onChange={(e) => setNewFk((p) => ({ ...p, name: e.target.value }))} className="h-7 text-xs" placeholder={`fk_${table}_`} />
+            </div>
+            <div className="flex-1">
+              <label className="text-[10px] text-muted-foreground">{t('dialog.fk_column')}</label>
+              <Select value={newFk.column} onValueChange={(v) => setNewFk((p) => ({ ...p, column: v }))}>
+                <SelectTrigger className="h-7 text-xs">
+                  <SelectValue placeholder={t('dialog.fk_column')} />
+                </SelectTrigger>
+                <SelectContent>
+                  {structColumns.filter((c) => !c.primary_key).map((c) => (
+                    <SelectItem key={c.name} value={c.name}>{c.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex-1">
+              <label className="text-[10px] text-muted-foreground">{t('dialog.fk_ref_table')}</label>
+              <Select value={newFk.refTable} onValueChange={(v) => setNewFk((p) => ({ ...p, refTable: v, refColumn: "" }))}>
+                <SelectTrigger className="h-7 text-xs">
+                  <SelectValue placeholder={t('dialog.fk_ref_table')} />
+                </SelectTrigger>
+                <SelectContent>
+                  {otherTables.map((tb) => (
+                    <SelectItem key={tb} value={tb}>{tb}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex-1">
+              <label className="text-[10px] text-muted-foreground">{t('dialog.fk_ref_column')}</label>
+              <Input value={newFk.refColumn} onChange={(e) => setNewFk((p) => ({ ...p, refColumn: e.target.value }))} className="h-7 text-xs" placeholder="id" />
+            </div>
+            <Button
+              size="sm"
+              className="text-xs"
+              disabled={!newFk.name.trim() || !newFk.column || !newFk.refTable || !newFk.refColumn.trim() || structBusy}
+              onClick={() => {
+                const name = newFk.name.trim()
+                setStructFks((p) => [...p, { constraint_name: name, column_name: newFk.column, ref_table: newFk.refTable, ref_column: newFk.refColumn.trim() }])
+                setNewFk({ name: "", column: "", refTable: "", refColumn: "" })
+              }}
+            >
+              <Plus className="h-3.5 w-3.5 mr-1" />
+              {t('dialog.fk_add')}
+            </Button>
+          </div>
+          <div className="flex items-center gap-2 px-2 pb-2">
+            <Button size="sm" onClick={applyFks} disabled={structBusy}>
+              <Save className="h-3.5 w-3.5 mr-1" />
+              {t('dialog.apply')}
+            </Button>
+            <Button size="sm" variant="outline" onClick={loadSchema} disabled={structBusy}>
+              <RotateCcw className="h-3.5 w-3.5 mr-1" />
+              {t('dialog.reset')}
+            </Button>
+            {structError && <span className="text-xs text-destructive break-all">{structError}</span>}
+            {structSuccess && <span className="text-xs text-emerald-600">{t('dialog.success')}</span>}
+          </div>
+          {dbType === "sqlite" && (
+            <p className="text-[11px] text-muted-foreground px-2 pb-2">{t('dialog.fk_unsupported')}</p>
+          )}
         </TabsContent>
         <TabsContent value="ddl" className="flex-1 mt-0 min-h-0 data-[state=active]:flex flex-col">
-          <pre className="flex-1 p-3 text-xs font-mono overflow-auto whitespace-pre-wrap text-muted-foreground">
-            {ddl || t('tablebrowser.loading')}
-          </pre>
+          <div className="flex items-center gap-2 border-b px-2 py-1.5">
+            <Button size="sm" variant="outline" onClick={formatDdl} disabled={ddlBusy || !ddl}>
+              <Wand2 className="h-3.5 w-3.5 mr-1" />
+              {t('editor.format')}
+            </Button>
+            <Button size="sm" onClick={applyDdl} disabled={ddlBusy || !ddl || !onRunSql}>
+              <Save className="h-3.5 w-3.5 mr-1" />
+              {t('tablebrowser.apply_ddl')}
+            </Button>
+            {onInsertSql && (
+              <Button size="sm" variant="ghost" onClick={() => onInsertSql(ddl)} disabled={ddlBusy || !ddl}>
+                <PenLine className="h-3.5 w-3.5 mr-1" />
+                {t('tablebrowser.open_in_editor')}
+              </Button>
+            )}
+            {ddlMsg && (
+              <span className={cn("text-xs break-all", ddlMsg.type === "ok" ? "text-emerald-600" : "text-destructive")}>
+                {ddlMsg.text}
+              </span>
+            )}
+          </div>
+          <div className="flex-1 min-h-0">
+            <Editor
+              height="100%"
+              defaultLanguage="sql"
+              theme={theme === "dark" ? "vs-dark" : "light"}
+              value={ddl}
+              onChange={(v) => {
+                setDdl(v ?? "")
+                setDdlMsg(null)
+              }}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 12,
+                wordWrap: "on",
+                scrollBeyondLastLine: false,
+                automaticLayout: true,
+              }}
+            />
+          </div>
         </TabsContent>
       </Tabs>
       <ValueEditorDialog
         open={largeEditCell !== null}
         tableName={table}
         column={largeEditCell?.col ?? ""}
+        columnType={largeEditCell ? columnTypes[largeEditCell.col] : undefined}
         rowIndex={largeEditCell?.row ?? 0}
         value={largeEditCell ? mergedRows[largeEditCell.row]?.[largeEditCell.col] : undefined}
         onSave={(v) => {
@@ -663,6 +1249,79 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
       />
       </>
       )}
+    </div>
+  )
+}
+
+function TypeCombobox({ value, options, onChange, disabled }: { value: string; options?: string[]; onChange: (v: string) => void; disabled?: boolean }) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState(value)
+  const [typed, setTyped] = useState(false)
+  const selectedRef = useRef(false)
+  useEffect(() => {
+    setText(value)
+    setTyped(false)
+  }, [value])
+  const list = options ?? COMMON_TYPES
+  const filtered = useMemo(
+    () => (typed ? list.filter((tp) => tp.toLowerCase().includes(text.toLowerCase())) : list),
+    [typed, text, list],
+  )
+  return (
+    <div className="relative">
+      <Input
+        value={text}
+        disabled={disabled}
+        onChange={(e) => {
+          onChange(e.target.value)
+          setText(e.target.value)
+          setTyped(true)
+        }}
+        onFocus={() => {
+          setOpen(true)
+          setTyped(false)
+        }}
+        className="h-7 text-xs pr-7"
+      />
+      <Popover
+        open={open && !disabled}
+        onOpenChange={(o) => {
+          if (!o && !selectedRef.current) onChange(text)
+          selectedRef.current = false
+          setOpen(o)
+        }}
+      >
+        <PopoverTrigger asChild>
+          <Button variant="ghost" size="icon" tabIndex={-1} className="absolute right-0 top-0 h-7 w-7" title={t('dialog.pick_type')}>
+            <ChevronsUpDown className="h-3.5 w-3.5 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-44 p-1" align="start" onOpenAutoFocus={(e) => e.preventDefault()}>
+          <div className="max-h-52 overflow-auto">
+            {filtered.length === 0 ? (
+              <p className="text-xs text-muted-foreground px-2 py-1">{t('dialog.no_type_match')}</p>
+            ) : (
+              filtered.map((tp) => (
+                <button
+                  key={tp}
+                  type="button"
+                  className="w-full text-left text-xs px-2 py-1 rounded hover:bg-accent"
+                  onClick={() => {
+                    selectedRef.current = true
+                    onChange(tp)
+                    setText(tp)
+                    setTyped(false)
+                    setOpen(false)
+                  }}
+                >
+                  {tp}
+                </button>
+              ))
+            )}
+          </div>
+        </PopoverContent>
+      </Popover>
     </div>
   )
 }

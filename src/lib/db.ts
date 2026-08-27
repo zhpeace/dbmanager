@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core"
 export interface ConnectionConfig {
   id: string
   name: string
-  type: 'mysql' | 'postgresql' | 'sqlite' | 'mongodb' | 'oracle' | 'redis'
+  type: 'mysql' | 'postgresql' | 'sqlite' | 'mongodb' | 'oracle' | 'redis' | 'dameng'
   host?: string
   port?: number
   user?: string
@@ -391,7 +391,7 @@ export interface Connection {
   connected: boolean
 }
 
-export type DatabaseType = 'mysql' | 'postgresql' | 'sqlite' | 'mongodb' | 'oracle' | 'redis'
+export type DatabaseType = 'mysql' | 'postgresql' | 'sqlite' | 'mongodb' | 'oracle' | 'redis' | 'dameng'
 
 export const DB_COLORS: Record<DatabaseType, string> = {
   mysql: '#00758F',
@@ -400,6 +400,7 @@ export const DB_COLORS: Record<DatabaseType, string> = {
   mongodb: '#4DB33D',
   oracle: '#F80000',
   redis: '#DC382D',
+  dameng: '#C00000',
 }
 
 export const DB_DISPLAY_NAMES: Record<DatabaseType, string> = {
@@ -409,6 +410,7 @@ export const DB_DISPLAY_NAMES: Record<DatabaseType, string> = {
   mongodb: 'MongoDB',
   oracle: 'Oracle',
   redis: 'Redis',
+  dameng: '达梦数据库',
 }
 
 export const DEFAULT_PORTS: Record<DatabaseType, number> = {
@@ -418,6 +420,7 @@ export const DEFAULT_PORTS: Record<DatabaseType, number> = {
   mongodb: 27017,
   oracle: 1521,
   redis: 6379,
+  dameng: 5236,
 }
 
 export interface LicenseStatus {
@@ -603,6 +606,74 @@ export function quoteIdent(s: string, type: DatabaseType): string {
 
 export function buildSelectPreview(table: string, type: DatabaseType, limit = 100): string {
   const q = quoteIdent(table, type)
-  if (type === "oracle") return `SELECT * FROM ${q} FETCH FIRST ${limit} ROWS ONLY`
+  if (type === "oracle" || type === "dameng") return `SELECT * FROM ${q} FETCH FIRST ${limit} ROWS ONLY`
   return `SELECT * FROM ${q} LIMIT ${limit}`
+}
+
+// --- Column type classification (for bigint-safe editing and date/time pickers) ---
+
+export function isNumericType(type?: string): boolean {
+  if (!type) return false
+  return /int|decimal|numeric|float|double|real|number|serial|money/i.test(type)
+}
+
+export function isTemporalType(type?: string): boolean {
+  if (!type) return false
+  return /date|time|timestamp/i.test(type)
+}
+
+// 字符型大字段 / 结构化文本列：DBeaver 这类会直接打开独立值编辑器（而非在网格内行内编辑）。
+// 与后端 data_type 字符串匹配（clob/nclob/longtext/mediumtext/xml/json/jsonb 等）。
+export function isStructuredTextType(type?: string): boolean {
+  if (!type) return false
+  return /longtext|mediumtext|clob|nclob|xml|json/i.test(type)
+}
+
+export type TemporalKind = "date" | "time" | "datetime"
+
+export function temporalKind(type?: string): TemporalKind | null {
+  if (!type || !isTemporalType(type)) return null
+  const t = type.toLowerCase()
+  if (t.includes("datetime") || t.includes("timestamp")) return "datetime"
+  if (t === "date") return "date"
+  if (t === "time") return "time"
+  if (t.includes("time")) return "time"
+  return "datetime"
+}
+
+// Convert a DB value string into a value usable by <input type="date|time|datetime-local">.
+export function toInputValue(type: string | undefined, value: unknown): string {
+  if (value === null || value === undefined) return ""
+  const s = typeof value === "object" ? JSON.stringify(value) : String(value)
+  const kind = temporalKind(type)
+  if (kind === "date") {
+    const m = s.match(/^\d{4}-\d{2}-\d{2}/)
+    return m ? m[0] : ""
+  }
+  if (kind === "time") {
+    const m = s.match(/\d{2}:\d{2}(:\d{2})?/)
+    return m ? m[0].slice(0, 8) : ""
+  }
+  // datetime
+  let v = s.trim()
+  v = v.replace(/Z$/, "").replace(/\s*(UTC|[A-Z]{2,4})$/, "").replace(/[+-]\d{2}:?\d{2}$/, "")
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(v)) {
+    return v.replace(" ", "T").slice(0, 19)
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v + "T00:00:00"
+  return ""
+}
+
+// Convert a value from a <input type="date|time|datetime-local"> back to a DB literal string.
+export function fromInputValue(type: string | undefined, input: string): string {
+  const kind = temporalKind(type)
+  if (kind === "date") return input
+  if (kind === "time") return input
+  return input.replace("T", " ")
+}
+
+// True when a string holds exactly an integer or decimal number (used to decide
+// whether a numeric column value should be emitted unquoted in SQL).
+export function isNumericLiteral(s: string): boolean {
+  return /^[-+]?(\d+(\.\d+)?|\.\d+)$/.test(s.trim())
 }

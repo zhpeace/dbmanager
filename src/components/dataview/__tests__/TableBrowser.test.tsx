@@ -2,7 +2,13 @@ import { render, screen, waitFor, fireEvent, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event"
 import { invoke } from "@tauri-apps/api/core"
 import { TableBrowser } from "../TableBrowser"
-import type { TableData } from "@/lib/db"
+import type { TableData, SchemaCache } from "@/lib/db"
+
+vi.mock("@monaco-editor/react", () => ({
+  __esModule: true,
+  default: ({ value }: { value?: string }) => <div data-testid="monaco-editor">{value}</div>,
+  Editor: ({ value }: { value?: string }) => <div data-testid="monaco-editor">{value}</div>,
+}))
 
 const mockTableData: TableData = {
   columns: [
@@ -17,6 +23,24 @@ const mockTableData: TableData = {
   duration: "0.5s",
   primary_keys: ["id"],
   row_handles: [{ id: 1 }, { id: 2 }],
+}
+
+const mockSchemaCache: SchemaCache = {
+  tables: [
+    {
+      table: "users",
+      columns: mockTableData.columns.map((c) => ({ ...c })),
+      primary_keys: ["id"],
+      foreign_keys: [],
+      indexes: [],
+      views: [],
+      routines: [],
+      triggers: [],
+    },
+  ],
+  views: [],
+  routines: [],
+  triggers: [],
 }
 
 const defaultProps = {
@@ -115,22 +139,67 @@ it("shows columns tab", async () => {
 
 it("shows column info in columns tab", async () => {
   const user = userEvent.setup()
-  vi.mocked(invoke)
-    .mockResolvedValueOnce(mockTableData)
-    .mockResolvedValueOnce("")
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === "get_table_data") return mockTableData
+    if (cmd === "get_table_ddl") return "CREATE TABLE users ..."
+    if (cmd === "get_schema_cache") return mockSchemaCache
+    return null
+  })
   render(<TableBrowser {...defaultProps} />)
   await waitFor(() => {
     expect(screen.getByText("Data")).toBeInTheDocument()
   })
   await user.click(screen.getByText("Columns"))
   await waitFor(() => {
-    expect(screen.getByText("Name")).toBeInTheDocument()
+    expect(screen.getByDisplayValue("id")).toBeInTheDocument()
   })
-  expect(screen.getByText("Type")).toBeInTheDocument()
+  expect(screen.getByDisplayValue("name")).toBeInTheDocument()
   expect(screen.getByText("Nullable")).toBeInTheDocument()
-  expect(screen.getByText("Key")).toBeInTheDocument()
+  expect(screen.getByText("PK")).toBeInTheDocument()
   expect(screen.getByText("Default")).toBeInTheDocument()
-  expect(screen.getByText("Extra")).toBeInTheDocument()
+  expect(screen.getByText("Add Column")).toBeInTheDocument()
+})
+
+it("type combobox lists all common types on focus (not just current)", async () => {
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === "get_table_data") return mockTableData
+    if (cmd === "get_table_ddl") return "CREATE TABLE users ..."
+    if (cmd === "get_schema_cache") return mockSchemaCache
+    return null
+  })
+  const user = userEvent.setup()
+  render(<TableBrowser {...defaultProps} />)
+  await waitFor(() => {
+    expect(screen.getByText("Columns")).toBeInTheDocument()
+  })
+  await user.click(screen.getByText("Columns"))
+  const typeInput = await screen.findByDisplayValue("INT")
+  fireEvent.focus(typeInput)
+  await waitFor(() => {
+    expect(screen.getByText("BIGINT")).toBeInTheDocument()
+    expect(screen.getByText("DECIMAL(10,2)")).toBeInTheDocument()
+  })
+})
+
+it("can edit type precision by typing the whole type string", async () => {
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === "get_table_data") return mockTableData
+    if (cmd === "get_table_ddl") return "CREATE TABLE users ..."
+    if (cmd === "get_schema_cache") return mockSchemaCache
+    return null
+  })
+  render(<TableBrowser {...defaultProps} />)
+  await waitFor(() => expect(screen.getByText("Columns")).toBeInTheDocument())
+  const user = userEvent.setup()
+  await user.click(screen.getByText("Columns"))
+  const inputs = await screen.findAllByDisplayValue("VARCHAR(255)")
+  const typeInput = inputs[0]
+  fireEvent.focus(typeInput)
+  fireEvent.change(typeInput, { target: { value: "VARCHAR(50)" } })
+  fireEvent.blur(typeInput)
+  await waitFor(() => {
+    expect(screen.getAllByDisplayValue("VARCHAR(50)").length).toBeGreaterThan(0)
+  })
 })
 
 it("shows DDL in DDL tab", async () => {

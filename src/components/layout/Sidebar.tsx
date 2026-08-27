@@ -32,6 +32,7 @@ import {
   Waves,
   Timer,
   Search,
+  X,
 } from "lucide-react"
 import { cn, formatBytes, formatCount } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -94,6 +95,26 @@ function formatTtl(seconds: number): string {
   return `${seconds}s`
 }
 
+// DBeaver-like quick filter: plain text = case-insensitive substring;
+// `*`, `?` are treated as glob wildcards (any sequence / single char).
+function matchObjectName(name: string, pattern: string): boolean {
+  const p = pattern.trim().toLowerCase()
+  if (!p) return true
+  const lower = name.toLowerCase()
+  if (p.includes("*") || p.includes("?")) {
+    const re = new RegExp(
+      "^" +
+        p
+          .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+          .replace(/\*/g, ".*")
+          .replace(/\?/g, ".") +
+        "$",
+    )
+    return re.test(lower)
+  }
+  return lower.includes(p)
+}
+
 function getTypeLabel(t: (key: string) => string, type: string): string {
   switch (type) {
     case "TABLE": case "BASE TABLE": return t('sidebar.group_tables')
@@ -122,7 +143,7 @@ interface SidebarProps {
   onDuplicateConnection: (id: string) => void
   onDeleteConnection: (id: string) => void
   onLoadTables: (id: string, database: string) => void
-  onTableClick: (sql: string, connectionId: string, database?: string, table?: string) => void
+  onTableClick: (sql: string, connectionId: string, database?: string, table?: string, objectType?: string) => void
   onDatabaseClick: (database: string, connectionId: string) => void
   onInsertSql: (sql: string) => void
    databases: Record<string, DatabaseInfo[]>
@@ -213,7 +234,7 @@ export function Sidebar({
                onDuplicateConnection={() => onDuplicateConnection(conn.id)}
                onDeleteConnection={() => onDeleteConnection(conn.id)}
 onLoadTables={(db) => onLoadTables(conn.id, db)}
-                  onTableClick={(sql, cId, db, table) => onTableClick(sql, cId ?? conn.id, db, table)}
+                  onTableClick={(sql, cId, db, table, objectType) => onTableClick(sql, cId ?? conn.id, db, table, objectType)}
                   onDatabaseClick={(db) => onDatabaseClick(db, conn.id)}
                 onInsertSql={(sql) => onInsertSql(sql)}
                  onNewTable={(db) => onNewTable(db)}
@@ -296,7 +317,7 @@ function ConnectionItem({
   onDuplicateConnection: () => void
   onDeleteConnection: () => void
   onLoadTables: (database: string) => void
-  onTableClick: (sql: string, connectionId: string, database?: string, table?: string) => void
+  onTableClick: (sql: string, connectionId: string, database?: string, table?: string, objectType?: string) => void
   onDatabaseClick: (database: string, connectionId: string) => void
   onInsertSql: (sql: string) => void
   databases: DatabaseInfo[]
@@ -327,7 +348,18 @@ function ConnectionItem({
   const [selectedObjKey, setSelectedObjKey] = useState<string | null>(null)
   const [redisSearch, setRedisSearch] = useState<Record<string, string>>({})
   const [redisTypeFilter, setRedisTypeFilter] = useState<Record<string, string>>({})
+  const [objectFilter, setObjectFilter] = useState("")
   const isRedis = connection.config.type === "redis"
+
+  // When filtering, auto-load table lists for databases that aren't loaded yet
+  // so the filter can match against all objects, and expand every database.
+  useEffect(() => {
+    if (!objectFilter.trim()) return
+    for (const db of databases) {
+      const k = `${connId}:${db.name}`
+      if (!tables[db.name] && !tableLoading[k]) onLoadTables(db.name)
+    }
+  }, [objectFilter, databases, tables, tableLoading, onLoadTables, connId])
 
   function onRedisSearchDb(db: string, pattern: string, typeFilter: string) {
     setRedisSearch((prev) => ({ ...prev, [db]: pattern }))
@@ -375,13 +407,14 @@ function ConnectionItem({
     return result
   }
 
-  function renderTypeGroups(groupKey: string, objects: TableInfo[], databaseName: string) {
-    return groupByType(objects).map(([type, typeObjects]) => {
+  function renderTypeGroups(groupKey: string, objects: TableInfo[], databaseName: string, filter = "", forceExpand = false) {
+    const filtered = filter.trim() ? objects.filter((o) => matchObjectName(o.name, filter)) : objects
+    return groupByType(filtered).map(([type, typeObjects]) => {
       const Icon = TYPE_ICONS[type] || TYPE_ICONS.default
       const color = TYPE_COLORS[type] || "text-muted-foreground"
       const label = getTypeLabel(t, type)
       const typeKey = `${groupKey}:${type}`
-      const isCollapsed = collapsedTypes.has(typeKey)
+      const isCollapsed = !forceExpand && collapsedTypes.has(typeKey)
 
       const toggleType = (e: React.MouseEvent) => {
         e.stopPropagation()
@@ -462,7 +495,7 @@ function ConnectionItem({
                       onDoubleClick={(e) => {
                         e.stopPropagation()
                         if (isRoutine && defSql) onInsertSql(defSql)
-                        else onTableClick(previewSql, connId, databaseName, obj.name)
+                        else onTableClick(previewSql, connId, databaseName, obj.name, obj.object_type)
                       }}
                     >
                       <Icon className={cn("h-3 w-3 shrink-0", color)} />
@@ -493,7 +526,7 @@ function ConnectionItem({
                   <ContextMenuContent>
                     {connection.config.type === "redis" ? (
                       <>
-                        <ContextMenuItem onClick={() => onTableClick(previewSql, connId, databaseName, obj.name)}>
+                        <ContextMenuItem onClick={() => onTableClick(previewSql, connId, databaseName, obj.name, obj.object_type)}>
                           <ExternalLink className="h-3 w-3 mr-2" />
                           {t('sidebar.browse_data')}
                         </ContextMenuItem>
@@ -531,7 +564,7 @@ function ConnectionItem({
                           <Pencil className="h-3 w-3 mr-2" />
                           {t('sidebar.design_table')}
                         </ContextMenuItem>
-                        <ContextMenuItem onClick={() => onTableClick(previewSql, connId, databaseName, obj.name)}>
+                        <ContextMenuItem onClick={() => onTableClick(previewSql, connId, databaseName, obj.name, obj.object_type)}>
                           <ExternalLink className="h-3 w-3 mr-2" />
                           {t('sidebar.browse_data')}
                         </ContextMenuItem>
@@ -589,7 +622,7 @@ function ConnectionItem({
                       </>
                     ) : (
                       <>
-                        <ContextMenuItem onClick={() => onTableClick(previewSql, connId, databaseName, obj.name)}>
+                        <ContextMenuItem onClick={() => onTableClick(previewSql, connId, databaseName, obj.name, obj.object_type)}>
                           <ExternalLink className="h-3 w-3 mr-2" />
                           {t('sidebar.browse_data')}
                         </ContextMenuItem>
@@ -713,7 +746,30 @@ function ConnectionItem({
       </ContextMenu>
 
       {connection.connected && expanded && (
-        <div className="ml-4 mt-1 space-y-0.5">
+        <>
+          <div className="flex items-center gap-1 px-3 pb-1">
+            <div className="flex-1 flex items-center gap-1 rounded border border-border/60 bg-sidebar-accent/20 px-1.5">
+              <Search className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+              <input
+                className="w-full h-6 bg-transparent text-[11px] outline-none"
+                placeholder={t('sidebar.filter_objects')}
+                title={t('sidebar.filter_hint')}
+                value={objectFilter}
+                onChange={(e) => setObjectFilter(e.target.value)}
+              />
+              {objectFilter && (
+                <button
+                  type="button"
+                  className="shrink-0"
+                  onClick={() => setObjectFilter("")}
+                  title={t('sidebar.filter_clear')}
+                >
+                  <X className="h-3 w-3 text-muted-foreground/70 hover:text-foreground" />
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="ml-4 mt-1 space-y-0.5">
           {databases.length === 0 && !isLoading && (
             <p className="text-xs text-muted-foreground px-2 py-1">{t('sidebar.no_databases')}</p>
           )}
@@ -726,7 +782,7 @@ function ConnectionItem({
           {databases.map((db) => {
             const dbTables = tables[db.name]
             const dbLoading = tableLoading[`${connId}:${db.name}`]
-            const isDbExpanded = expandedDbs.has(db.name)
+            const isDbExpanded = objectFilter.trim() ? true : expandedDbs.has(db.name)
 
             return (
               <div key={db.name}>
@@ -819,9 +875,9 @@ function ConnectionItem({
                                 <span className="truncate min-w-0" title={schema.name}>{schema.name}</span>
                                 <span className="text-[10px] text-muted-foreground/60">({schemaObjects.length})</span>
                               </div>
-                              {isSchemaExpanded && (
-                                <div className="ml-3 mt-0.5 space-y-0.5">
-                                  {renderTypeGroups(schemaKey, schemaObjects, schema.name)}
+                                {isSchemaExpanded && (
+                                 <div className="ml-3 mt-0.5 space-y-0.5">
+                                   {renderTypeGroups(schemaKey, schemaObjects, schema.name, objectFilter, !!objectFilter)}
                                   {schemaObjects.length === 0 && (
                                     <p className="text-xs text-muted-foreground px-2 py-0.5">{t('sidebar.no_objects')}</p>
                                   )}
@@ -854,7 +910,7 @@ function ConnectionItem({
                             ))}
                           </select>
                         </div>
-                        {renderTypeGroups(db.name, dbTables, db.name)}
+                        {renderTypeGroups(db.name, dbTables, db.name, objectFilter, !!objectFilter)}
                         {(redisScanCursor && redisScanCursor[`${connId}:${db.name}`] > 0) && (
                           <button
                             className="w-full mt-0.5 rounded px-2 py-0.5 text-[11px] text-primary hover:bg-sidebar-accent/40"
@@ -865,9 +921,12 @@ function ConnectionItem({
                         )}
                       </div>
                     ) : (
-                      <>{renderTypeGroups(db.name, dbTables, db.name)}</>
+                      <>{renderTypeGroups(db.name, dbTables, db.name, objectFilter, !!objectFilter)}</>
                     )}
-                    {connection.config.type !== "postgresql" && dbTables && dbTables.length === 0 && (
+                    {connection.config.type !== "postgresql" && objectFilter.trim() && dbTables && dbTables.length > 0 && dbTables.filter((o) => matchObjectName(o.name, objectFilter)).length === 0 && (
+                      <p className="text-xs text-muted-foreground px-2 py-0.5">{t('sidebar.no_match')}</p>
+                    )}
+                    {connection.config.type !== "postgresql" && !objectFilter.trim() && dbTables && dbTables.length === 0 && (
                       <p className="text-xs text-muted-foreground px-2 py-0.5">{t('sidebar.no_objects')}</p>
                     )}
                   </div>
@@ -882,6 +941,7 @@ function ConnectionItem({
             )
           })}
         </div>
+        </>
       )}
     </div>
   )

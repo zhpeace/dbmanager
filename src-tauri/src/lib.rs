@@ -293,6 +293,8 @@ async fn get_databases(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
@@ -312,6 +314,8 @@ async fn get_schemas(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
@@ -332,6 +336,8 @@ async fn create_database(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
@@ -352,6 +358,8 @@ async fn drop_database(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
@@ -372,6 +380,8 @@ async fn get_tables(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
@@ -399,6 +409,8 @@ async fn get_table_data(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
@@ -420,6 +432,8 @@ async fn get_table_ddl(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
@@ -599,6 +613,23 @@ async fn connect_oracle(
     Ok(())
 }
 
+#[cfg(feature = "dameng")]
+#[tauri::command]
+async fn connect_dameng(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    host: String,
+    port: u16,
+    user: String,
+    password: String,
+    database: String,
+) -> Result<(), String> {
+    let conn = db::dameng::connect(&host, port, &user, &password, &database)?;
+    let mut connections = state.connections.lock().await;
+    connections.insert(id, DbConnection::Dameng(conn));
+    Ok(())
+}
+
 #[tauri::command]
 async fn test_connection(
     type_: String,
@@ -698,6 +729,8 @@ async fn execute_update(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
@@ -724,6 +757,8 @@ async fn execute_batch(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
@@ -744,6 +779,8 @@ async fn get_schema_cache(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
@@ -767,6 +804,8 @@ async fn find_in_tables(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
@@ -789,6 +828,8 @@ async fn transfer_data(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         };
         let t = match tgt {
@@ -797,6 +838,8 @@ async fn transfer_data(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         };
         (s, t)
@@ -1045,6 +1088,8 @@ async fn execute_query(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
@@ -1080,6 +1125,12 @@ async fn begin_transaction(state: tauri::State<'_, AppState>, id: String) -> Res
             DbTransaction::Sqlite(tx)
         }
         DbConnection::Oracle(conn) => DbTransaction::Oracle(conn),
+        #[cfg(feature = "dameng")]
+        DbConnection::Dameng(conn) => {
+            let tx_conn = conn.clone();
+            db::dameng::set_autocommit(&tx_conn, false).ok();
+            DbTransaction::Dameng(tx_conn)
+        }
         _ => return Err("Transactions are not supported for this connection type".to_string()),
     };
     let mut m = state.transactions.lock().await;
@@ -1346,6 +1397,8 @@ async fn get_conn(state: &tauri::State<'_, AppState>, id: &str) -> Result<DbConn
         DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
         DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
         DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
+        #[cfg(feature = "dameng")]
+        DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
     })
 }
 
@@ -1418,6 +1471,8 @@ async fn compare_schemas(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         };
         let t = match tgt {
@@ -1426,6 +1481,8 @@ async fn compare_schemas(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         };
         (s, t)
@@ -1451,6 +1508,8 @@ async fn backup_database(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         }
     };
@@ -1483,6 +1542,8 @@ async fn restore_database(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         }
     };
@@ -1539,6 +1600,8 @@ pub fn run() {
             connect_mongo,
             connect_oracle,
             connect_redis,
+            #[cfg(feature = "dameng")]
+            connect_dameng,
             test_connection,
             disconnect,
             switch_database,
@@ -1739,6 +1802,8 @@ async fn run_backup_task(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         }
     };
@@ -1790,6 +1855,8 @@ async fn run_transfer_task(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         };
         let t = match tgt {
@@ -1798,6 +1865,8 @@ async fn run_transfer_task(
             DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
             DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
             DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         };
         (s, t)

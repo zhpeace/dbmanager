@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Your Company"]
 license = "LicenseRef-Commercial"
 default-run = "app"
@@ -42,6 +42,14 @@ parking_lot = "0.12"
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 cron = "0.13"
 dirs = "6"
+odbc = { version = "0.17", optional = true }
+
+# Dameng (达梦) support is gated behind the `dameng` feature because it links
+# against the system ODBC driver manager (unixODBC/iODBC) plus the DM ODBC
+# driver, which is only present on a Dameng-capable host.
+[features]
+default = []
+dameng = ["dep:odbc"]
 
 # Patch sqlx-postgres with openGauss sha256 authentication support.
 [patch.crates-io]

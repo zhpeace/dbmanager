@@ -9,6 +9,8 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { X, Save, Braces, Text } from "lucide-react"
+import { detectContentType } from "@/lib/highlight"
+import { CodeEditor } from "./CodeEditor"
 
 function valueToHex(value: unknown): string {
   if (value === null || value === undefined) return ""
@@ -64,6 +66,7 @@ export function BinaryEditorDialog({
 }: BinaryEditorDialogProps) {
   const { t } = useTranslation()
   const [mode, setMode] = useState<"hex" | "text">("hex")
+  const [viewMode, setViewMode] = useState<"xml" | "json" | null>(null)
   const [hex, setHex] = useState("")
   const [error, setError] = useState<string | null>(null)
 
@@ -71,6 +74,7 @@ export function BinaryEditorDialog({
     if (open) {
       setHex(valueToHex(value))
       setError(null)
+      setViewMode(null)
       const original = value
       setMode(typeof original === "string" && !/^0x[0-9a-fA-F]+$/.test(original) ? "text" : "hex")
     }
@@ -78,6 +82,14 @@ export function BinaryEditorDialog({
 
   const bytesLen = useMemo(() => Math.ceil(hex.length / 2), [hex])
   const dump = useMemo(() => hexDump(hex), [hex])
+  const textValue = useMemo(() => {
+    try {
+      return new TextDecoder("utf-8", { fatal: false }).decode(hexToBytes(hex))
+    } catch {
+      return ""
+    }
+  }, [hex])
+  const detected = useMemo(() => detectContentType(textValue), [textValue])
 
   const save = () => {
     const clean = hex.replace(/[^0-9a-fA-F]/g, "").toUpperCase()
@@ -96,7 +108,7 @@ export function BinaryEditorDialog({
             {t('value_editor.binary_title', { column, table: tableName })}
           </DialogTitle>
         </DialogHeader>
-        <div className="flex flex-col min-h-0 gap-2 h-[55vh]">
+        <div className="flex flex-col min-h-0 min-w-0 gap-2 h-[55vh]">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span className="tabular-nums">{t('value_editor.row', { row: rowIndex + 1 })}</span>
             <span className="text-muted-foreground/50">•</span>
@@ -108,25 +120,45 @@ export function BinaryEditorDialog({
                 size="sm"
                 variant={mode === "hex" ? "secondary" : "ghost"}
                 className="h-6 px-2 text-xs"
-                onClick={() => setMode("hex")}
+                onClick={() => {
+                  setMode("hex")
+                  setViewMode(null)
+                }}
               >
                 <Braces className="h-3 w-3 mr-1" />
                 Hex
               </Button>
               <Button
                 size="sm"
-                variant={mode === "text" ? "secondary" : "ghost"}
+                variant={mode === "text" && !viewMode ? "secondary" : "ghost"}
                 className="h-6 px-2 text-xs"
-                onClick={() => setMode("text")}
+                onClick={() => {
+                  setMode("text")
+                  setViewMode(null)
+                }}
               >
                 <Text className="h-3 w-3 mr-1" />
                 Text
               </Button>
+              {detected && (
+                <Button
+                  size="sm"
+                  variant={viewMode === detected ? "secondary" : "ghost"}
+                  className="h-6 px-2 text-xs"
+                  onClick={() => {
+                    setMode("text")
+                    setViewMode((m) => (m === detected ? null : detected))
+                  }}
+                  title={t('value_editor.xml_hint')}
+                >
+                  {detected === "xml" ? t('value_editor.view_xml') : t('value_editor.view_json')}
+                </Button>
+              )}
             </div>
           </div>
 
           {mode === "hex" ? (
-            <div className="flex flex-col min-h-0 flex-1 gap-2">
+            <div className="flex flex-col min-h-0 min-w-0 flex-1 gap-2">
               <pre className="flex-1 min-h-0 overflow-auto rounded-md border bg-background p-2 text-[10px] font-mono leading-4">
                 {dump.text}
                 {dump.truncated && (
@@ -146,24 +178,28 @@ export function BinaryEditorDialog({
                 placeholder="00 01 02 …"
               />
             </div>
+          ) : viewMode ? (
+            <CodeEditor
+              value={textValue}
+              language={viewMode}
+              onChange={(v) => {
+                const bytes = new TextEncoder().encode(v)
+                setHex(Array.from(bytes).map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(""))
+                setError(null)
+              }}
+            />
           ) : (
             <textarea
-              className="w-full flex-1 min-h-[120px] resize-none rounded-md border bg-background px-3 py-2 text-xs font-mono outline-none focus:ring-1 focus:ring-ring"
-              value={(() => {
-                try {
-                  return new TextDecoder("utf-8", { fatal: false }).decode(hexToBytes(hex))
-                } catch {
-                  return ""
-                }
-              })()}
+              className="w-full flex-1 min-h-[120px] min-w-0 resize-none rounded-md border bg-background px-3 py-2 text-xs font-mono outline-none focus:ring-1 focus:ring-ring"
+              value={textValue}
               onChange={(e) => {
                 const bytes = new TextEncoder().encode(e.target.value)
                 setHex(Array.from(bytes).map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join(""))
                 setError(null)
               }}
-            spellCheck={false}
-          />
-        )}
+              spellCheck={false}
+            />
+          )}
 
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>

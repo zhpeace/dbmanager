@@ -1,6 +1,8 @@
 pub mod types;
 pub mod ddl;
 pub mod scheduler;
+#[cfg(feature = "dameng")]
+pub mod dameng;
 
 use std::collections::HashMap;
 use sqlx::{Row, Column};
@@ -16,6 +18,8 @@ pub enum DbConnection {
     Oracle(Arc<std::sync::Mutex<oracle::Connection>>),
     Mongo(MongoClient, String),
     Redis(redis::aio::ConnectionManager),
+    #[cfg(feature = "dameng")]
+    Dameng(Arc<std::sync::Mutex<crate::db::dameng::DamengConn>>),
 }
 
 pub enum DbTransaction {
@@ -23,6 +27,8 @@ pub enum DbTransaction {
     Pg(sqlx::Transaction<'static, sqlx::Postgres>),
     Sqlite(sqlx::Transaction<'static, sqlx::Sqlite>),
     Oracle(Arc<std::sync::Mutex<oracle::Connection>>),
+    #[cfg(feature = "dameng")]
+    Dameng(Arc<std::sync::Mutex<crate::db::dameng::DamengConn>>),
 }
 
 pub struct AppState {
@@ -47,7 +53,24 @@ impl AppState {
 
 impl DbTransaction {
     pub fn is_supported(&self) -> bool {
-        matches!(self, DbTransaction::MySql(_) | DbTransaction::Pg(_) | DbTransaction::Sqlite(_) | DbTransaction::Oracle(_))
+        #[cfg(feature = "dameng")]
+        let supported = matches!(
+            self,
+            DbTransaction::MySql(_)
+                | DbTransaction::Pg(_)
+                | DbTransaction::Sqlite(_)
+                | DbTransaction::Oracle(_)
+                | DbTransaction::Dameng(_)
+        );
+        #[cfg(not(feature = "dameng"))]
+        let supported = matches!(
+            self,
+            DbTransaction::MySql(_)
+                | DbTransaction::Pg(_)
+                | DbTransaction::Sqlite(_)
+                | DbTransaction::Oracle(_)
+        );
+        supported
     }
 
     pub async fn execute_query(&mut self, query: &str) -> Result<QueryResult, String> {
@@ -118,6 +141,14 @@ impl DbTransaction {
                 .map_err(|e| e.to_string())?;
                 result
             }
+            #[cfg(feature = "dameng")]
+            DbTransaction::Dameng(conn) => {
+                let query = query.to_string();
+                let conn = conn.clone();
+                tokio::task::spawn_blocking(move || dameng::execute_sync(&conn, &query))
+                    .await
+                    .map_err(|e| e.to_string())?
+            }
         }
     }
 
@@ -167,6 +198,28 @@ impl DbTransaction {
                 .map_err(|e| e.to_string())?;
                 result
             }
+            #[cfg(feature = "dameng")]
+            DbTransaction::Dameng(conn) => {
+                let queries = queries.to_vec();
+                let conn = conn.clone();
+                let result = tokio::task::spawn_blocking(move || -> Result<u64, String> {
+                    let mut count = 0u64;
+                    for q in &queries {
+                        match dameng::execute_sync(&conn, q) {
+                            Ok(r) => count += r.row_count as u64,
+                            Err(e) => {
+                                let _ = dameng::rollback(&conn);
+                                return Err(e);
+                            }
+                        }
+                    }
+                    dameng::commit(&conn).ok();
+                    Ok(count)
+                })
+                .await
+                .map_err(|e| e.to_string())?;
+                result
+            }
         }
     }
 
@@ -181,6 +234,12 @@ impl DbTransaction {
                 })
                 .await
                 .map_err(|e| e.to_string())?
+            }
+            #[cfg(feature = "dameng")]
+            DbTransaction::Dameng(conn) => {
+                dameng::commit(&conn)?;
+                dameng::set_autocommit(&conn, true).ok();
+                Ok(())
             }
         }
     }
@@ -197,6 +256,12 @@ impl DbTransaction {
                 .await
                 .map_err(|e| e.to_string())?
             }
+            #[cfg(feature = "dameng")]
+            DbTransaction::Dameng(conn) => {
+                dameng::rollback(&conn)?;
+                dameng::set_autocommit(&conn, true).ok();
+                Ok(())
+            }
         }
     }
 }
@@ -212,6 +277,27 @@ fn mysql_column_info_free(col: &sqlx::mysql::MySqlColumn) -> ColumnInfo {
     }
 }
 
+// JavaScript's Number can only represent integers exactly up to 2^53 - 1.
+// Beyond that, emit the integer as a JSON string so the frontend keeps the
+// exact digits (display, copy-as-SQL and round-trip editing all stay correct).
+const MAX_SAFE_INT: i64 = 9_007_199_254_740_991;
+
+fn json_int(v: i64) -> serde_json::Value {
+    if v > MAX_SAFE_INT || v < -MAX_SAFE_INT {
+        serde_json::Value::String(v.to_string())
+    } else {
+        serde_json::Value::from(v)
+    }
+}
+
+fn json_uint(v: u64) -> serde_json::Value {
+    if v > MAX_SAFE_INT as u64 {
+        serde_json::Value::String(v.to_string())
+    } else {
+        serde_json::Value::from(v)
+    }
+}
+
 fn mysql_decode_value_free(row: &sqlx::mysql::MySqlRow, col: &ColumnInfo) -> serde_json::Value {
     let name = col.name.as_str();
     let t = col.data_type.to_lowercase();
@@ -219,9 +305,9 @@ fn mysql_decode_value_free(row: &sqlx::mysql::MySqlRow, col: &ColumnInfo) -> ser
         row.try_get::<Option<bool>, _>(name).ok().map(|v| serde_json::Value::Bool(v.unwrap_or(false)))
     } else if t.contains("int") || t.contains("year") {
         if let Ok(v) = row.try_get::<Option<i64>, _>(name) {
-            v.map(|x| serde_json::Value::from(x))
+            v.map(json_int)
         } else if let Ok(v) = row.try_get::<Option<u64>, _>(name) {
-            v.map(|x| serde_json::Value::from(x))
+            v.map(json_uint)
         } else {
             row.try_get::<Option<String>, _>(name).ok().flatten().map(serde_json::Value::String)
         }
@@ -275,7 +361,7 @@ fn pg_decode_value_free(row: &sqlx::postgres::PgRow, col: &ColumnInfo) -> serde_
         if let Ok(v) = row.try_get::<Option<i32>, _>(name) {
             v.map(serde_json::Value::from)
         } else {
-            row.try_get::<Option<i64>, _>(name).ok().flatten().map(serde_json::Value::from)
+            row.try_get::<Option<i64>, _>(name).ok().flatten().map(json_int)
         }
     } else if t.contains("float") || t.contains("double") || t.contains("numeric") || t.contains("real") || t.contains("money") {
         if let Ok(v) = row.try_get::<Option<f32>, _>(name) {
@@ -336,7 +422,7 @@ fn sqlite_decode_value_free(row: &sqlx::sqlite::SqliteRow, col: &ColumnInfo) -> 
         };
     }
     let opt: Option<serde_json::Value> = row.try_get::<Option<String>, _>(name).ok().flatten().map(serde_json::Value::String)
-        .or_else(|| row.try_get::<Option<i64>, _>(name).ok().flatten().map(serde_json::Value::from))
+        .or_else(|| row.try_get::<Option<i64>, _>(name).ok().flatten().map(json_int))
         .or_else(|| row.try_get::<Option<f64>, _>(name).ok().flatten().map(serde_json::Value::from))
         .or_else(|| row.try_get::<Option<bool>, _>(name).ok().flatten().map(serde_json::Value::Bool));
     opt.unwrap_or(serde_json::Value::Null)
@@ -344,7 +430,7 @@ fn sqlite_decode_value_free(row: &sqlx::sqlite::SqliteRow, col: &ColumnInfo) -> 
 
 fn oracle_decode_value(row: &oracle::Row, idx: usize) -> serde_json::Value {
     if let Ok(v) = row.get::<usize, i64>(idx) {
-        return serde_json::Value::from(v);
+        return json_int(v);
     }
     if let Ok(v) = row.get::<usize, f64>(idx) {
         return serde_json::Value::from(v);
@@ -657,6 +743,8 @@ impl DbConnection {
                 let count: i64 = result.get(1).and_then(|s| s.parse().ok()).unwrap_or(16);
                 Ok((0..count).map(|i| DatabaseInfo { name: format!("db{}", i) }).collect())
             }
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(_) => Ok(vec![DatabaseInfo { name: "DAMENG".to_string() }]),
         }
     }
 
@@ -714,6 +802,8 @@ impl DbConnection {
                 Ok(())
             }
             DbConnection::Redis(_) => Err("Redis does not support creating databases".to_string()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(conn) => dameng::create_database(conn, db_name).await,
         }
     }
 
@@ -749,6 +839,8 @@ impl DbConnection {
                 Ok(())
             }
             DbConnection::Redis(_) => Err("Redis does not support dropping databases".to_string()),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(conn) => dameng::drop_database(conn, db_name).await,
         }
     }
 
@@ -1060,6 +1152,8 @@ impl DbConnection {
                 }
                 Ok(keys)
             }
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(conn) => dameng::get_tables(conn).await,
         };
         let _ = &res.as_ref().map(|list| {
             let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -1309,6 +1403,8 @@ impl DbConnection {
                     Err(e) => Err(format!("Redis error: {}", e)),
                 }
             }
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(conn) => dameng::execute_query(conn, &query).await,
         }
     }
 
@@ -1333,9 +1429,9 @@ impl DbConnection {
             row.try_get::<Option<bool>, _>(name).ok().map(|v| serde_json::Value::Bool(v.unwrap_or(false)))
         } else if t.contains("int") || t.contains("year") {
             if let Ok(v) = row.try_get::<Option<i64>, _>(name) {
-                v.map(|x| serde_json::Value::from(x))
+                v.map(json_int)
             } else if let Ok(v) = row.try_get::<Option<u64>, _>(name) {
-                v.map(|x| serde_json::Value::from(x))
+                v.map(json_uint)
             } else {
                 row.try_get::<Option<String>, _>(name).ok().flatten().map(serde_json::Value::String)
             }
@@ -1393,7 +1489,7 @@ impl DbConnection {
             if let Ok(v) = row.try_get::<Option<i32>, _>(name) {
                 v.map(serde_json::Value::from)
             } else {
-                row.try_get::<Option<i64>, _>(name).ok().flatten().map(serde_json::Value::from)
+                row.try_get::<Option<i64>, _>(name).ok().flatten().map(json_int)
             }
         } else if t.contains("float") || t.contains("double") || t.contains("numeric") || t.contains("real") || t.contains("money") {
             if let Ok(v) = row.try_get::<Option<f32>, _>(name) {
@@ -1434,7 +1530,7 @@ impl DbConnection {
         let t = col.data_type.to_lowercase();
         let opt: Option<serde_json::Value> = if t.contains("integer") || t == "int" || t.contains("bool") {
             if let Ok(v) = row.try_get::<Option<i64>, _>(name) {
-                v.map(serde_json::Value::from)
+                v.map(json_int)
             } else {
                 row.try_get::<Option<String>, _>(name).ok().flatten().map(serde_json::Value::String)
             }
@@ -1982,6 +2078,62 @@ impl DbConnection {
                     row_handles,
                 })
             }
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(conn) => {
+                let tbl = table.replace('\'', "''");
+                let where_str = where_clause
+                    .map(|w| format!(" WHERE {}", w))
+                    .unwrap_or_default();
+                let offset = ((page - 1) * page_size).max(0);
+                let limit = row_limit.unwrap_or(page_size).max(1);
+                let inner = format!("SELECT * FROM \"{}\" a{}{}", tbl, where_str, order_clause);
+                let data_sql = format!(
+                    "SELECT * FROM (SELECT x.*, ROWNUM AS \"_rn\" FROM ({}) x) WHERE \"_rn\" > {} AND \"_rn\" <= {}",
+                    inner, offset, offset + limit
+                );
+                let count_sql = format!("SELECT COUNT(*) AS \"CNT\" FROM \"{}\"{}", tbl, where_str);
+                let count_res = dameng::execute(conn, &count_sql).await?;
+                let total: i64 = count_res
+                    .rows
+                    .first()
+                    .and_then(|r| r.as_object())
+                    .and_then(|o| o.get("CNT"))
+                    .map(|v| match v {
+                        serde_json::Value::Number(n) => n.as_i64().unwrap_or(0),
+                        serde_json::Value::String(s) => s.trim().parse::<i64>().unwrap_or(0),
+                        _ => 0,
+                    })
+                    .unwrap_or(0);
+                let res = dameng::execute(conn, &data_sql).await?;
+                let column_names: Vec<String> =
+                    res.columns.iter().filter(|c| *c != "_rn").cloned().collect();
+                let meta = dameng::get_table_columns(conn, table).await?;
+                let mut columns: Vec<ColumnInfo> = Vec::new();
+                for cn in &column_names {
+                    if let Some(c) = meta.iter().find(|c| c.name.eq_ignore_ascii_case(cn)) {
+                        columns.push(c.clone());
+                    }
+                }
+                let json_rows: Vec<serde_json::Value> = res
+                    .rows
+                    .iter()
+                    .map(|r| {
+                        let mut obj = r.as_object().cloned().unwrap_or_default();
+                        obj.remove("_rn");
+                        serde_json::Value::Object(obj)
+                    })
+                    .collect();
+                let primary_keys = dameng::get_primary_keys(conn, table).await?;
+                let row_handles = build_row_handles(&json_rows, &primary_keys);
+                Ok(TableData {
+                    columns,
+                    rows: json_rows,
+                    total,
+                    duration: format!("{:.2}ms", start.elapsed().as_secs_f64() * 1000.0),
+                    primary_keys,
+                    row_handles,
+                })
+            }
         }
     }
 
@@ -2151,11 +2303,43 @@ impl DbConnection {
                     .fetch_one(pool)
                     .await
                     .map_err(|e| e.to_string())?;
-                let ddl: String = row.get(1);
+                let mut ddl: String = row.get(1);
+                // For views, SHOW CREATE TABLE returns "CREATE ALGORITHM=... VIEW `name` AS ...".
+                // Normalize to "CREATE OR REPLACE VIEW" so it can be re-applied directly after editing.
+                let upper = ddl.to_uppercase();
+                if upper.starts_with("CREATE") && upper.contains(" VIEW ") {
+                    if let Some(pos) = upper.find(" VIEW ") {
+                        let after = &ddl[pos + " VIEW ".len()..];
+                        ddl = format!("CREATE OR REPLACE VIEW {}", after);
+                    }
+                }
                 Ok(ddl)
             }
             DbConnection::Pg(pool) => {
-                let escaped = table.replace('\'', "''");
+                let schema = if database.is_empty() { "public" } else { database };
+                let esc_schema = schema.replace('\'', "''");
+                let esc_table = table.replace('\'', "''");
+                // Detect views so we emit a proper CREATE VIEW instead of a fake CREATE TABLE.
+                let type_sql = format!(
+                    "SELECT table_type FROM information_schema.tables WHERE table_schema = '{}' AND table_name = '{}'",
+                    esc_schema, esc_table
+                );
+                let type_rows = sqlx::raw_sql(&type_sql).fetch_all(pool).await;
+                let table_type: Option<String> = type_rows
+                    .ok()
+                    .and_then(|mut rows| rows.pop())
+                    .map(|r| r.get(0));
+                if table_type.as_deref() == Some("VIEW") {
+                    let def_sql = format!(
+                        "SELECT pg_get_viewdef('\"{}\".\"{}\"'::regclass, true)",
+                        esc_schema, esc_table
+                    );
+                    let def_row = sqlx::raw_sql(&def_sql).fetch_one(pool).await.map_err(|e| e.to_string())?;
+                    let viewdef: Option<String> = def_row.get(0);
+                    let body = viewdef.unwrap_or_default();
+                    let ddl = format!("CREATE OR REPLACE VIEW \"{}\".\"{}\" AS\n{}", schema, table, body);
+                    return Ok(ddl);
+                }
                 let sql = format!(
                     "SELECT 'CREATE TABLE ' || '{}' || ' (' || E'\\n' || \
                      string_agg('  ' || column_name || ' ' || data_type || \
@@ -2166,8 +2350,8 @@ impl DbConnection {
                           THEN ' DEFAULT ' || column_default ELSE '' END, ',' || E'\\n') \
                      || E'\\n);' AS ddl \
                      FROM information_schema.COLUMNS \
-                     WHERE table_schema = 'public' AND table_name = '{}'",
-                    table, escaped
+                     WHERE table_schema = '{}' AND table_name = '{}'",
+                    table, esc_schema, esc_table
                 );
                 let row = sqlx::raw_sql(&sql).fetch_one(pool).await.map_err(|e| e.to_string())?;
                 let ddl: String = row.get(0);
@@ -2224,6 +2408,8 @@ impl DbConnection {
                     table, key_type, encoding, ttl, idletime, refcount
                 ))
             }
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(conn) => dameng::get_table_ddl(conn, database, table).await,
         }
     }
 
@@ -2627,6 +2813,8 @@ impl DbConnection {
             DbConnection::Redis(_conn) => {
                 Ok(SchemaCache { tables: vec![], views: vec![], routines: vec![], triggers: vec![] })
             }
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(conn) => dameng::get_schema_cache(conn).await,
         }
     }
 
@@ -2785,6 +2973,45 @@ impl DbConnection {
             }
             DbConnection::Mongo(_, _) => Ok(vec![]),
             DbConnection::Redis(_) => Ok(vec![]),
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(conn) => {
+                let tbl = table.replace('\'', "''");
+                let conds = cols
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "\"{}\" LIKE '%{}%'",
+                            c.replace('"', "\"\""),
+                            needle.replace('\'', "''")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" OR ");
+                let sql = format!(
+                    "SELECT * FROM \"{}\" WHERE {} FETCH FIRST {} ROWS ONLY",
+                    tbl, conds, limit
+                );
+                let res = dameng::execute(conn, &sql).await?;
+                let mut out = Vec::new();
+                for row in &res.rows {
+                    let obj = row.as_object().unwrap();
+                    for c in cols {
+                        if let Some(v) = obj.get(*c) {
+                            if let Some(s) = v.as_str() {
+                                if s.to_lowercase().contains(&needle.to_lowercase()) {
+                                    out.push(FindMatch {
+                                        table: table.to_string(),
+                                        column: (*c).clone(),
+                                        value: s.to_string(),
+                                        row: row.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(out)
+            }
         }
     }
 
@@ -2857,6 +3084,31 @@ impl DbConnection {
             DbConnection::Redis(_) => {
                 Err("Batch execution is not supported for Redis connections".to_string())
             }
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(conn) => {
+                dameng::set_autocommit(conn, false).ok();
+                let res = async {
+                    let mut count = 0u64;
+                    for q in queries {
+                        let r = dameng::execute(conn, q).await?;
+                        count += r.row_count as u64;
+                    }
+                    Ok::<u64, String>(count)
+                }
+                .await;
+                match res {
+                    Ok(c) => {
+                        dameng::commit(conn).ok();
+                        dameng::set_autocommit(conn, true).ok();
+                        Ok(c)
+                    }
+                    Err(e) => {
+                        let _ = dameng::rollback(conn);
+                        dameng::set_autocommit(conn, true).ok();
+                        Err(e)
+                    }
+                }
+            }
         }
     }
 
@@ -2876,6 +3128,8 @@ pub async fn bulk_insert(
         DbConnection::Oracle(_) => "oracle",
         DbConnection::Mongo(_, _) => "mongodb",
         DbConnection::Redis(_) => "redis",
+        #[cfg(feature = "dameng")]
+        DbConnection::Dameng(_) => "dameng",
     };
     let quoted_table = if target_type == "mysql" {
         if let Some(db) = database {
@@ -3074,6 +3328,62 @@ pub async fn bulk_insert(
                 }).await.map_err(|e| e.to_string())?;
                 result
             }
+            #[cfg(feature = "dameng")]
+            DbConnection::Dameng(conn) => {
+                let d_col_list: Vec<String> =
+                    columns.iter().map(|c| escape_identifier(c, "oracle")).collect();
+                let d_quoted_table = if let Some(db) = database {
+                    format!(
+                        "\"{}\".{}",
+                        db.replace('"', "\"\""),
+                        escape_identifier(table, "oracle")
+                    )
+                } else {
+                    escape_identifier(table, "oracle")
+                };
+                let mut batch_vals: Vec<String> = Vec::new();
+                for row in rows {
+                    let vals: Vec<String> = row
+                        .iter()
+                        .map(|val| {
+                            // Dameng treats '' as NULL, so an empty string is
+                            // mapped to NULL rather than the Oracle-style ' '
+                            // used by escape_val for the "oracle" target.
+                            let v = if let serde_json::Value::String(s) = val {
+                                if s.is_empty() {
+                                    serde_json::Value::Null
+                                } else {
+                                    val.clone()
+                                }
+                            } else {
+                                val.clone()
+                            };
+                            escape_val(&v, "oracle")
+                        })
+                        .collect();
+                    batch_vals.push(format!("({})", vals.join(", ")));
+                }
+                let conn = conn.clone();
+                dameng::set_autocommit(&conn, false).ok();
+                let mut count = 0u64;
+                for row_vals in &batch_vals {
+                    let insert_sql = format!(
+                        "INSERT INTO {} ({}) VALUES {}",
+                        d_quoted_table,
+                        d_col_list.join(", "),
+                        row_vals
+                    );
+                    if let Err(e) = dameng::execute(&conn, &insert_sql).await {
+                        let _ = dameng::rollback(&conn);
+                        dameng::set_autocommit(&conn, true).ok();
+                        return Err(e);
+                    }
+                    count += 1;
+                }
+                dameng::commit(&conn).ok();
+                dameng::set_autocommit(&conn, true).ok();
+                Ok(count)
+            }
             _ => Err("bulk_insert not supported for this connection type".into()),
         }
     }
@@ -3138,7 +3448,11 @@ fn map_type(source_type: &str, source_db: &str) -> &'static str {
 }
 
 fn escape_identifier(name: &str, target_type: &str) -> String {
-    if target_type == "postgresql" || target_type == "sqlite" || target_type == "oracle" {
+    if target_type == "postgresql"
+        || target_type == "sqlite"
+        || target_type == "oracle"
+        || target_type == "dameng"
+    {
         format!("\"{}\"", name.replace('"', "\"\""))
     } else {
         format!("`{}`", name.replace('`', "``"))
@@ -3146,7 +3460,7 @@ fn escape_identifier(name: &str, target_type: &str) -> String {
 }
 
 fn escape_val(val: &serde_json::Value, target_type: &str) -> String {
-    let or_like = target_type == "oracle";
+    let or_like = target_type == "oracle" || target_type == "dameng";
     match val {
         serde_json::Value::Null => "NULL".to_string(),
         serde_json::Value::Number(n) => {
@@ -3736,6 +4050,8 @@ pub async fn transfer_data(
         DbConnection::Mongo(_, _) => "mongodb",
         DbConnection::Oracle(_) => "oracle",
         DbConnection::Redis(_) => "redis",
+        #[cfg(feature = "dameng")]
+        DbConnection::Dameng(_) => "dameng",
     };
 
     let target_type = match target {
@@ -3745,6 +4061,8 @@ pub async fn transfer_data(
         DbConnection::Mongo(_, _) => "mongodb",
         DbConnection::Oracle(_) => "oracle",
         DbConnection::Redis(_) => "redis",
+        #[cfg(feature = "dameng")]
+        DbConnection::Dameng(_) => "dameng",
     };
 
     let completed: Vec<&str> = opts.checkpoint_id.as_ref()
@@ -4196,6 +4514,8 @@ pub async fn backup_database(
         DbConnection::Mongo(_, _) => "mongodb",
         DbConnection::Oracle(_) => "oracle",
         DbConnection::Redis(_) => "redis",
+        #[cfg(feature = "dameng")]
+        DbConnection::Dameng(_) => "dameng",
     };
 
     let cache = source.get_schema_cache(database).await?;

@@ -151,6 +151,7 @@ function formatterLanguage(dbType: string): string {
     case "sqlite":
       return "sqlite"
     case "oracle":
+    case "dameng":
       return "plsql"
     default:
       return "sql"
@@ -220,6 +221,8 @@ export function buildExplainSql(dbType: string, sql: string): string {
       return `EXPLAIN QUERY PLAN ${trimmed}`
     case "oracle":
       return `EXPLAIN PLAN FOR ${trimmed};\nSELECT * FROM TABLE(DBMS_XPLAN.DISPLAY)`
+    case "dameng":
+      return `EXPLAIN ${trimmed}`
     default:
       return ""
   }
@@ -256,18 +259,28 @@ export function toJson(rows: Record<string, unknown>[]): string {
   return JSON.stringify(rows, null, 2)
 }
 
-export function toInsert(table: string, columns: string[], rows: Record<string, unknown>[]): string {
+export function toInsert(
+  table: string,
+  columns: string[],
+  rows: Record<string, unknown>[],
+  numericColumns?: Set<string>
+): string {
   if (columns.length === 0) return ""
   const colList = columns.map((c) => `\`${c.replace(/`/g, "``")}\``).join(", ")
-  const lit = (v: unknown): string => {
+  const lit = (v: unknown, col: string): string => {
     if (v === null || v === undefined) return "NULL"
     if (typeof v === "number" && Number.isFinite(v)) return String(v)
     if (typeof v === "boolean") return v ? "1" : "0"
     if (v instanceof Date) return "'" + v.toISOString().replace("T", " ").slice(0, 19) + "'"
     const s = typeof v === "string" ? v : JSON.stringify(v)
+    // Numeric columns: emit big integers / decimals unquoted so the exact
+    // value survives the round-trip (e.g. PostgreSQL rejects quoted bigint).
+    if (numericColumns?.has(col) && /^[-+]?(\d+(\.\d+)?|\.\d+)$/.test(s.trim())) {
+      return s
+    }
     return "'" + s.replace(/\\/g, "\\\\").replace(/'/g, "''") + "'"
   }
-  const values = rows.map((r) => `(${columns.map((c) => lit(r[c])).join(", ")})`)
+  const values = rows.map((r) => `(${columns.map((c) => lit(r[c], c)).join(", ")})`)
   const chunks: string[] = []
   for (let i = 0; i < values.length; i += 100) {
     const slice = values.slice(i, i + 100).join(",\n  ")
@@ -280,20 +293,24 @@ export function toUpdate(
   table: string,
   columns: string[],
   row: Record<string, unknown>,
-  primaryKeys: string[] = []
+  primaryKeys: string[] = [],
+  numericColumns?: Set<string>
 ): string {
   if (columns.length === 0) return ""
-  const lit = (v: unknown): string => {
+  const lit = (v: unknown, col: string): string => {
     if (v === null || v === undefined) return "NULL"
     if (typeof v === "number" && Number.isFinite(v)) return String(v)
     if (typeof v === "boolean") return v ? "1" : "0"
     if (v instanceof Date) return "'" + v.toISOString().replace("T", " ").slice(0, 19) + "'"
     const s = typeof v === "string" ? v : JSON.stringify(v)
+    if (numericColumns?.has(col) && /^[-+]?(\d+(\.\d+)?|\.\d+)$/.test(s.trim())) {
+      return s
+    }
     return "'" + s.replace(/\\/g, "\\\\").replace(/'/g, "''") + "'"
   }
-  const setParts = columns.map((c) => `\`${c.replace(/`/g, "``")}\` = ${lit(row[c])}`)
+  const setParts = columns.map((c) => `\`${c.replace(/`/g, "``")}\` = ${lit(row[c], c)}`)
   const pkCols = primaryKeys.length > 0 ? primaryKeys : columns
-  const whereParts = pkCols.map((c) => `\`${c.replace(/`/g, "``")}\` = ${lit(row[c])}`)
+  const whereParts = pkCols.map((c) => `\`${c.replace(/`/g, "``")}\` = ${lit(row[c], c)}`)
   return `UPDATE \`${table.replace(/`/g, "``")}\` SET ${setParts.join(", ")} WHERE ${whereParts.join(" AND ")};`
 }
 

@@ -95,6 +95,7 @@ dependencies = [
  "keyring",
  "log",
  "mongodb",
+ "odbc",
  "once_cell",
  "oracle",
  "parking_lot",
@@ -1024,6 +1025,12 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "doc-comment"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "780955b8b195a21ab8e4ac6b60dd1dbdcec1dc6c51c0617964b08c81785e12c9"
 
 [[package]]
 name = "dom_query"
@@ -3031,6 +3038,34 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation",
 ]
+
+[[package]]
+name = "odbc"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a2056ebb920918e743ccd0ceb6bc9d8e02e4d0d48c28550d1887e7490f6f298"
+dependencies = [
+ "doc-comment",
+ "encoding_rs",
+ "log",
+ "odbc-safe",
+ "odbc-sys",
+]
+
+[[package]]
+name = "odbc-safe"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f45de02ae2d07b38a7ef0e64139d971b1590d834c2ec089132d0eb49678e7e5a"
+dependencies = [
+ "odbc-sys",
+]
+
+[[package]]
+name = "odbc-sys"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dec5c5490e13c423d25508b13cd2cc432490043f5ed5b46b61a75857642f4f37"
 
 [[package]]
 name = "odpic-sys"
