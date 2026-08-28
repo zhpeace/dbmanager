@@ -12,6 +12,7 @@ import { DataTable, type RowState } from "./DataTable"
 import { ValueEditorDialog } from "./ValueEditorDialog"
 import { BinaryEditorDialog } from "./BinaryEditorDialog"
 import { RedisValuePanel } from "./RedisValuePanel"
+import { ExportDialog } from "@/components/connection/ExportDialog"
 import type { TableData, DatabaseType, ColumnDef, IndexInfo, ForeignKeyInfo, ColumnInfo } from "@/lib/db"
 import { COMMON_TYPES } from "@/components/connection/CreateTableDialog"
 import {
@@ -45,11 +46,13 @@ interface TableBrowserProps {
   objectType?: string
   onRunSql?: (sql: string) => Promise<void>
   onInsertSql?: (sql: string) => void
+  isPro?: boolean
+  onOpenLicense?: () => void
 }
 
 type NewRow = Record<string, unknown>
 
-export function TableBrowser({ connectionId, database, table, dbType, onClose, embedded = false, defaultTab, objectType, onRunSql, onInsertSql }: TableBrowserProps) {
+export function TableBrowser({ connectionId, database, table, dbType, onClose, embedded = false, defaultTab, objectType, onRunSql, onInsertSql, isPro, onOpenLicense }: TableBrowserProps) {
   const { t } = useTranslation()
   const { theme } = useTheme()
   const isView = objectType === "VIEW"
@@ -69,6 +72,7 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
   const [editingCell, setEditingCell] = useState<{ row: number; col: string } | null>(null)
   const [largeEditCell, setLargeEditCell] = useState<{ row: number; col: string } | null>(null)
   const [binaryEditCell, setBinaryEditCell] = useState<{ row: number; col: string } | null>(null)
+  const [exportOpen, setExportOpen] = useState(false)
 
   const [dirtyRows, setDirtyRows] = useState<Map<number, Record<string, string>>>(new Map())
   const [newRows, setNewRows] = useState<NewRow[]>([])
@@ -703,6 +707,10 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
             <Download className="h-3 w-3 mr-1" />
             {t('tablebrowser.json')}
           </Button>
+          <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setExportOpen(true)} title="服务端导出整表（支持大表 / SQL）">
+            <Download className="h-3 w-3 mr-1" />
+            导出全部
+          </Button>
           <div className="flex items-center gap-1 text-xs text-muted-foreground">
             <Button
               size="sm"
@@ -759,16 +767,18 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
               <Table2 className="h-3.5 w-3.5 mr-1" />
               {t('tablebrowser.tab_data')}
             </TabsTrigger>
-            <TabsTrigger value="columns" className="text-xs data-[state=active]:bg-background">
-              <Info className="h-3.5 w-3.5 mr-1" />
-              {t('tablebrowser.tab_columns')}
-            </TabsTrigger>
-            {!isView && (
+            {isPro && (
+              <TabsTrigger value="columns" className="text-xs data-[state=active]:bg-background">
+                <Info className="h-3.5 w-3.5 mr-1" />
+                {t('tablebrowser.tab_columns')}
+              </TabsTrigger>
+            )}
+            {!isView && isPro && (
               <TabsTrigger value="indexes" className="text-xs data-[state=active]:bg-background">
                 {t('tablebrowser.tab_indexes')}
               </TabsTrigger>
             )}
-            {!isView && (
+            {!isView && isPro && (
               <TabsTrigger value="fks" className="text-xs data-[state=active]:bg-background">
                 {t('tablebrowser.tab_fks')}
               </TabsTrigger>
@@ -1171,7 +1181,7 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
               <Wand2 className="h-3.5 w-3.5 mr-1" />
               {t('editor.format')}
             </Button>
-            <Button size="sm" onClick={applyDdl} disabled={ddlBusy || !ddl || !onRunSql}>
+            <Button size="sm" onClick={() => { if (!isPro) { onOpenLicense?.(); return } applyDdl() }} disabled={ddlBusy || !ddl || !onRunSql}>
               <Save className="h-3.5 w-3.5 mr-1" />
               {t('tablebrowser.apply_ddl')}
             </Button>
@@ -1185,6 +1195,9 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
               <span className={cn("text-xs break-all", ddlMsg.type === "ok" ? "text-emerald-600" : "text-destructive")}>
                 {ddlMsg.text}
               </span>
+            )}
+            {!isPro && (
+              <span className="text-xs text-muted-foreground ml-auto">{t('tablebrowser.ddl_pro_only')}</span>
             )}
           </div>
           <div className="flex-1 min-h-0">
@@ -1246,6 +1259,14 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
           setBinaryEditCell(null)
         }}
         onClose={() => setBinaryEditCell(null)}
+      />
+      <ExportDialog
+        open={exportOpen}
+        onOpenChange={setExportOpen}
+        connectionId={connectionId}
+        query={`SELECT * FROM ${qualified}`}
+        table={table}
+        defaultName={table}
       />
       </>
       )}

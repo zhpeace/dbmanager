@@ -209,6 +209,8 @@ it("calls test_connection with correct params", async () => {
       user: "root",
       password: "",
       database: null,
+      ssh: null,
+      ssl: null,
     })
   })
 })

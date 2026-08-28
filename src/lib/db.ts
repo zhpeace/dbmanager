@@ -11,6 +11,27 @@ export interface ConnectionConfig {
   database?: string
   filePath?: string
   color?: string
+  ssh?: SshConfig
+  ssl?: SslConfig
+}
+
+export interface SshConfig {
+  enabled: boolean
+  host: string
+  port: number
+  user: string
+  authType: 'password' | 'key'
+  password?: string
+  privateKey?: string
+  passphrase?: string
+}
+
+export interface SslConfig {
+  enabled: boolean
+  mode?: 'disable' | 'prefer' | 'require' | 'verify-ca' | 'verify-full'
+  caPath?: string
+  certPath?: string
+  keyPath?: string
 }
 
 export interface ForeignKeyInfo {
@@ -423,9 +444,36 @@ export const DEFAULT_PORTS: Record<DatabaseType, number> = {
   dameng: 5236,
 }
 
+export interface Entitlements {
+  tier: 'free' | 'pro'
+  connectors: string[]
+  ddl: boolean
+  bulk: boolean
+  export: boolean
+  multi_connection: boolean
+}
+
 export interface LicenseStatus {
   activated: boolean
   key: string | null
+  tier: 'free' | 'pro'
+  entitlements: Entitlements
+}
+
+/** Connectors that require a Pro license (everything else is free). */
+export const PAID_CONNECTORS: DatabaseType[] = ['oracle', 'dameng', 'mongodb']
+
+export function isPro(status: LicenseStatus | null | undefined): boolean {
+  return !!status?.activated && status.tier === 'pro'
+}
+
+/** Whether the given connector type is usable under the current license. */
+export function isConnectorAvailable(
+  type: DatabaseType,
+  status: LicenseStatus | null | undefined,
+): boolean {
+  if (!PAID_CONNECTORS.includes(type)) return true
+  return isPro(status)
 }
 
 export async function activateLicense(key: string): Promise<LicenseStatus> {
@@ -440,7 +488,19 @@ export async function loadLicenseStatus(): Promise<LicenseStatus> {
   try {
     return await getLicenseStatus()
   } catch {
-    return { activated: false, key: null }
+    return {
+      activated: false,
+      key: null,
+      tier: 'free',
+      entitlements: {
+        tier: 'free',
+        connectors: [],
+        ddl: false,
+        bulk: false,
+        export: false,
+        multi_connection: false,
+      },
+    }
   }
 }
 
@@ -526,6 +586,18 @@ export async function getConnectionSecret(id: string): Promise<string | null> {
 
 export async function deleteConnectionSecret(id: string): Promise<void> {
   await invoke<string | null>("delete_connection_secret", { id })
+}
+
+export type ExportFormat = 'csv' | 'json' | 'sql' | 'xlsx'
+
+export async function exportData(
+  id: string,
+  query: string,
+  format: ExportFormat,
+  filePath: string,
+  table?: string,
+): Promise<void> {
+  return invoke("export_data", { id, query, format, filePath, table: table ?? null })
 }
 
 export type TaskConfig =

@@ -18,17 +18,52 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import type { ConnectionConfig, DatabaseType } from "@/lib/db"
-import { DB_DISPLAY_NAMES, DEFAULT_PORTS, saveConnectionSecret } from "@/lib/db"
+import type { ConnectionConfig, DatabaseType, LicenseStatus, SshConfig, SslConfig } from "@/lib/db"
+import { DB_DISPLAY_NAMES, DEFAULT_PORTS, isConnectorAvailable, saveConnectionSecret } from "@/lib/db"
 
 interface ConnectionDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSave: (config: ConnectionConfig) => void
   editingConfig?: ConnectionConfig | null
+  license?: LicenseStatus | null
 }
 
-export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig }: ConnectionDialogProps) {
+function buildSsh(c: {
+  sshEnabled: boolean
+  sshHost: string
+  sshPort: string
+  sshUser: string
+  sshAuthType: 'password' | 'key'
+  sshPassword: string
+  sshKey: string
+}): SshConfig | undefined {
+  if (!c.sshEnabled) return undefined
+  return {
+    enabled: true,
+    host: c.sshHost,
+    port: Number(c.sshPort) || 22,
+    user: c.sshUser,
+    authType: c.sshAuthType,
+    password: c.sshAuthType === 'password' ? (c.sshPassword || undefined) : undefined,
+    privateKey: c.sshAuthType === 'key' ? (c.sshKey || undefined) : undefined,
+  }
+}
+
+function buildSsl(c: {
+  sslEnabled: boolean
+  sslMode: string
+  sslCa: string
+}): SslConfig | undefined {
+  if (!c.sslEnabled) return undefined
+  return {
+    enabled: true,
+    mode: (c.sslMode as SslConfig['mode']) || 'require',
+    caPath: c.sslCa || undefined,
+  }
+}
+
+export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig, license }: ConnectionDialogProps) {
   const { t } = useTranslation()
   const [type, setType] = useState<DatabaseType>(editingConfig?.type || "mysql")
   const [name, setName] = useState(editingConfig?.name || "")
@@ -40,6 +75,18 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig }: 
   const [filePath, setFilePath] = useState(editingConfig?.filePath || "")
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  const [sshEnabled, setSshEnabled] = useState(false)
+  const [sshHost, setSshHost] = useState("")
+  const [sshPort, setSshPort] = useState("22")
+  const [sshUser, setSshUser] = useState("")
+  const [sshAuthType, setSshAuthType] = useState<'password' | 'key'>('password')
+  const [sshPassword, setSshPassword] = useState("")
+  const [sshKey, setSshKey] = useState("")
+
+  const [sslEnabled, setSslEnabled] = useState(false)
+  const [sslMode, setSslMode] = useState('require')
+  const [sslCa, setSslCa] = useState("")
 
   const isEditing = !!editingConfig
   const isSqlite = type === "sqlite"
@@ -57,6 +104,18 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig }: 
     setFilePath(editingConfig?.filePath || "")
     setTestResult(null)
     setTesting(false)
+    const ssh = editingConfig?.ssh
+    setSshEnabled(!!ssh?.enabled)
+    setSshHost(ssh?.host || "")
+    setSshPort(String(ssh?.port || 22))
+    setSshUser(ssh?.user || "")
+    setSshAuthType((ssh?.authType as 'password' | 'key') || 'password')
+    setSshPassword(ssh?.password || "")
+    setSshKey(ssh?.privateKey || "")
+    const ssl = editingConfig?.ssl
+    setSslEnabled(!!ssl?.enabled)
+    setSslMode(ssl?.mode || 'require')
+    setSslCa(ssl?.caPath || "")
     if (editingConfig?.type === "redis") {
       setUser("")
     }
@@ -73,6 +132,8 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig }: 
         user: user || "",
         password: password || "",
         database: database || null,
+        ssh: buildSsh({ sshEnabled, sshHost, sshPort, sshUser, sshAuthType, sshPassword, sshKey }) || null,
+        ssl: buildSsl({ sslEnabled, sslMode, sslCa }) || null,
       })
       setTestResult({ ok: true, message: result })
     } catch (e) {
@@ -92,6 +153,8 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig }: 
         // keyring unavailable; fall back to storing in config
       }
     }
+    const ssh = buildSsh({ sshEnabled, sshHost, sshPort, sshUser, sshAuthType, sshPassword, sshKey })
+    const ssl = buildSsl({ sslEnabled, sslMode, sslCa })
     onSave({
       id,
       name,
@@ -102,13 +165,15 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig }: 
       password: isSqlite ? undefined : (connPassword || undefined),
       database: isSqlite ? undefined : database,
       filePath: isSqlite ? filePath : undefined,
+      ...(ssh ? { ssh } : {}),
+      ...(ssl ? { ssl } : {}),
     })
     onOpenChange(false)
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{isEditing ? t('connection.edit_title') : t('connection.new_title')}</DialogTitle>
           <DialogDescription>
@@ -126,9 +191,14 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig }: 
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {Object.entries(DB_DISPLAY_NAMES).map(([key, name]) => (
-                  <SelectItem key={key} value={key}>{name}</SelectItem>
-                ))}
+                {Object.entries(DB_DISPLAY_NAMES).map(([key, name]) => {
+                  const available = isConnectorAvailable(key as DatabaseType, license)
+                  return (
+                    <SelectItem key={key} value={key} disabled={!available}>
+                      {name}{!available ? " (Pro)" : ""}
+                    </SelectItem>
+                  )
+                })}
               </SelectContent>
             </Select>
           </div>
@@ -186,6 +256,18 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig }: 
                   onChange={(e) => setDatabase(e.target.value)}
                 />
               </div>
+              <SshSslSections
+                sshEnabled={sshEnabled} setSshEnabled={setSshEnabled}
+                sshHost={sshHost} setSshHost={setSshHost}
+                sshPort={sshPort} setSshPort={setSshPort}
+                sshUser={sshUser} setSshUser={setSshUser}
+                sshAuthType={sshAuthType} setSshAuthType={setSshAuthType}
+                sshPassword={sshPassword} setSshPassword={setSshPassword}
+                sshKey={sshKey} setSshKey={setSshKey}
+                sslEnabled={sslEnabled} setSslEnabled={setSslEnabled}
+                sslMode={sslMode} setSslMode={setSslMode}
+                sslCa={sslCa} setSslCa={setSslCa}
+              />
             </>
           ) : (
             <>
@@ -234,6 +316,18 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig }: 
                   onChange={(e) => setDatabase(e.target.value)}
                 />
               </div>
+              <SshSslSections
+                sshEnabled={sshEnabled} setSshEnabled={setSshEnabled}
+                sshHost={sshHost} setSshHost={setSshHost}
+                sshPort={sshPort} setSshPort={setSshPort}
+                sshUser={sshUser} setSshUser={setSshUser}
+                sshAuthType={sshAuthType} setSshAuthType={setSshAuthType}
+                sshPassword={sshPassword} setSshPassword={setSshPassword}
+                sshKey={sshKey} setSshKey={setSshKey}
+                sslEnabled={sslEnabled} setSslEnabled={setSslEnabled}
+                sslMode={sslMode} setSslMode={setSslMode}
+                sslCa={sslCa} setSslCa={setSslCa}
+              />
             </>
           )}
         </div>
@@ -253,5 +347,109 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig }: 
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+interface SshSslSectionsProps {
+  sshEnabled: boolean; setSshEnabled: (v: boolean) => void
+  sshHost: string; setSshHost: (v: string) => void
+  sshPort: string; setSshPort: (v: string) => void
+  sshUser: string; setSshUser: (v: string) => void
+  sshAuthType: 'password' | 'key'; setSshAuthType: (v: 'password' | 'key') => void
+  sshPassword: string; setSshPassword: (v: string) => void
+  sshKey: string; setSshKey: (v: string) => void
+  sslEnabled: boolean; setSslEnabled: (v: boolean) => void
+  sslMode: string; setSslMode: (v: string) => void
+  sslCa: string; setSslCa: (v: string) => void
+}
+
+function SshSslSections(props: SshSslSectionsProps) {
+  return (
+    <>
+      <details className="rounded-md border p-3">
+        <summary className="cursor-pointer text-sm font-medium select-none">SSH 隧道（跳板机 / 堡垒机）</summary>
+        <div className="mt-3 grid gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={props.sshEnabled} onChange={(e) => props.setSshEnabled(e.target.checked)} />
+            通过 SSH 隧道连接
+          </label>
+          {props.sshEnabled && (
+            <>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2 grid gap-2">
+                  <Label>SSH 主机</Label>
+                  <Input placeholder="bastion.example.com" value={props.sshHost} onChange={(e) => props.setSshHost(e.target.value)} />
+                </div>
+                <div className="grid gap-2">
+                  <Label>SSH 端口</Label>
+                  <Input value={props.sshPort} onChange={(e) => props.setSshPort(e.target.value)} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-2">
+                  <Label>SSH 用户</Label>
+                  <Input value={props.sshUser} onChange={(e) => props.setSshUser(e.target.value)} />
+                </div>
+                <div className="grid gap-2">
+                  <Label>认证方式</Label>
+                  <Select value={props.sshAuthType} onValueChange={(v) => props.setSshAuthType(v as 'password' | 'key')}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="password">密码</SelectItem>
+                      <SelectItem value="key">私钥</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              {props.sshAuthType === 'password' ? (
+                <div className="grid gap-2">
+                  <Label>SSH 密码</Label>
+                  <Input type="password" value={props.sshPassword} onChange={(e) => props.setSshPassword(e.target.value)} />
+                </div>
+              ) : (
+                <div className="grid gap-2">
+                  <Label>私钥（文件路径或 PEM 内容）</Label>
+                  <Input placeholder="/Users/you/.ssh/id_rsa 或 -----BEGIN ...-----" value={props.sshKey} onChange={(e) => props.setSshKey(e.target.value)} />
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                数据库地址（上方 host/port）将作为 SSH 服务端可达的目标地址通过隧道转发。
+              </p>
+            </>
+          )}
+        </div>
+      </details>
+      <details className="rounded-md border p-3">
+        <summary className="cursor-pointer text-sm font-medium select-none">SSL / TLS 加密</summary>
+        <div className="mt-3 grid gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={props.sslEnabled} onChange={(e) => props.setSslEnabled(e.target.checked)} />
+            启用 SSL 连接（PostgreSQL / MySQL）
+          </label>
+          {props.sslEnabled && (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-2">
+                  <Label>模式</Label>
+                  <Select value={props.sslMode} onValueChange={(v) => props.setSslMode(v)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="prefer">prefer</SelectItem>
+                      <SelectItem value="require">require</SelectItem>
+                      <SelectItem value="verify-ca">verify-ca</SelectItem>
+                      <SelectItem value="verify-full">verify-full</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <Label>CA 证书路径</Label>
+                  <Input placeholder="可选" value={props.sslCa} onChange={(e) => props.setSslCa(e.target.value)} />
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </details>
+    </>
   )
 }

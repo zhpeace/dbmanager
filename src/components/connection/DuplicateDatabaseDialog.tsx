@@ -17,6 +17,7 @@ interface DuplicateDatabaseDialogProps {
   onCreated?: () => void
   dbType?: string
   connConfig?: { host?: string; port?: number; user?: string; password?: string }
+  isPro?: boolean
 }
 
 const MAX_LENGTH: Record<string, number> = {
@@ -38,7 +39,7 @@ function validateName(name: string, dbType: string, sourceDb: string): string | 
   return null
 }
 
-export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sourceDb, onDone, onCreated, dbType = "mysql", connConfig }: DuplicateDatabaseDialogProps) {
+export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sourceDb, onDone, onCreated, dbType = "mysql", connConfig, isPro }: DuplicateDatabaseDialogProps) {
   const { t } = useTranslation()
   const [targetDb, setTargetDb] = useState("")
   const [duplicating, setDuplicating] = useState(false)
@@ -175,10 +176,13 @@ export function DuplicateDatabaseDialog({ open, onOpenChange, connectionId, sour
             </Button>
           )}
           {!result && (
-            <Button size="sm" onClick={handleDuplicate} disabled={!!validationError || duplicating}>
+            <Button size="sm" onClick={handleDuplicate} disabled={!!validationError || duplicating || !isPro}>
               {duplicating ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
               {duplicating ? t('dialog.duplicating') : t('dialog.duplicate')}
             </Button>
+          )}
+          {!isPro && (
+            <span className="text-xs text-muted-foreground">{t('dialog.duplicate_pro_only')}</span>
           )}
         </DialogFooter>
       </DialogContent>

@@ -163,6 +163,8 @@ interface SidebarProps {
   onRedisSearch: (connectionId: string, database: string, pattern: string, typeFilter: string) => void
   onRedisLoadMore: (connectionId: string, database: string) => void
   onRedisKeyAction: (action: "rename" | "duplicate" | "expire" | "persist" | "delete", database: string, key: string) => void
+  onOpenLicense?: () => void
+  isPro?: boolean
 }
 
 export function Sidebar({
@@ -195,6 +197,8 @@ export function Sidebar({
   onRedisSearch,
   onRedisLoadMore,
   onRedisKeyAction,
+  onOpenLicense,
+  isPro,
 }: SidebarProps) {
   const { t } = useTranslation()
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
@@ -205,6 +209,7 @@ export function Sidebar({
   useEffect(() => {
     localStorage.setItem("dbmanager-sidebarWidth", String(sidebarWidth))
   }, [sidebarWidth])
+  const [objectFilter, setObjectFilter] = useState("")
   return (
     <>
       <aside className="flex flex-col border-r bg-sidebar shrink-0" style={{ width: sidebarWidth }}>
@@ -213,6 +218,28 @@ export function Sidebar({
         <span className="text-xs text-muted-foreground">{connections.length}</span>
       </div>
       <Separator />
+      <div className="flex items-center gap-1 px-3 py-1.5">
+        <div className="flex-1 flex items-center gap-1 rounded border border-border/60 bg-sidebar-accent/20 px-1.5">
+          <Search className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+          <input
+            className="w-full h-6 bg-transparent text-[11px] outline-none"
+            placeholder={t('sidebar.filter_objects')}
+            title={t('sidebar.filter_hint')}
+            value={objectFilter}
+            onChange={(e) => setObjectFilter(e.target.value)}
+          />
+          {objectFilter && (
+            <button
+              type="button"
+              className="shrink-0"
+              onClick={() => setObjectFilter("")}
+              title={t('sidebar.filter_clear')}
+            >
+              <X className="h-3 w-3 text-muted-foreground/70 hover:text-foreground" />
+            </button>
+          )}
+        </div>
+      </div>
       <ScrollArea className="flex-1">
         <div className="p-2 space-y-1">
           {connections.length === 0 && (
@@ -245,8 +272,10 @@ onLoadTables={(db) => onLoadTables(conn.id, db)}
                onDropObject={(type, name, db) => onDropObject(type, name, db)}
                onTruncateTable={(db, tbl) => onTruncateTable(db, tbl)}
                onRenameTable={(db, tbl) => onRenameTable(db, tbl)}
-               onNewObject={(type, db) => onNewObject(type, db)}
-               databases={databases[conn.id] || []}
+              onNewObject={(type, db) => onNewObject(type, db)}
+              isPro={isPro}
+              objectFilter={objectFilter}
+              databases={databases[conn.id] || []}
                schemas={schemas?.[conn.id] || {}}
                tables={tables[conn.id] || {}}
               isLoading={loading[conn.id] || false}
@@ -256,6 +285,7 @@ onLoadTables={(db) => onLoadTables(conn.id, db)}
               onRedisSearch={onRedisSearch}
               onRedisLoadMore={onRedisLoadMore}
               onRedisKeyAction={onRedisKeyAction}
+              onOpenLicense={onOpenLicense}
             />
           ))}
         </div>
@@ -307,6 +337,9 @@ function ConnectionItem({
   onRedisSearch,
   onRedisLoadMore,
   onRedisKeyAction,
+  onOpenLicense,
+  isPro,
+  objectFilter,
 }: {
   connection: Connection
   isActive: boolean
@@ -339,6 +372,9 @@ function ConnectionItem({
   onRedisSearch?: (connectionId: string, database: string, pattern: string, typeFilter: string) => void
   onRedisLoadMore?: (connectionId: string, database: string) => void
   onRedisKeyAction?: (action: "delete" | "rename" | "duplicate" | "expire" | "persist", database: string, key: string) => void
+  onOpenLicense?: () => void
+  isPro?: boolean
+  objectFilter: string
 }) {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
@@ -348,18 +384,19 @@ function ConnectionItem({
   const [selectedObjKey, setSelectedObjKey] = useState<string | null>(null)
   const [redisSearch, setRedisSearch] = useState<Record<string, string>>({})
   const [redisTypeFilter, setRedisTypeFilter] = useState<Record<string, string>>({})
-  const [objectFilter, setObjectFilter] = useState("")
   const isRedis = connection.config.type === "redis"
 
-  // When filtering, auto-load table lists for databases that aren't loaded yet
-  // so the filter can match against all objects, and expand every database.
+  // While filtering, only make sure databases the user has ALREADY expanded have
+  // their table lists loaded, so object-name filtering can match within them.
+  // We never change expansion state here, so the tree stays put (no forced open,
+  // no scroll jumping) and other connections remain as the user left them.
   useEffect(() => {
     if (!objectFilter.trim()) return
     for (const db of databases) {
       const k = `${connId}:${db.name}`
-      if (!tables[db.name] && !tableLoading[k]) onLoadTables(db.name)
+      if (expandedDbs.has(db.name) && !tables[db.name] && !tableLoading[k]) onLoadTables(db.name)
     }
-  }, [objectFilter, databases, tables, tableLoading, onLoadTables, connId])
+  }, [objectFilter, databases, tables, tableLoading, expandedDbs, onLoadTables, connId])
 
   function onRedisSearchDb(db: string, pattern: string, typeFilter: string) {
     setRedisSearch((prev) => ({ ...prev, [db]: pattern }))
@@ -560,7 +597,7 @@ function ConnectionItem({
                       </>
                     ) : obj.object_type === "TABLE" || obj.object_type === "BASE TABLE" ? (
                       <>
-                        <ContextMenuItem onClick={() => onDesignTable(databaseName, obj.name)}>
+                        <ContextMenuItem onClick={() => { if (!isPro) { onOpenLicense?.(); return } onDesignTable(databaseName, obj.name) }}>
                           <Pencil className="h-3 w-3 mr-2" />
                           {t('sidebar.design_table')}
                         </ContextMenuItem>
@@ -586,17 +623,17 @@ function ConnectionItem({
                           {t('sidebar.export_insert')}
                         </ContextMenuItem>
                         <ContextMenuSeparator />
-                        <ContextMenuItem onClick={() => onTruncateTable(databaseName, obj.name)}>
+                        <ContextMenuItem onClick={() => { if (!isPro) { onOpenLicense?.(); return } onTruncateTable(databaseName, obj.name) }}>
                           <Trash2 className="h-3 w-3 mr-2" />
                           {t('sidebar.truncate_table')}
                         </ContextMenuItem>
-                        <ContextMenuItem onClick={() => onRenameTable(databaseName, obj.name)}>
+                        <ContextMenuItem onClick={() => { if (!isPro) { onOpenLicense?.(); return } onRenameTable(databaseName, obj.name) }}>
                           <Pencil className="h-3 w-3 mr-2" />
                           {t('sidebar.rename_table')}
                         </ContextMenuItem>
                         <ContextMenuItem
                           className="text-destructive"
-                          onClick={() => onDropObject("TABLE", obj.name, databaseName)}
+                          onClick={() => { if (!isPro) { onOpenLicense?.(); return } onDropObject("TABLE", obj.name, databaseName) }}
                         >
                           <Trash2 className="h-3 w-3 mr-2" />
                           {t('sidebar.drop_table')}
@@ -608,7 +645,7 @@ function ConnectionItem({
                           <PenLine className="h-3 w-3 mr-2" />
                           {t('sidebar.view_definition')}
                         </ContextMenuItem>
-                        <ContextMenuItem onClick={() => onNewObject(obj.object_type, databaseName)}>
+                        <ContextMenuItem onClick={() => { if (!isPro) { onOpenLicense?.(); return } onNewObject(obj.object_type, databaseName) }}>
                           <Plus className="h-3 w-3 mr-2" />
                           {t('sidebar.new_object', { type: obj.object_type })}
                         </ContextMenuItem>
@@ -747,28 +784,6 @@ function ConnectionItem({
 
       {connection.connected && expanded && (
         <>
-          <div className="flex items-center gap-1 px-3 pb-1">
-            <div className="flex-1 flex items-center gap-1 rounded border border-border/60 bg-sidebar-accent/20 px-1.5">
-              <Search className="h-3 w-3 shrink-0 text-muted-foreground/70" />
-              <input
-                className="w-full h-6 bg-transparent text-[11px] outline-none"
-                placeholder={t('sidebar.filter_objects')}
-                title={t('sidebar.filter_hint')}
-                value={objectFilter}
-                onChange={(e) => setObjectFilter(e.target.value)}
-              />
-              {objectFilter && (
-                <button
-                  type="button"
-                  className="shrink-0"
-                  onClick={() => setObjectFilter("")}
-                  title={t('sidebar.filter_clear')}
-                >
-                  <X className="h-3 w-3 text-muted-foreground/70 hover:text-foreground" />
-                </button>
-              )}
-            </div>
-          </div>
           <div className="ml-4 mt-1 space-y-0.5">
           {databases.length === 0 && !isLoading && (
             <p className="text-xs text-muted-foreground px-2 py-1">{t('sidebar.no_databases')}</p>
@@ -782,7 +797,7 @@ function ConnectionItem({
           {databases.map((db) => {
             const dbTables = tables[db.name]
             const dbLoading = tableLoading[`${connId}:${db.name}`]
-            const isDbExpanded = objectFilter.trim() ? true : expandedDbs.has(db.name)
+            const isDbExpanded = expandedDbs.has(db.name)
 
             return (
               <div key={db.name}>
@@ -837,7 +852,7 @@ function ConnectionItem({
                     </ContextMenuItem>
                     )}
                     {["mysql", "postgresql", "mongo", "oracle"].includes(connection.config.type) && (
-                    <ContextMenuItem onClick={() => onDuplicateDatabase(connId, db.name)}>
+                    <ContextMenuItem onClick={() => { if (!isPro) { onOpenLicense?.(); return } onDuplicateDatabase(connId, db.name) }}>
                       <Copy className="h-3 w-3 mr-2" />
                       {t('sidebar.duplicate_database')}
                     </ContextMenuItem>
@@ -877,7 +892,7 @@ function ConnectionItem({
                               </div>
                                 {isSchemaExpanded && (
                                  <div className="ml-3 mt-0.5 space-y-0.5">
-                                   {renderTypeGroups(schemaKey, schemaObjects, schema.name, objectFilter, !!objectFilter)}
+                                   {renderTypeGroups(schemaKey, schemaObjects, schema.name, objectFilter)}
                                   {schemaObjects.length === 0 && (
                                     <p className="text-xs text-muted-foreground px-2 py-0.5">{t('sidebar.no_objects')}</p>
                                   )}
@@ -910,7 +925,7 @@ function ConnectionItem({
                             ))}
                           </select>
                         </div>
-                        {renderTypeGroups(db.name, dbTables, db.name, objectFilter, !!objectFilter)}
+                        {renderTypeGroups(db.name, dbTables, db.name, objectFilter)}
                         {(redisScanCursor && redisScanCursor[`${connId}:${db.name}`] > 0) && (
                           <button
                             className="w-full mt-0.5 rounded px-2 py-0.5 text-[11px] text-primary hover:bg-sidebar-accent/40"
@@ -921,7 +936,7 @@ function ConnectionItem({
                         )}
                       </div>
                     ) : (
-                      <>{renderTypeGroups(db.name, dbTables, db.name, objectFilter, !!objectFilter)}</>
+                      <>{renderTypeGroups(db.name, dbTables, db.name, objectFilter)}</>
                     )}
                     {connection.config.type !== "postgresql" && objectFilter.trim() && dbTables && dbTables.length > 0 && dbTables.filter((o) => matchObjectName(o.name, objectFilter)).length === 0 && (
                       <p className="text-xs text-muted-foreground px-2 py-0.5">{t('sidebar.no_match')}</p>

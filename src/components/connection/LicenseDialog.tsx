@@ -15,9 +15,11 @@ import { activateLicense, type LicenseStatus } from "@/lib/db"
 export function LicenseDialog({
   open,
   onActivated,
+  onDismiss,
 }: {
   open: boolean
   onActivated: (status: LicenseStatus) => void
+  onDismiss?: () => void
 }) {
   const { t } = useTranslation()
   const [key, setKey] = useState("")
@@ -73,6 +75,11 @@ export function LicenseDialog({
           )}
         </div>
         <div className="flex justify-end gap-2">
+          {onDismiss && (
+            <Button variant="ghost" onClick={onDismiss}>
+              {t('license.continue_free')}
+            </Button>
+          )}
           <Button onClick={handleActivate} disabled={key.trim().length === 0}>
             {t('license.activate')}
           </Button>

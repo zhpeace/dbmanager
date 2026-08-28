@@ -15,6 +15,7 @@ const defaultProps = {
   database: "mydb",
   dbType: "postgresql" as const,
   onCreated: vi.fn(),
+  isPro: true,
 }
 
 beforeEach(() => {

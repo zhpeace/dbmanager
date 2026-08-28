@@ -33,6 +33,7 @@ interface CreateTableDialogProps {
   database: string
   dbType: DatabaseType
   onCreated: () => void
+  isPro?: boolean
 }
 
 export function CreateTableDialog({
@@ -42,6 +43,7 @@ export function CreateTableDialog({
   database,
   dbType: _dbType,
   onCreated,
+  isPro,
 }: CreateTableDialogProps) {
   const { t } = useTranslation()
   const [tableName, setTableName] = useState("")
@@ -183,12 +185,15 @@ export function CreateTableDialog({
             {t('dialog.add_column')}
           </Button>
           {error && <p className="text-xs text-destructive break-all">{error}</p>}
+          {!isPro && (
+            <p className="text-xs text-muted-foreground">{t('dialog.create_table_pro_only')}</p>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => { reset(); onOpenChange(false) }}>
             {t('datatable.cancel')}
           </Button>
-          <Button onClick={handleCreate} disabled={busy}>
+          <Button onClick={handleCreate} disabled={busy || !isPro}>
             {t('dialog.create')}
           </Button>
         </DialogFooter>

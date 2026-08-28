@@ -129,7 +129,7 @@ it("shows columns tab", async () => {
   vi.mocked(invoke)
     .mockResolvedValueOnce(mockTableData)
     .mockResolvedValueOnce("")
-  render(<TableBrowser {...defaultProps} />)
+  render(<TableBrowser {...defaultProps} isPro />)
   await waitFor(() => {
     expect(screen.getByText("Data")).toBeInTheDocument()
   })
@@ -145,7 +145,7 @@ it("shows column info in columns tab", async () => {
     if (cmd === "get_schema_cache") return mockSchemaCache
     return null
   })
-  render(<TableBrowser {...defaultProps} />)
+  render(<TableBrowser {...defaultProps} isPro />)
   await waitFor(() => {
     expect(screen.getByText("Data")).toBeInTheDocument()
   })
@@ -168,7 +168,7 @@ it("type combobox lists all common types on focus (not just current)", async () 
     return null
   })
   const user = userEvent.setup()
-  render(<TableBrowser {...defaultProps} />)
+  render(<TableBrowser {...defaultProps} isPro />)
   await waitFor(() => {
     expect(screen.getByText("Columns")).toBeInTheDocument()
   })
@@ -188,7 +188,7 @@ it("can edit type precision by typing the whole type string", async () => {
     if (cmd === "get_schema_cache") return mockSchemaCache
     return null
   })
-  render(<TableBrowser {...defaultProps} />)
+  render(<TableBrowser {...defaultProps} isPro />)
   await waitFor(() => expect(screen.getByText("Columns")).toBeInTheDocument())
   const user = userEvent.setup()
   await user.click(screen.getByText("Columns"))

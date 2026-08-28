@@ -49,7 +49,7 @@ import type {
   ExecResult,
   DatabaseType,
 } from "@/lib/db"
-import { createObjectTemplate, getConnectionSecret, saveConnectionSecret, deleteConnectionSecret, buildSelectPreview, loadLicenseStatus, type LicenseStatus } from "@/lib/db"
+import { createObjectTemplate, getConnectionSecret, saveConnectionSecret, deleteConnectionSecret, buildSelectPreview, loadLicenseStatus, isPro, type LicenseStatus } from "@/lib/db"
 import { splitSqlStatements, parseErrorLine, buildExplainSql } from "@/lib/sql"
 import { LicenseDialog } from "@/components/connection/LicenseDialog"
 
@@ -201,6 +201,8 @@ function AppContent() {
   const [renameValue, setRenameValue] = useState("")
 
   const [license, setLicense] = useState<LicenseStatus | null>(null)
+  const [licenseDismissed, setLicenseDismissed] = useState(false)
+  const [licenseManualOpen, setLicenseManualOpen] = useState(false)
   const [checkingLicense, setCheckingLicense] = useState(true)
   useEffect(() => {
     loadLicenseStatus().then((st) => {
@@ -249,6 +251,8 @@ function AppContent() {
   async function connectToDatabase(conn: Connection) {
     setLoading((prev) => ({ ...prev, [conn.id]: true }))
     const password = await resolvePassword(conn)
+    const ssh = conn.config.ssh || null
+    const ssl = conn.config.ssl || null
     try {
       if (conn.config.type === "sqlite") {
         await invoke("connect_sqlite", {
@@ -263,6 +267,8 @@ function AppContent() {
           user: conn.config.user,
           password,
           database: conn.config.database || null,
+          ssh,
+          ssl,
         })
       } else if (conn.config.type === "postgresql") {
         await invoke("connect_postgres", {
@@ -272,6 +278,8 @@ function AppContent() {
           user: conn.config.user,
           password,
           database: conn.config.database || null,
+          ssh,
+          ssl,
         })
       } else if (conn.config.type === "mongodb") {
         await invoke("connect_mongo", {
@@ -281,6 +289,7 @@ function AppContent() {
           user: conn.config.user,
           password,
           database: conn.config.database || null,
+          ssh,
         })
       } else if (conn.config.type === "oracle") {
         await invoke("connect_oracle", {
@@ -290,6 +299,7 @@ function AppContent() {
           user: conn.config.user,
           password,
           database: conn.config.database,
+          ssh,
         })
       } else if (conn.config.type === "redis") {
         await invoke("connect_redis", {
@@ -298,6 +308,7 @@ function AppContent() {
           port: conn.config.port,
           password: password || null,
           database: String(conn.config.database ?? "0"),
+          ssh,
         })
       } else if (conn.config.type === "dameng") {
         await invoke("connect_dameng", {
@@ -307,6 +318,7 @@ function AppContent() {
           user: conn.config.user,
           password,
           database: conn.config.database ?? "",
+          ssh,
         })
       }
 
@@ -1199,12 +1211,19 @@ function handleDatabaseClick(database: string, connectionId: string) {
 
   return (
     <>
-      {!license?.activated && (
+      {(license && !license.activated && !licenseDismissed) || licenseManualOpen ? (
         <LicenseDialog
-          open={!license?.activated}
-          onActivated={(st) => setLicense(st)}
+          open
+          onActivated={(st) => {
+            setLicense(st)
+            setLicenseManualOpen(false)
+          }}
+          onDismiss={() => {
+            setLicenseDismissed(true)
+            setLicenseManualOpen(false)
+          }}
         />
-      )}
+      ) : null}
       <div className="h-screen flex flex-col overflow-hidden">
       <TopBar
         onNewConnection={handleNewConnection}
@@ -1221,6 +1240,8 @@ function handleDatabaseClick(database: string, connectionId: string) {
         onOpenRestore={handleOpenRestore}
         onOpenSchedule={handleOpenSchedule}
         onOpenFind={handleOpenFind}
+        onOpenLicense={() => setLicenseManualOpen(true)}
+        isPro={isPro(license)}
       />
       <div className="flex flex-1 min-h-0">
         <Sidebar
@@ -1251,10 +1272,12 @@ function handleDatabaseClick(database: string, connectionId: string) {
           onTruncateTable={handleTruncate}
           onRenameTable={handleRename}
           onNewObject={handleNewObject}
+          isPro={isPro(license)}
           redisScanCursor={redisScanCursor}
           onRedisSearch={handleRedisSearch}
           onRedisLoadMore={handleRedisLoadMore}
           onRedisKeyAction={handleRedisKeyPrompt}
+          onOpenLicense={() => setLicenseManualOpen(true)}
         />
         <main className="flex-1 flex flex-col min-w-0">
           {errorBanner && (
@@ -1367,6 +1390,8 @@ function handleDatabaseClick(database: string, connectionId: string) {
                       onRunSql={runSql}
                       onInsertSql={(sql) => openInNewTab(sql)}
                       onClose={() => closeTab(activeTabId)}
+                      isPro={isPro(license)}
+                      onOpenLicense={() => setLicenseManualOpen(true)}
                     />
                   </div>
                 ) : (
@@ -1425,6 +1450,8 @@ function handleDatabaseClick(database: string, connectionId: string) {
                           onRunSql={runSql}
                           onInsertSql={(sql) => openInNewTab(sql)}
                           onClose={() => { setActiveTabBrowse(null); setActiveBottomTab("results") }}
+                          isPro={isPro(license)}
+                          onOpenLicense={() => setLicenseManualOpen(true)}
                         />
                       ) : (
                         <ResultPanel results={queryResults} />
@@ -1452,6 +1479,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
         onOpenChange={setDialogOpen}
         onSave={handleSaveConnection}
         editingConfig={editingConfig}
+        license={license}
       />
       <ImportDialog
         open={importDialogOpen}
@@ -1509,6 +1537,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
           connConfig={connections.find((c) => c.id === duplicateDb.connectionId)?.config}
           onCreated={() => handleRefresh(duplicateDb.connectionId)}
           onDone={() => setDuplicateDb(null)}
+          isPro={isPro(license)}
         />
       )}
       {createDialog && activeConnectionId && (
@@ -1519,6 +1548,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
           database={createDialog.database}
           dbType={connDbType(activeConnectionId) as any}
           onCreated={() => refreshTables(activeConnectionId!, createDialog.database)}
+          isPro={isPro(license)}
         />
       )}
       <Dialog open={!!pendingDrop} onOpenChange={(o) => { if (!o) setPendingDrop(null) }}>

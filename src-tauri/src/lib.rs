@@ -1,18 +1,53 @@
 pub mod db;
 mod license;
 mod secrets;
+mod ssh;
 
 use db::AppState;
 use db::DbConnection;
 use db::DbTransaction;
 use db::types::{CheckpointState, CompareResult, DatabaseInfo, FindMatch, QueryResult, RedisKeyInfo, RedisKeyPage, SchemaCache, TableData, TableInfo, TransferOptions, TransferResult};
 use db::scheduler::{ScheduledTask, TaskConfig};
+use ssh::{SshConfig, SslConfig};
+use sqlx::mysql::MySqlSslMode;
+use sqlx::postgres::PgSslMode;
 use tauri::Emitter;
 use tauri::Manager;
 use mongodb::Client as MongoClient;
 use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 use chrono::Utc;
+
+/// If an SSH tunnel is configured, establish it and return the loopback
+/// `(host, port)` the DB driver should connect to. Otherwise pass through.
+async fn open_ssh_if_needed(
+    state: &AppState,
+    id: &str,
+    ssh: &Option<SshConfig>,
+    host: &str,
+    port: u16,
+) -> Result<(String, u16), String> {
+    match ssh {
+        Some(s) if s.enabled => {
+            let tunnel = ssh::establish_tunnel(s, host, port).await?;
+            let local = tunnel.local_port;
+            let mut tunnels = state.ssh_tunnels.lock().await;
+            if let Some(mut old) = tunnels.remove(id) {
+                let _ = old.start_kill();
+            }
+            tunnels.insert(id.to_string(), tunnel.child);
+            Ok(("127.0.0.1".to_string(), local))
+        }
+        _ => Ok((host.to_string(), port)),
+    }
+}
+
+fn kill_ssh_tunnel(state: &AppState, id: &str) {
+    let mut tunnels = state.ssh_tunnels.blocking_lock();
+    if let Some(mut child) = tunnels.remove(id) {
+        let _ = child.start_kill();
+    }
+}
 
 fn scheduler_file_path() -> PathBuf {
     let mut path = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -148,23 +183,36 @@ async fn connect_mysql(
     user: String,
     password: String,
     database: Option<String>,
+    ssh: Option<SshConfig>,
+    ssl: Option<SslConfig>,
 ) -> Result<(), String> {
-    fn url_encode(s: &str) -> String {
-        s.bytes().map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
-            b' ' => "%20".to_string(),
-            _ => format!("%{:02X}", b),
-        }).collect()
+    let (host, port) = open_ssh_if_needed(&state, &id, &ssh, &host, port).await?;
+    let mut opts = sqlx::mysql::MySqlConnectOptions::new()
+        .host(&host)
+        .port(port)
+        .username(&user)
+        .password(&password);
+    if let Some(db) = &database {
+        opts = opts.database(db);
     }
-    let enc_user = url_encode(&user);
-    let enc_pass = url_encode(&password);
-    let conn_str = match database {
-        Some(ref db) => format!("mysql://{}:{}@{}:{}/{}", enc_user, enc_pass, host, port, db),
-        None => format!("mysql://{}:{}@{}:{}", enc_user, enc_pass, host, port),
-    };
+    if let Some(ssl) = ssl {
+        if ssl.enabled {
+            let mode = match ssl.mode.as_deref() {
+                Some("require") => MySqlSslMode::Required,
+                Some("prefer") => MySqlSslMode::Preferred,
+                Some("verify-ca") => MySqlSslMode::VerifyCa,
+                Some("verify-full") => MySqlSslMode::VerifyIdentity,
+                _ => MySqlSslMode::Preferred,
+            };
+            opts = opts.ssl_mode(mode);
+            if let Some(ca) = &ssl.ca_path {
+                opts = opts.ssl_ca(PathBuf::from(ca));
+            }
+        }
+    }
     let pool = sqlx::mysql::MySqlPoolOptions::new()
         .max_connections(5)
-        .connect(&conn_str)
+        .connect_with(opts)
         .await
         .map_err(|e| format!("MySQL connection failed: {}", e))?;
 
@@ -182,20 +230,37 @@ async fn connect_postgres(
     user: String,
     password: String,
     database: Option<String>,
+    ssh: Option<SshConfig>,
+    ssl: Option<SslConfig>,
 ) -> Result<(), String> {
+    let (host, port) = open_ssh_if_needed(&state, &id, &ssh, &host, port).await?;
     let db = database.as_deref().unwrap_or("postgres");
     log::info!("connect_postgres: connecting to {}:{} db={} user={}", host, port, db, user);
+    let mut opts = sqlx::postgres::PgConnectOptions::new()
+        .host(&host)
+        .port(port)
+        .username(&user)
+        .password(&password)
+        .database(db);
+    if let Some(ssl) = ssl {
+        if ssl.enabled {
+            let mode = match ssl.mode.as_deref() {
+                Some("require") => PgSslMode::Require,
+                Some("prefer") => PgSslMode::Prefer,
+                Some("verify-ca") => PgSslMode::VerifyCa,
+                Some("verify-full") => PgSslMode::VerifyFull,
+                _ => PgSslMode::Prefer,
+            };
+            opts = opts.ssl_mode(mode);
+            if let Some(ca) = &ssl.ca_path {
+                opts = opts.ssl_root_cert(PathBuf::from(ca));
+            }
+        }
+    }
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .acquire_timeout(std::time::Duration::from_secs(10))
-        .connect_with(
-            sqlx::postgres::PgConnectOptions::new()
-                .host(&host)
-                .port(port)
-                .username(&user)
-                .password(&password)
-                .database(db)
-        )
+        .connect_with(opts)
         .await
         .map_err(|e| {
             let msg = format!("PostgreSQL connection failed: {}", e);
@@ -231,6 +296,7 @@ async fn disconnect(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    kill_ssh_tunnel(&state, &id);
     let mut connections = state.connections.lock().await;
     connections.remove(&id);
     Ok(())
@@ -390,6 +456,7 @@ async fn get_tables(
 
 #[tauri::command]
 async fn get_table_data(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
@@ -401,6 +468,15 @@ async fn get_table_data(
     where_clause: Option<String>,
     row_limit: Option<i64>,
 ) -> Result<TableData, String> {
+    // Free tier is capped at a maximum number of rows per browse request.
+    let row_limit = if crate::license::is_activated(&app) {
+        row_limit
+    } else {
+        match row_limit {
+            Some(l) => Some(l.min(1000)),
+            None => Some(1000),
+        }
+    };
     let conn = {
         let connections = state.connections.lock().await;
         connections.get(&id).ok_or("Connection not found").map(|c| match c {
@@ -507,7 +583,9 @@ async fn connect_mongo(
     user: String,
     password: String,
     database: Option<String>,
+    ssh: Option<SshConfig>,
 ) -> Result<(), String> {
+    let (host, port) = open_ssh_if_needed(&state, &id, &ssh, &host, port).await?;
     let conn_str = match database {
         Some(ref db) => format!("mongodb://{}:{}@{}:{}/{}", user, password, host, port, db),
         None => format!("mongodb://{}:{}@{}:{}", user, password, host, port),
@@ -529,7 +607,9 @@ async fn connect_redis(
     port: u16,
     password: Option<String>,
     database: Option<String>,
+    ssh: Option<SshConfig>,
 ) -> Result<(), String> {
+    let (host, port) = open_ssh_if_needed(&state, &id, &ssh, &host, port).await?;
     fn url_encode(s: &str) -> String {
         s.bytes().map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
@@ -593,6 +673,7 @@ fn init_oracle_client() -> Result<(), String> {
 
 #[tauri::command]
 async fn connect_oracle(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     host: String,
@@ -600,8 +681,11 @@ async fn connect_oracle(
     user: String,
     password: String,
     database: String,
+    ssh: Option<SshConfig>,
 ) -> Result<(), String> {
+    crate::license::require_connector(&app, "oracle")?;
     init_oracle_client()?;
+    let (host, port) = open_ssh_if_needed(&state, &id, &ssh, &host, port).await?;
     let service = if database.is_empty() { "ORCL" } else { &database };
     let conn_str = format!("//{}:{}/{}", host, port, service);
     let conn = tokio::task::spawn_blocking(move || {
@@ -616,6 +700,7 @@ async fn connect_oracle(
 #[cfg(feature = "dameng")]
 #[tauri::command]
 async fn connect_dameng(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     host: String,
@@ -623,7 +708,10 @@ async fn connect_dameng(
     user: String,
     password: String,
     database: String,
+    ssh: Option<SshConfig>,
 ) -> Result<(), String> {
+    crate::license::require_connector(&app, "dameng")?;
+    let (host, port) = open_ssh_if_needed(&state, &id, &ssh, &host, port).await?;
     let conn = db::dameng::connect(&host, port, &user, &password, &database)?;
     let mut connections = state.connections.lock().await;
     connections.insert(id, DbConnection::Dameng(conn));
@@ -632,14 +720,32 @@ async fn connect_dameng(
 
 #[tauri::command]
 async fn test_connection(
+    app: tauri::AppHandle,
     type_: String,
     host: String,
     port: u16,
     user: String,
     password: String,
     database: Option<String>,
+    ssh: Option<SshConfig>,
+    ssl: Option<SslConfig>,
 ) -> Result<String, String> {
-    match type_.as_str() {
+    crate::license::require_connector(&app, &type_)?;
+    // For test we manage a transient SSH tunnel (if configured) and clean it up after.
+    let mut tunnel: Option<ssh::SshTunnel> = None;
+    let (host, port) = if let Some(s) = &ssh {
+        if s.enabled {
+            let t = ssh::establish_tunnel(s, &host, port).await?;
+            let lp = t.local_port;
+            tunnel = Some(t);
+            ("127.0.0.1".to_string(), lp)
+        } else {
+            (host, port)
+        }
+    } else {
+        (host, port)
+    };
+    let result = match type_.as_str() {
         "mysql" => {
             fn url_encode(s: &str) -> String {
                 s.bytes().map(|b| match b {
@@ -663,17 +769,28 @@ async fn test_connection(
         }
         "postgresql" => {
             let db = database.as_deref().unwrap_or("postgres");
+            let mut opts = sqlx::postgres::PgConnectOptions::new()
+                .host(&host)
+                .port(port)
+                .username(&user)
+                .password(&password)
+                .database(db);
+            if let Some(ssl) = ssl {
+                if ssl.enabled {
+                    let mode = match ssl.mode.as_deref() {
+                        Some("require") => PgSslMode::Require,
+                        Some("prefer") => PgSslMode::Prefer,
+                        Some("verify-ca") => PgSslMode::VerifyCa,
+                        Some("verify-full") => PgSslMode::VerifyFull,
+                        _ => PgSslMode::Prefer,
+                    };
+                    opts = opts.ssl_mode(mode);
+                }
+            }
             sqlx::postgres::PgPoolOptions::new()
                 .max_connections(1)
                 .acquire_timeout(std::time::Duration::from_secs(10))
-                .connect_with(
-                    sqlx::postgres::PgConnectOptions::new()
-                        .host(&host)
-                        .port(port)
-                        .username(&user)
-                        .password(&password)
-                        .database(db)
-                )
+                .connect_with(opts)
                 .await
                 .map_err(|e| format!("Test failed: {}", e))?;
             Ok("Connection successful".to_string())
@@ -706,7 +823,11 @@ async fn test_connection(
             Ok("Connection successful".to_string())
         }
         _ => Err(format!("Unsupported database type: {}", type_)),
+    };
+    if let Some(mut t) = tunnel {
+        let _ = t.child.start_kill();
     }
+    result
 }
 
 #[tauri::command]
@@ -818,6 +939,7 @@ async fn transfer_data(
     state: tauri::State<'_, AppState>,
     opts: TransferOptions,
 ) -> Result<TransferResult, String> {
+    crate::license::require_pro(&app)?;
     let (source_conn, target_conn) = {
         let connections = state.connections.lock().await;
         let src = connections.get(&opts.source_id).ok_or("Source connection not found")?;
@@ -869,6 +991,7 @@ async fn duplicate_database(
     user: Option<String>,
     password: Option<String>,
 ) -> Result<TransferResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = {
         let connections = state.connections.lock().await;
         let c = connections.get(&id).ok_or("Connection not found")?;
@@ -1108,6 +1231,156 @@ async fn cancel_query(state: tauri::State<'_, AppState>, id: String) -> Result<(
     Ok(())
 }
 
+fn json_cell_to_string(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn sql_literal(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => "NULL".to_string(),
+        serde_json::Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+        serde_json::Value::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        other => format!("'{}'", other.to_string().replace('\'', "''")),
+    }
+}
+
+fn clone_connection(state: &AppState, id: &str) -> Result<DbConnection, String> {
+    let connections = state.connections.blocking_lock();
+    connections
+        .get(id)
+        .ok_or_else(|| "Connection not found".to_string())
+        .map(|c| match c {
+        DbConnection::MySql(p) => DbConnection::MySql(p.clone()),
+        DbConnection::Pg(p) => DbConnection::Pg(p.clone()),
+        DbConnection::Sqlite(p) => DbConnection::Sqlite(p.clone()),
+        DbConnection::Mongo(c, db) => DbConnection::Mongo(c.clone(), db.clone()),
+        DbConnection::Oracle(c) => DbConnection::Oracle(c.clone()),
+        #[cfg(feature = "dameng")]
+        DbConnection::Dameng(c) => DbConnection::Dameng(c.clone()),
+        DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
+    })
+}
+
+#[tauri::command]
+async fn export_data(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    query: String,
+    format: String,
+    file_path: String,
+    table: Option<String>,
+) -> Result<(), String> {
+    let conn = clone_connection(&state, &id)?;
+    let result = conn.execute_query(&query).await?;
+    if let Some(err) = result.error {
+        return Err(err);
+    }
+    match format.as_str() {
+        "csv" => write_csv(&result, &file_path),
+        "json" => write_json(&result, &file_path),
+        "sql" => write_sql(&result, &file_path, table.as_deref().unwrap_or("exported")),
+        "xlsx" => write_xlsx(&result, &file_path, table.as_deref()),
+        other => Err(format!("不支持的导出格式: {}", other)),
+    }
+}
+
+fn write_csv(r: &QueryResult, path: &str) -> Result<(), String> {
+    let mut w = csv::Writer::from_path(path).map_err(|e| e.to_string())?;
+    w.write_record(&r.columns).map_err(|e| e.to_string())?;
+    for row in &r.rows {
+        let obj = row.as_object().ok_or("导出行不是对象")?;
+        let rec: Vec<String> = r
+            .columns
+            .iter()
+            .map(|c| json_cell_to_string(obj.get(c).unwrap_or(&serde_json::Value::Null)))
+            .collect();
+        w.write_record(&rec).map_err(|e| e.to_string())?;
+    }
+    w.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn write_json(r: &QueryResult, path: &str) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    serde_json::to_writer_pretty(file, &r.rows).map_err(|e| e.to_string())
+}
+
+fn write_sql(r: &QueryResult, path: &str, table: &str) -> Result<(), String> {
+    let mut out = format!("-- Exported {} rows\n", r.rows.len());
+    for row in &r.rows {
+        let obj = row.as_object().ok_or("导出行不是对象")?;
+        let cols: Vec<String> = r.columns.clone();
+        let vals: Vec<String> = r
+            .columns
+            .iter()
+            .map(|c| sql_literal(obj.get(c).unwrap_or(&serde_json::Value::Null)))
+            .collect();
+        out.push_str(&format!(
+            "INSERT INTO {} ({}) VALUES ({});\n",
+            table,
+            cols.join(", "),
+            vals.join(", ")
+        ));
+    }
+    std::fs::write(path, out).map_err(|e| e.to_string())
+}
+
+fn write_xlsx(r: &QueryResult, path: &str, table: Option<&str>) -> Result<(), String> {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    if let Some(t) = table {
+        let _ = worksheet.set_name(t);
+    }
+    for (j, col) in r.columns.iter().enumerate() {
+        worksheet
+            .write_string(0, j as u16, col)
+            .map_err(|e| e.to_string())?;
+    }
+    for (i, row) in r.rows.iter().enumerate() {
+        let obj = row.as_object().ok_or("导出行不是对象")?;
+        for (j, col) in r.columns.iter().enumerate() {
+            let v = obj.get(col).unwrap_or(&serde_json::Value::Null);
+            match v {
+                serde_json::Value::Null => {}
+                serde_json::Value::String(s) => {
+                    worksheet
+                        .write_string(i as u32 + 1, j as u16, s)
+                        .map_err(|e| e.to_string())?;
+                }
+                serde_json::Value::Bool(b) => {
+                    worksheet
+                        .write_boolean(i as u32 + 1, j as u16, *b)
+                        .map_err(|e| e.to_string())?;
+                }
+                serde_json::Value::Number(n) => {
+                    if let Some(f) = n.as_f64() {
+                        worksheet
+                            .write_number(i as u32 + 1, j as u16, f)
+                            .map_err(|e| e.to_string())?;
+                    } else {
+                        worksheet
+                            .write_string(i as u32 + 1, j as u16, &n.to_string())
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                other => {
+                    worksheet
+                        .write_string(i as u32 + 1, j as u16, &other.to_string())
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+    workbook.save(path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn begin_transaction(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
     let conn = get_conn(&state, &id).await?;
@@ -1160,12 +1433,14 @@ async fn transaction_status(state: tauri::State<'_, AppState>, id: String) -> Re
 
 #[tauri::command]
 async fn create_table(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
     table: String,
     columns: Vec<db::types::ColumnDef>,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1175,11 +1450,13 @@ async fn create_table(
 
 #[tauri::command]
 async fn drop_table(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
     table: String,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1189,11 +1466,13 @@ async fn drop_table(
 
 #[tauri::command]
 async fn truncate_table(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
     table: String,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1203,12 +1482,14 @@ async fn truncate_table(
 
 #[tauri::command]
 async fn rename_table(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
     table: String,
     new_name: String,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1218,12 +1499,14 @@ async fn rename_table(
 
 #[tauri::command]
 async fn alter_table_add_column(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
     table: String,
     column: db::types::ColumnDef,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1233,12 +1516,14 @@ async fn alter_table_add_column(
 
 #[tauri::command]
 async fn alter_table_drop_column(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
     table: String,
     column: String,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1248,12 +1533,14 @@ async fn alter_table_drop_column(
 
 #[tauri::command]
 async fn alter_table_modify_column(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
     table: String,
     column: db::types::ColumnDef,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1263,6 +1550,7 @@ async fn alter_table_modify_column(
 
 #[tauri::command]
 async fn alter_table_rename_column(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
@@ -1270,6 +1558,7 @@ async fn alter_table_rename_column(
     column: String,
     new_name: String,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1279,11 +1568,13 @@ async fn alter_table_rename_column(
 
 #[tauri::command]
 async fn drop_view(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
     view: String,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1293,12 +1584,14 @@ async fn drop_view(
 
 #[tauri::command]
 async fn drop_routine(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
     routine: String,
     routine_type: String,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1308,11 +1601,13 @@ async fn drop_routine(
 
 #[tauri::command]
 async fn drop_trigger(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
     trigger: String,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1322,6 +1617,7 @@ async fn drop_trigger(
 
 #[tauri::command]
 async fn create_index(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
@@ -1333,6 +1629,7 @@ async fn create_index(
     if columns.is_empty() {
         return Err("Index must have at least one column".to_string());
     }
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1342,12 +1639,14 @@ async fn create_index(
 
 #[tauri::command]
 async fn drop_index(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
     table: String,
     name: String,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1357,6 +1656,7 @@ async fn drop_index(
 
 #[tauri::command]
 async fn add_foreign_key(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
@@ -1366,6 +1666,7 @@ async fn add_foreign_key(
     ref_table: String,
     ref_column: String,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1375,12 +1676,14 @@ async fn add_foreign_key(
 
 #[tauri::command]
 async fn drop_foreign_key(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
     table: String,
     name: String,
 ) -> Result<QueryResult, String> {
+    crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
     let schema = if database.is_empty() { None } else { Some(database.as_str()) };
@@ -1455,12 +1758,14 @@ async fn clear_checkpoint(
 
 #[tauri::command]
 async fn compare_schemas(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     source_id: String,
     source_database: String,
     target_id: String,
     target_database: String,
 ) -> Result<CompareResult, String> {
+    crate::license::require_pro(&app)?;
     let (source_conn, target_conn) = {
         let connections = state.connections.lock().await;
         let src = connections.get(&source_id).ok_or("Source connection not found")?;
@@ -1499,6 +1804,7 @@ async fn backup_database(
     tables: Vec<String>,
     output_path: String,
 ) -> Result<(i32, String), String> {
+    crate::license::require_pro(&app)?;
     let conn = {
         let connections = state.connections.lock().await;
         let c = connections.get(&source_id).ok_or("Connection not found")?;
@@ -1533,6 +1839,7 @@ async fn restore_database(
     database: String,
     input_path: String,
 ) -> Result<(i32, Vec<String>), String> {
+    crate::license::require_pro(&app)?;
     let conn = {
         let connections = state.connections.lock().await;
         let c = connections.get(&target_id).ok_or("Connection not found")?;
@@ -1568,6 +1875,7 @@ pub fn run() {
         active_queries: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         transactions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         scheduler: db::scheduler::SchedulerManager::new(initial_tasks),
+        ssh_tunnels: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     };
 
     tauri::Builder::default()
@@ -1616,6 +1924,7 @@ pub fn run() {
             redis_key_info,
             redis_command,
             execute_query,
+            export_data,
             cancel_query,
             begin_transaction,
             commit_transaction,

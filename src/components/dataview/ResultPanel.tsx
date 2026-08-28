@@ -7,7 +7,7 @@ import { DataTable } from "./DataTable"
 import { PlanView } from "./PlanView"
 import { save } from "@tauri-apps/plugin-dialog"
 import { invoke } from "@tauri-apps/api/core"
-import { toCsv, toJson } from "@/lib/sql"
+import { toCsv, toJson, toInsert } from "@/lib/sql"
 import { buildXlsx } from "@/lib/xlsx"
 import type { ExecResult } from "@/lib/db"
 
@@ -15,7 +15,7 @@ interface ResultPanelProps {
   results: ExecResult[] | null
 }
 
-async function exportResult(result: ExecResult, format: "csv" | "json" | "xlsx", ext: string) {
+async function exportResult(result: ExecResult, format: "csv" | "json" | "xlsx" | "sql", ext: string) {
   if (result.columns.length === 0 || result.error) return
   const defaultPath = `export_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.${ext}`
   const filters = format === "xlsx"
@@ -28,7 +28,10 @@ async function exportResult(result: ExecResult, format: "csv" | "json" | "xlsx",
     await invoke("write_binary_file", { path, data: Array.from(bytes) })
     return
   }
-  const content = format === "csv" ? toCsv(result.columns, result.rows) : toJson(result.rows)
+  let content: string
+  if (format === "csv") content = toCsv(result.columns, result.rows)
+  else if (format === "json") content = toJson(result.rows)
+  else content = toInsert("exported", result.columns, result.rows)
   await invoke("write_text_file", { path, content })
 }
 
@@ -88,6 +91,10 @@ export function ResultPanel({ results }: ResultPanelProps) {
       <Button size="sm" variant="ghost" className="h-6 gap-1 text-[11px]" onClick={() => exportResult(active, "xlsx", "xlsx")}>
         <Download className="h-3 w-3" />
         {t('resultpanel.export_xlsx')}
+      </Button>
+      <Button size="sm" variant="ghost" className="h-6 gap-1 text-[11px]" onClick={() => exportResult(active, "sql", "sql")}>
+        <Download className="h-3 w-3" />
+        {t('resultpanel.export_sql')}
       </Button>
     </div>
   )

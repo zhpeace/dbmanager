@@ -42,6 +42,8 @@ parking_lot = "0.12"
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 cron = "0.13"
 dirs = "6"
+csv = "1"
+rust_xlsxwriter = "0.36"
 odbc = { version = "0.17", optional = true }
 
 # Dameng (达梦) support is gated behind the `dameng` feature because it links

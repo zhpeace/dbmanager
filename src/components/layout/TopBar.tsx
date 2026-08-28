@@ -1,4 +1,4 @@
-import { Database, Plus, Moon, Sun, GitBranch, Upload, ArrowLeftRight, Diff, Download, Upload as RestoreIcon, Clock, Search } from "lucide-react"
+import { Database, Plus, Moon, Sun, GitBranch, Upload, ArrowLeftRight, Diff, Download, Upload as RestoreIcon, Clock, Search, KeyRound } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useTheme } from "@/lib/theme"
 import { useTranslation } from "react-i18next"
@@ -18,6 +18,8 @@ interface TopBarProps {
   onOpenRestore?: () => void
   onOpenSchedule?: () => void
   onOpenFind?: () => void
+  onOpenLicense?: () => void
+  isPro?: boolean
 }
 
 export function TopBar({
@@ -35,6 +37,8 @@ export function TopBar({
   onOpenRestore,
   onOpenSchedule,
   onOpenFind,
+  onOpenLicense,
+  isPro,
 }: TopBarProps) {
   const { theme, toggleTheme } = useTheme()
   const { t, i18n } = useTranslation()
@@ -73,35 +77,41 @@ export function TopBar({
         >
           {t('topbar.lang_toggle')}
         </Button>
+        {onOpenLicense && (
+          <Button size="sm" variant="ghost" onClick={onOpenLicense} title={t('topbar.activate_license')}>
+            <KeyRound className="h-4 w-4 mr-1" />
+            {t('topbar.activate_license')}
+          </Button>
+        )}
         {connectionId && !isRedis && (
           <>
             <Button size="sm" variant="ghost" onClick={onOpenErDiagram}>
               <GitBranch className="h-4 w-4 mr-1" />
               {t('topbar.er_diagram')}
             </Button>
-            <Button size="sm" variant="ghost" onClick={onOpenImport}>
+            <Button size="sm" variant="ghost" onClick={() => (isPro ? onOpenImport?.() : onOpenLicense?.())}>
               <Upload className="h-4 w-4 mr-1" />
-              {t('topbar.import')}
+              {t('topbar.import')}{!isPro ? " (Pro)" : ""}
             </Button>
-            <Button size="sm" variant="ghost" onClick={onOpenTransfer}>
+            <Button size="sm" variant="ghost" onClick={() => (isPro ? onOpenTransfer?.() : onOpenLicense?.())}>
               <ArrowLeftRight className="h-4 w-4 mr-1" />
-              {t('topbar.transfer')}
+              {t('topbar.transfer')}{!isPro ? " (Pro)" : ""}
             </Button>
-            <Button size="sm" variant="ghost" onClick={onOpenCompare}>
+            <Button size="sm" variant="ghost" onClick={() => (isPro ? onOpenCompare?.() : onOpenLicense?.())}>
               <Diff className="h-4 w-4 mr-1" />
-              {t('topbar.compare')}
+              {t('topbar.compare')}{!isPro ? " (Pro)" : ""}
             </Button>
-            <Button size="sm" variant="ghost" onClick={onOpenBackup}>
+            <Button size="sm" variant="ghost" onClick={() => (isPro ? onOpenBackup?.() : onOpenLicense?.())}>
               <Download className="h-4 w-4 mr-1" />
-              {t('topbar.backup')}
+              {t('topbar.backup')}{!isPro ? " (Pro)" : ""}
             </Button>
-            <Button size="sm" variant="ghost" onClick={onOpenRestore}>
+            <Button size="sm" variant="ghost" onClick={() => (isPro ? onOpenRestore?.() : onOpenLicense?.())}>
               <RestoreIcon className="h-4 w-4 mr-1" />
-              {t('topbar.restore')}
+              {t('topbar.restore')}{!isPro ? " (Pro)" : ""}
             </Button>
-            <Button size="sm" variant="ghost" onClick={onOpenSchedule}>
+            <Button size="sm" variant="ghost" onClick={() => (isPro ? onOpenSchedule?.() : onOpenLicense?.())}>
               <Clock className="h-4 w-4 mr-1" />
-              {t('topbar.schedule')}
+              {t('topbar.schedule')}{!isPro ? " (Pro)" : ""}
             </Button>
             <Button size="sm" variant="ghost" onClick={onOpenFind}>
               <Search className="h-4 w-4 mr-1" />

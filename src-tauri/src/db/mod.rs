@@ -37,6 +37,7 @@ pub struct AppState {
     pub active_queries: tokio::sync::Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
     pub transactions: tokio::sync::Mutex<HashMap<String, DbTransaction>>,
     pub scheduler: scheduler::SchedulerManager,
+    pub ssh_tunnels: tokio::sync::Mutex<HashMap<String, tokio::process::Child>>,
 }
 
 impl AppState {
@@ -47,6 +48,7 @@ impl AppState {
             active_queries: tokio::sync::Mutex::new(HashMap::new()),
             transactions: tokio::sync::Mutex::new(HashMap::new()),
             scheduler: scheduler::SchedulerManager::new(Vec::new()),
+            ssh_tunnels: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 }

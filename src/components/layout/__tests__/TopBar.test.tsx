@@ -82,7 +82,7 @@ it("shows 'No database selected' when connected but no database chosen", () => {
 
 it("shows action buttons when connectionId is provided", () => {
   render(
-    <TopBar {...defaultProps} connectionId="c1" />
+    <TopBar {...defaultProps} connectionId="c1" isPro />
   )
   expect(screen.getByText("ER Diagram")).toBeInTheDocument()
   expect(screen.getByText("Import")).toBeInTheDocument()
@@ -91,6 +91,23 @@ it("shows action buttons when connectionId is provided", () => {
   expect(screen.getByText("Backup")).toBeInTheDocument()
   expect(screen.getByText("Restore")).toBeInTheDocument()
   expect(screen.getByText("Schedule")).toBeInTheDocument()
+})
+
+it("shows (Pro) suffix on migration buttons and opens license dialog when clicked in free mode", async () => {
+  const mockOnOpenLicense = vi.fn()
+  const user = userEvent.setup()
+  render(
+    <TopBar {...defaultProps} connectionId="c1" onOpenLicense={mockOnOpenLicense} />
+  )
+  const importBtn = screen.getByText("Import (Pro)").closest("button")!
+  expect(importBtn).not.toBeDisabled()
+  expect(screen.getByText("Transfer (Pro)")).toBeInTheDocument()
+  expect(screen.getByText("Compare (Pro)")).toBeInTheDocument()
+  expect(screen.getByText("Backup (Pro)")).toBeInTheDocument()
+  expect(screen.getByText("Restore (Pro)")).toBeInTheDocument()
+  expect(screen.getByText("Schedule (Pro)")).toBeInTheDocument()
+  await user.click(importBtn)
+  expect(mockOnOpenLicense).toHaveBeenCalledTimes(1)
 })
 
 it("calls onNewConnection when New Connection button is clicked", async () => {
@@ -109,42 +126,42 @@ it("calls onOpenErDiagram when ER Diagram button is clicked", async () => {
 
 it("calls onOpenImport when Import button is clicked", async () => {
   const user = userEvent.setup()
-  render(<TopBar {...defaultProps} connectionId="c1" onOpenImport={mockOnOpenImport} />)
+  render(<TopBar {...defaultProps} connectionId="c1" isPro onOpenImport={mockOnOpenImport} />)
   await user.click(screen.getByText("Import"))
   expect(mockOnOpenImport).toHaveBeenCalledTimes(1)
 })
 
 it("calls onOpenTransfer when Transfer button is clicked", async () => {
   const user = userEvent.setup()
-  render(<TopBar {...defaultProps} connectionId="c1" onOpenTransfer={mockOnOpenTransfer} />)
+  render(<TopBar {...defaultProps} connectionId="c1" isPro onOpenTransfer={mockOnOpenTransfer} />)
   await user.click(screen.getByText("Transfer"))
   expect(mockOnOpenTransfer).toHaveBeenCalledTimes(1)
 })
 
 it("calls onOpenCompare when Compare button is clicked", async () => {
   const user = userEvent.setup()
-  render(<TopBar {...defaultProps} connectionId="c1" onOpenCompare={mockOnOpenCompare} />)
+  render(<TopBar {...defaultProps} connectionId="c1" isPro onOpenCompare={mockOnOpenCompare} />)
   await user.click(screen.getByText("Compare"))
   expect(mockOnOpenCompare).toHaveBeenCalledTimes(1)
 })
 
 it("calls onOpenBackup when Backup button is clicked", async () => {
   const user = userEvent.setup()
-  render(<TopBar {...defaultProps} connectionId="c1" onOpenBackup={mockOnOpenBackup} />)
+  render(<TopBar {...defaultProps} connectionId="c1" isPro onOpenBackup={mockOnOpenBackup} />)
   await user.click(screen.getByText("Backup"))
   expect(mockOnOpenBackup).toHaveBeenCalledTimes(1)
 })
 
 it("calls onOpenRestore when Restore button is clicked", async () => {
   const user = userEvent.setup()
-  render(<TopBar {...defaultProps} connectionId="c1" onOpenRestore={mockOnOpenRestore} />)
+  render(<TopBar {...defaultProps} connectionId="c1" isPro onOpenRestore={mockOnOpenRestore} />)
   await user.click(screen.getByText("Restore"))
   expect(mockOnOpenRestore).toHaveBeenCalledTimes(1)
 })
 
 it("calls onOpenSchedule when Schedule button is clicked", async () => {
   const user = userEvent.setup()
-  render(<TopBar {...defaultProps} connectionId="c1" onOpenSchedule={mockOnOpenSchedule} />)
+  render(<TopBar {...defaultProps} connectionId="c1" isPro onOpenSchedule={mockOnOpenSchedule} />)
   await user.click(screen.getByText("Schedule"))
   expect(mockOnOpenSchedule).toHaveBeenCalledTimes(1)
 })

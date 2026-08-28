@@ -110,7 +110,19 @@ it("supports Enter key to activate", async () => {
 it("loadLicenseStatus returns activated false on error", async () => {
   vi.mocked(invoke).mockRejectedValue(new Error("no license"))
   const status = await loadLicenseStatus()
-  expect(status).toEqual({ activated: false, key: null })
+  expect(status).toEqual({
+    activated: false,
+    key: null,
+    tier: "free",
+    entitlements: {
+      tier: "free",
+      connectors: [],
+      ddl: false,
+      bulk: false,
+      export: false,
+      multi_connection: false,
+    },
+  })
 })
 
 it("loadLicenseStatus returns the license status", async () => {

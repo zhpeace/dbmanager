@@ -296,6 +296,7 @@ it("calls onDuplicateDatabase when duplicate menu item clicked", async () => {
       activeConnectionId="c1"
       databases={{ c1: databases }}
       onDuplicateDatabase={onDuplicateDatabase}
+      isPro
     />
   )
 
@@ -327,6 +328,7 @@ it("calls onDropObject when drop_table menu item clicked", async () => {
       databases={{ c1: databases }}
       tables={{ c1: { mydb: tableData } }}
       onDropObject={onDropObject}
+      isPro
     />
   )
 
@@ -340,4 +342,34 @@ it("calls onDropObject when drop_table menu item clicked", async () => {
   await userEvent.click(dropBtn)
 
   expect(onDropObject).toHaveBeenCalledWith("TABLE", "users", "mydb")
+})
+
+// ── Free/Pro gating: Pro actions open the license dialog instead of firing ──
+
+it("opens license dialog when duplicate_database clicked in free mode", async () => {
+  const onDuplicateDatabase = vi.fn()
+  const onOpenLicense = vi.fn()
+  const conn = makeConnection({ config: makeConnConfig({ type: "oracle" }) })
+  const databases = [{ name: "mydb" }] as DatabaseInfo[]
+
+  render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+      onDuplicateDatabase={onDuplicateDatabase}
+      onOpenLicense={onOpenLicense}
+    />
+  )
+
+  await userEvent.click(screen.getByText("Test DB"))
+  const dbEl = screen.getByText("mydb")
+  fireEvent.contextMenu(dbEl)
+
+  const dupBtn = await screen.findByText("Duplicate Database")
+  await userEvent.click(dupBtn)
+
+  expect(onDuplicateDatabase).not.toHaveBeenCalled()
+  expect(onOpenLicense).toHaveBeenCalledTimes(1)
 })

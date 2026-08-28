@@ -12,6 +12,7 @@ const defaultProps = {
   connectionId: "conn-1",
   sourceDb: "mydb",
   onDone: mockOnDone,
+  isPro: true,
 }
 
 beforeEach(() => {
