@@ -373,7 +373,7 @@ function ConnectionItem({
   onNewObject: (type: string, database: string) => void
   redisScanCursor?: Record<string, number>
   onRedisSearch?: (connectionId: string, database: string, pattern: string, typeFilter: string) => void
-  onRedisLoadMore?: (connectionId: string, database: string) => void
+  onRedisLoadMore?: (connectionId: string, database: string, pattern: string, typeFilter: string) => void
   onRedisKeyAction?: (action: "delete" | "rename" | "duplicate" | "expire" | "persist", database: string, key: string) => void
   onOpenLicense?: () => void
   isPro?: boolean
