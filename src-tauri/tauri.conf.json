@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "DBManager",
+  "productName": "Datanex",
   "version": "0.2.0",
-  "identifier": "com.dbmanager.desktop",
+  "identifier": "com.datanex.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "DBManager",
+        "title": "Datanex",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
