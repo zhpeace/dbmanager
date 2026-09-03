@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
+import { DatanexMark } from "@/components/brand/DatanexMark"
 import {
   ChevronDown,
   ChevronRight,
@@ -244,7 +245,7 @@ export function Sidebar({
         <div className="p-2 space-y-1">
           {connections.length === 0 && (
             <div className="flex flex-col items-center justify-center py-8 text-center">
-              <Database className="h-8 w-8 text-muted-foreground/40 mb-2" />
+              <DatanexMark className="h-8 w-8 text-muted-foreground/40 mb-2" />
               <p className="text-xs text-muted-foreground">{t('sidebar.no_connections')}</p>
               <p className="text-xs text-muted-foreground/60">{t('sidebar.no_connections_hint')}</p>
             </div>

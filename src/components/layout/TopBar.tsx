@@ -1,4 +1,5 @@
 import { Plus, Moon, Sun, GitBranch, Upload, ArrowLeftRight, Diff, Download, Upload as RestoreIcon, Clock, Search, KeyRound, Activity } from "lucide-react"
+import { DatanexMark } from "@/components/brand/DatanexMark"
 import { Button } from "@/components/ui/button"
 import { useTheme } from "@/lib/theme"
 import { useTranslation } from "react-i18next"
@@ -50,21 +51,7 @@ export function TopBar({
     <header className="flex h-12 items-center justify-between border-b bg-sidebar px-4">
       <div className="flex items-center gap-2">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="2.8" fill="currentColor" stroke="none" />
-            {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => {
-              const rad = (a * Math.PI) / 180
-              return (
-                <line key={a} x1={12 + 2.8 * Math.cos(rad)} y1={12 + 2.8 * Math.sin(rad)} x2={12 + 8 * Math.cos(rad)} y2={12 + 8 * Math.sin(rad)} />
-              )
-            })}
-            {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => {
-              const rad = (a * Math.PI) / 180
-              return (
-                <circle key={`n${a}`} cx={12 + 8 * Math.cos(rad)} cy={12 + 8 * Math.sin(rad)} r="1.5" fill="currentColor" stroke="none" />
-              )
-            })}
-          </svg>
+          <DatanexMark className="h-4 w-4" />
         </div>
         <span className="text-sm font-semibold">{t('app.title')}</span>
         {connectionId && (
