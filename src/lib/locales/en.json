@@ -82,6 +82,7 @@
   "topbar.new_connection": "New Connection",
   "topbar.no_database": "No database selected",
   "topbar.activate_license": "Activate",
+  "topbar.pro_badge": "Pro",
   "compare.title": "Compare Schemas",
   "compare.source": "Source",
   "compare.target": "Target",

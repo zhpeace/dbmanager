@@ -80,12 +80,16 @@ export function TopBar({
         >
           {t('topbar.lang_toggle')}
         </Button>
-        {onOpenLicense && (
+        {isPro ? (
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide text-primary bg-primary/10">
+            {t('topbar.pro_badge')}
+          </span>
+        ) : onOpenLicense ? (
           <Button size="sm" variant="ghost" onClick={onOpenLicense} title={t('topbar.activate_license')}>
             <KeyRound className="h-4 w-4 mr-1" />
             {t('topbar.activate_license')}
           </Button>
-        )}
+        ) : null}
         {connectionId && !isRedis && (
           <>
             <Button size="sm" variant="ghost" onClick={onOpenErDiagram}>
