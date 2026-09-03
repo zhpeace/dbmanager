@@ -225,16 +225,16 @@ export async function duplicateDatabase(
   return invoke("duplicate_database", payload)
 }
 
-export async function dropTable(id: string, database: string, table: string): Promise<QueryResult> {
-  return invoke<QueryResult>("drop_table", { id, database, table })
+export async function dropTable(id: string, database: string, schema: string | undefined, table: string): Promise<QueryResult> {
+  return invoke<QueryResult>("drop_table", { id, database, schema, table })
 }
 
-export async function truncateTable(id: string, database: string, table: string): Promise<QueryResult> {
-  return invoke<QueryResult>("truncate_table", { id, database, table })
+export async function truncateTable(id: string, database: string, schema: string | undefined, table: string): Promise<QueryResult> {
+  return invoke<QueryResult>("truncate_table", { id, database, schema, table })
 }
 
-export async function renameTable(id: string, database: string, table: string, newName: string): Promise<QueryResult> {
-  return invoke<QueryResult>("rename_table", { id, database, table, newName })
+export async function renameTable(id: string, database: string, schema: string | undefined, table: string, newName: string): Promise<QueryResult> {
+  return invoke<QueryResult>("rename_table", { id, database, schema, table, newName })
 }
 
 export async function alterAddColumn(id: string, database: string, table: string, column: ColumnDef): Promise<QueryResult> {
@@ -253,16 +253,16 @@ export async function alterRenameColumn(id: string, database: string, table: str
   return invoke<QueryResult>("alter_table_rename_column", { id, database, table, column, newName })
 }
 
-export async function dropView(id: string, database: string, view: string): Promise<QueryResult> {
-  return invoke<QueryResult>("drop_view", { id, database, view })
+export async function dropView(id: string, database: string, schema: string | undefined, view: string): Promise<QueryResult> {
+  return invoke<QueryResult>("drop_view", { id, database, schema, view })
 }
 
-export async function dropRoutine(id: string, database: string, routine: string, routineType: string): Promise<QueryResult> {
-  return invoke<QueryResult>("drop_routine", { id, database, routine, routineType })
+export async function dropRoutine(id: string, database: string, schema: string | undefined, routine: string, routineType: string): Promise<QueryResult> {
+  return invoke<QueryResult>("drop_routine", { id, database, schema, routine, routineType })
 }
 
-export async function dropTrigger(id: string, database: string, trigger: string): Promise<QueryResult> {
-  return invoke<QueryResult>("drop_trigger", { id, database, trigger })
+export async function dropTrigger(id: string, database: string, schema: string | undefined, trigger: string): Promise<QueryResult> {
+  return invoke<QueryResult>("drop_trigger", { id, database, schema, trigger })
 }
 
 export interface IndexDef {
@@ -598,6 +598,25 @@ export async function exportData(
   table?: string,
 ): Promise<void> {
   return invoke("export_data", { id, query, format, filePath, table: table ?? null })
+}
+
+export interface ProcessInfo {
+  id: string
+  user: string
+  host: string
+  db: string
+  command: string
+  state: string
+  info: string
+  duration: string
+}
+
+export async function listProcesses(id: string): Promise<ProcessInfo[]> {
+  return invoke("list_processes", { id })
+}
+
+export async function killProcess(id: string, pid: string): Promise<void> {
+  return invoke("kill_process", { id, pid })
 }
 
 export type TaskConfig =

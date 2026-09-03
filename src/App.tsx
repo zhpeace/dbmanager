@@ -52,6 +52,7 @@ import type {
 import { createObjectTemplate, getConnectionSecret, saveConnectionSecret, deleteConnectionSecret, buildSelectPreview, loadLicenseStatus, isPro, type LicenseStatus } from "@/lib/db"
 import { splitSqlStatements, parseErrorLine, buildExplainSql } from "@/lib/sql"
 import { LicenseDialog } from "@/components/connection/LicenseDialog"
+import { SessionMonitor } from "@/components/connection/SessionMonitor"
 
 const STORAGE_KEY = "dbmanager-connections"
 
@@ -196,13 +197,14 @@ function AppContent() {
   const [errorBanner, setErrorBanner] = useState<string | null>(null)
 
   const [createDialog, setCreateDialog] = useState<{ database: string } | null>(null)
-  const [pendingDrop, setPendingDrop] = useState<{ type: string; name: string; database: string } | null>(null)
-  const [renameTarget, setRenameTarget] = useState<{ database: string; table: string } | null>(null)
+  const [pendingDrop, setPendingDrop] = useState<{ type: string; name: string; database: string; schema?: string } | null>(null)
+  const [renameTarget, setRenameTarget] = useState<{ database: string; schema?: string; table: string } | null>(null)
   const [renameValue, setRenameValue] = useState("")
 
   const [license, setLicense] = useState<LicenseStatus | null>(null)
   const [licenseDismissed, setLicenseDismissed] = useState(false)
   const [licenseManualOpen, setLicenseManualOpen] = useState(false)
+  const [sessionsOpen, setSessionsOpen] = useState(false)
   const [checkingLicense, setCheckingLicense] = useState(true)
   useEffect(() => {
     loadLicenseStatus().then((st) => {
@@ -996,13 +998,13 @@ function handleDatabaseClick(database: string, connectionId: string) {
     }
   }
 
-  function handleDropObject(type: string, name: string, database: string) {
-    setPendingDrop({ type, name, database })
+  function handleDropObject(type: string, name: string, database: string, schema?: string) {
+    setPendingDrop({ type, name, database, schema })
   }
 
   async function confirmDrop() {
     if (!pendingDrop || !activeConnectionId) return
-    const { type, name, database } = pendingDrop
+    const { type, name, database, schema } = pendingDrop
     const id = activeConnectionId
     if (type === "DATABASE") {
       try {
@@ -1018,27 +1020,27 @@ function handleDatabaseClick(database: string, connectionId: string) {
     }
     await runDdlAndRefresh(async () => {
       const db = await import("@/lib/db")
-      if (type === "TABLE") await db.dropTable(id, database, name)
-      else if (type === "VIEW") await db.dropView(id, database, name)
-      else if (type === "FUNCTION") await db.dropRoutine(id, database, name, "FUNCTION")
-      else if (type === "PROCEDURE") await db.dropRoutine(id, database, name, "PROCEDURE")
-      else if (type === "TRIGGER") await db.dropTrigger(id, database, name)
+      if (type === "TABLE") await db.dropTable(id, database, schema, name)
+      else if (type === "VIEW") await db.dropView(id, database, schema, name)
+      else if (type === "FUNCTION") await db.dropRoutine(id, database, schema, name, "FUNCTION")
+      else if (type === "PROCEDURE") await db.dropRoutine(id, database, schema, name, "PROCEDURE")
+      else if (type === "TRIGGER") await db.dropTrigger(id, database, schema, name)
       else if (type === "DATABASE") await db.dropDatabase(id, name)
     }, id, database)
     setPendingDrop(null)
   }
 
-  async function handleTruncate(database: string, table: string) {
+  async function handleTruncate(database: string, schema: string | undefined, table: string) {
     if (!activeConnectionId) return
     const id = activeConnectionId
     await runDdlAndRefresh(async () => {
       const { truncateTable } = await import("@/lib/db")
-      await truncateTable(id, database, table)
+      await truncateTable(id, database, schema, table)
     }, id, database)
   }
 
-  function handleRename(database: string, table: string) {
-    setRenameTarget({ database, table })
+  function handleRename(database: string, schema: string | undefined, table: string) {
+    setRenameTarget({ database, schema, table })
     setRenameValue(table)
   }
 
@@ -1047,11 +1049,11 @@ function handleDatabaseClick(database: string, connectionId: string) {
       setRenameTarget(null)
       return
     }
-    const { database, table } = renameTarget
+    const { database, schema, table } = renameTarget
     const id = activeConnectionId
     await runDdlAndRefresh(async () => {
       const { renameTable } = await import("@/lib/db")
-      await renameTable(id, database, table, renameValue.trim())
+      await renameTable(id, database, schema, table, renameValue.trim())
     }, id, database)
     setRenameTarget(null)
   }
@@ -1224,6 +1226,11 @@ function handleDatabaseClick(database: string, connectionId: string) {
           }}
         />
       ) : null}
+      <SessionMonitor
+        open={sessionsOpen}
+        onOpenChange={setSessionsOpen}
+        connectionId={activeConnectionId}
+      />
       <div className="h-screen flex flex-col overflow-hidden">
       <TopBar
         onNewConnection={handleNewConnection}
@@ -1240,6 +1247,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
         onOpenRestore={handleOpenRestore}
         onOpenSchedule={handleOpenSchedule}
         onOpenFind={handleOpenFind}
+        onOpenSessions={() => setSessionsOpen(true)}
         onOpenLicense={() => setLicenseManualOpen(true)}
         isPro={isPro(license)}
       />

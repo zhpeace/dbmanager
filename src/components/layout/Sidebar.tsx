@@ -155,9 +155,9 @@ interface SidebarProps {
   onDuplicateDatabase: (connectionId: string, database: string) => void
   onDesignTable: (database: string, table: string) => void
   onExportTable: (database: string, table: string, format: "csv" | "json" | "insert") => void
-  onDropObject: (type: string, name: string, database: string) => void
-  onTruncateTable: (database: string, table: string) => void
-  onRenameTable: (database: string, table: string) => void
+  onDropObject: (type: string, name: string, database: string, schema?: string) => void
+  onTruncateTable: (database: string, schema: string | undefined, table: string) => void
+  onRenameTable: (database: string, schema: string | undefined, table: string) => void
   onNewObject: (type: string, database: string) => void
   redisScanCursor: Record<string, number>
   onRedisSearch: (connectionId: string, database: string, pattern: string, typeFilter: string) => void
@@ -269,9 +269,9 @@ onLoadTables={(db) => onLoadTables(conn.id, db)}
                 onDuplicateDatabase={(connId, db) => onDuplicateDatabase(connId, db)}
                 onDesignTable={(db, tbl) => onDesignTable(db, tbl)}
                onExportTable={(db, tbl, fmt) => onExportTable(db, tbl, fmt)}
-               onDropObject={(type, name, db) => onDropObject(type, name, db)}
-               onTruncateTable={(db, tbl) => onTruncateTable(db, tbl)}
-               onRenameTable={(db, tbl) => onRenameTable(db, tbl)}
+                onDropObject={(type, name, db, schema) => onDropObject(type, name, db, schema)}
+                onTruncateTable={(db, schema, tbl) => onTruncateTable(db, schema, tbl)}
+                onRenameTable={(db, schema, tbl) => onRenameTable(db, schema, tbl)}
               onNewObject={(type, db) => onNewObject(type, db)}
               isPro={isPro}
               objectFilter={objectFilter}
@@ -364,9 +364,9 @@ function ConnectionItem({
   onDuplicateDatabase: (connectionId: string, database: string) => void
   onDesignTable: (database: string, table: string) => void
   onExportTable: (database: string, table: string, format: "csv" | "json" | "insert") => void
-  onDropObject: (type: string, name: string, database: string) => void
-  onTruncateTable: (database: string, table: string) => void
-  onRenameTable: (database: string, table: string) => void
+  onDropObject: (type: string, name: string, database: string, schema?: string) => void
+  onTruncateTable: (database: string, schema: string | undefined, table: string) => void
+  onRenameTable: (database: string, schema: string | undefined, table: string) => void
   onNewObject: (type: string, database: string) => void
   redisScanCursor?: Record<string, number>
   onRedisSearch?: (connectionId: string, database: string, pattern: string, typeFilter: string) => void
@@ -623,17 +623,17 @@ function ConnectionItem({
                           {t('sidebar.export_insert')}
                         </ContextMenuItem>
                         <ContextMenuSeparator />
-                        <ContextMenuItem onClick={() => { if (!isPro) { onOpenLicense?.(); return } onTruncateTable(databaseName, obj.name) }}>
+                        <ContextMenuItem onClick={() => { if (!isPro) { onOpenLicense?.(); return } onTruncateTable(databaseName, obj.schema, obj.name) }}>
                           <Trash2 className="h-3 w-3 mr-2" />
                           {t('sidebar.truncate_table')}
                         </ContextMenuItem>
-                        <ContextMenuItem onClick={() => { if (!isPro) { onOpenLicense?.(); return } onRenameTable(databaseName, obj.name) }}>
+                        <ContextMenuItem onClick={() => { if (!isPro) { onOpenLicense?.(); return } onRenameTable(databaseName, obj.schema, obj.name) }}>
                           <Pencil className="h-3 w-3 mr-2" />
                           {t('sidebar.rename_table')}
                         </ContextMenuItem>
                         <ContextMenuItem
                           className="text-destructive"
-                          onClick={() => { if (!isPro) { onOpenLicense?.(); return } onDropObject("TABLE", obj.name, databaseName) }}
+                          onClick={() => { if (!isPro) { onOpenLicense?.(); return } onDropObject("TABLE", obj.name, databaseName, obj.schema) }}
                         >
                           <Trash2 className="h-3 w-3 mr-2" />
                           {t('sidebar.drop_table')}
@@ -651,7 +651,7 @@ function ConnectionItem({
                         </ContextMenuItem>
                         <ContextMenuItem
                           className="text-destructive"
-                          onClick={() => onDropObject(obj.object_type, obj.name, databaseName)}
+                          onClick={() => onDropObject(obj.object_type, obj.name, databaseName, obj.schema)}
                         >
                           <Trash2 className="h-3 w-3 mr-2" />
                           {t('sidebar.drop_' + obj.object_type.toLowerCase())}
@@ -665,7 +665,7 @@ function ConnectionItem({
                         </ContextMenuItem>
                         <ContextMenuItem
                           className="text-destructive"
-                          onClick={() => onDropObject(obj.object_type, obj.name, databaseName)}
+                          onClick={() => onDropObject(obj.object_type, obj.name, databaseName, obj.schema)}
                         >
                           <Trash2 className="h-3 w-3 mr-2" />
                           {t('sidebar.drop_view')}
@@ -829,7 +829,7 @@ function ConnectionItem({
                       </ContextMenuItem>
                     )}
                     <ContextMenuSeparator />
-                    <ContextMenuItem onClick={() => { if (!tables[db.name]) onLoadTables(db.name); toggleDb(db.name) }}>
+                    <ContextMenuItem onClick={() => { onLoadTables(db.name); setExpandedDbs((prev) => new Set(prev).add(db.name)) }}>
                       <RefreshCw className="h-3 w-3 mr-2" />
                       {t('sidebar.refresh')}
                     </ContextMenuItem>
@@ -869,27 +869,37 @@ function ConnectionItem({
                           const isSchemaExpanded = expandedSchemas.has(schemaKey)
                           return (
                             <div key={schema.name} className="mb-1">
-                              <div
-                                className="flex items-center gap-1.5 rounded px-2 py-1 text-xs cursor-pointer hover:bg-sidebar-accent/50"
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setExpandedSchemas((prev) => {
-                                    const next = new Set(prev)
-                                    if (next.has(schemaKey)) next.delete(schemaKey)
-                                    else next.add(schemaKey)
-                                    return next
-                                  })
-                                }}
-                              >
-                                {isSchemaExpanded ? (
-                                  <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
-                                ) : (
-                                  <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-                                )}
-                                <Layers className="h-3 w-3 shrink-0 text-cyan-500" />
-                                <span className="truncate min-w-0" title={schema.name}>{schema.name}</span>
-                                <span className="text-[10px] text-muted-foreground/60">({schemaObjects.length})</span>
-                              </div>
+                              <ContextMenu>
+                                <ContextMenuTrigger asChild>
+                                  <div
+                                    className="flex items-center gap-1.5 rounded px-2 py-1 text-xs cursor-pointer hover:bg-sidebar-accent/50"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setExpandedSchemas((prev) => {
+                                        const next = new Set(prev)
+                                        if (next.has(schemaKey)) next.delete(schemaKey)
+                                        else next.add(schemaKey)
+                                        return next
+                                      })
+                                    }}
+                                  >
+                                    {isSchemaExpanded ? (
+                                      <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                    ) : (
+                                      <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                    )}
+                                    <Layers className="h-3 w-3 shrink-0 text-cyan-500" />
+                                    <span className="truncate min-w-0" title={schema.name}>{schema.name}</span>
+                                    <span className="text-[10px] text-muted-foreground/60">({schemaObjects.length})</span>
+                                  </div>
+                                </ContextMenuTrigger>
+                                <ContextMenuContent>
+                                  <ContextMenuItem onClick={() => { onLoadTables(db.name); setExpandedSchemas((prev) => new Set(prev).add(schemaKey)) }}>
+                                    <RefreshCw className="h-3 w-3 mr-2" />
+                                    {t('sidebar.refresh')}
+                                  </ContextMenuItem>
+                                </ContextMenuContent>
+                              </ContextMenu>
                                 {isSchemaExpanded && (
                                  <div className="ml-3 mt-0.5 space-y-0.5">
                                    {renderTypeGroups(schemaKey, schemaObjects, schema.name, objectFilter)}

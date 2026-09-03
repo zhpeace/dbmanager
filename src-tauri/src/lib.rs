@@ -6,7 +6,7 @@ mod ssh;
 use db::AppState;
 use db::DbConnection;
 use db::DbTransaction;
-use db::types::{CheckpointState, CompareResult, DatabaseInfo, FindMatch, QueryResult, RedisKeyInfo, RedisKeyPage, SchemaCache, TableData, TableInfo, TransferOptions, TransferResult};
+use db::types::{CheckpointState, CompareResult, DatabaseInfo, FindMatch, ProcessInfo, QueryResult, RedisKeyInfo, RedisKeyPage, SchemaCache, TableData, TableInfo, TransferOptions, TransferResult};
 use db::scheduler::{ScheduledTask, TaskConfig};
 use ssh::{SshConfig, SslConfig};
 use sqlx::mysql::MySqlSslMode;
@@ -1382,6 +1382,81 @@ fn write_xlsx(r: &QueryResult, path: &str, table: Option<&str>) -> Result<(), St
 }
 
 #[tauri::command]
+async fn list_processes(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<Vec<ProcessInfo>, String> {
+    let conn = clone_connection(&state, &id)?;
+    let sql = match &conn {
+        DbConnection::MySql(_) => {
+            "SELECT ID AS id, USER AS user, HOST AS host, DB AS db, COMMAND AS command, \
+             STATE AS state, INFO AS info, TIME AS duration FROM information_schema.PROCESSLIST"
+        }
+        DbConnection::Pg(_) => {
+            "SELECT pid::text AS id, usename AS user, coalesce(client_addr::text,'') AS host, \
+             coalesce(datname,'') AS db, coalesce(state,'') AS command, coalesce(state,'') AS state, \
+             coalesce(query,'') AS info, coalesce(extract(epoch from (now()-query_start))::int::text,'') AS duration \
+             FROM pg_stat_activity WHERE pid <> pg_backend_pid()"
+        }
+        _ => return Ok(Vec::new()),
+    };
+    let result = conn.execute_query(sql).await?;
+    if let Some(err) = result.error {
+        return Err(err);
+    }
+    let mut out = Vec::new();
+    for row in &result.rows {
+        let obj = match row.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
+        let get = |k: &str| -> String {
+            match obj.get(k) {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(v) => {
+                    if v.is_null() {
+                        String::new()
+                    } else {
+                        v.to_string()
+                    }
+                }
+                None => String::new(),
+            }
+        };
+        out.push(ProcessInfo {
+            id: get("id"),
+            user: get("user"),
+            host: get("host"),
+            db: get("db"),
+            command: get("command"),
+            state: get("state"),
+            info: get("info"),
+            duration: get("duration"),
+        });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+async fn kill_process(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    pid: String,
+) -> Result<(), String> {
+    let conn = clone_connection(&state, &id)?;
+    let sql = match &conn {
+        DbConnection::MySql(_) => format!("KILL {}", pid),
+        DbConnection::Pg(_) => format!("SELECT pg_terminate_backend({}::int)", pid),
+        _ => return Err("该数据库类型不支持终止会话".to_string()),
+    };
+    let result = conn.execute_query(&sql).await?;
+    if let Some(err) = result.error {
+        return Err(err);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn begin_transaction(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
     let conn = get_conn(&state, &id).await?;
     let tx = match conn {
@@ -1448,19 +1523,42 @@ async fn create_table(
     conn.execute_update(&sql).await
 }
 
+// For PostgreSQL the `database` argument is a real database, while objects
+// live in schemas. Callers must pass the actual `schema`; for every other
+// engine the schema qualifier is the `database` itself.
+fn schema_for_ddl(kind: &db::ddl::DbKind, database: &str, schema: Option<&str>) -> Option<String> {
+    match kind {
+        db::ddl::DbKind::Postgres => schema.filter(|s| !s.is_empty()).map(|s| s.to_string()),
+        _ => {
+            if database.is_empty() {
+                None
+            } else {
+                Some(database.to_string())
+            }
+        }
+    }
+}
+
 #[tauri::command]
 async fn drop_table(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
+    schema: Option<String>,
     table: String,
 ) -> Result<QueryResult, String> {
     crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
-    let schema = if database.is_empty() { None } else { Some(database.as_str()) };
-    let sql = db::ddl::drop_table_sql(&kind, schema, &table);
+    let ddl_schema = if matches!(kind, db::ddl::DbKind::Postgres) {
+        schema.filter(|s| !s.is_empty())
+    } else if database.is_empty() {
+        None
+    } else {
+        Some(database.clone())
+    };
+    let sql = db::ddl::drop_table_sql(&kind, ddl_schema.as_deref(), &table);
     conn.execute_update(&sql).await
 }
 
@@ -1470,13 +1568,14 @@ async fn truncate_table(
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
+    schema: Option<String>,
     table: String,
 ) -> Result<QueryResult, String> {
     crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
-    let schema = if database.is_empty() { None } else { Some(database.as_str()) };
-    let sql = db::ddl::truncate_table_sql(&kind, schema, &table);
+    let ddl_schema = schema_for_ddl(&kind, &database, schema.as_deref());
+    let sql = db::ddl::truncate_table_sql(&kind, ddl_schema.as_deref(), &table);
     conn.execute_update(&sql).await
 }
 
@@ -1486,14 +1585,15 @@ async fn rename_table(
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
+    schema: Option<String>,
     table: String,
     new_name: String,
 ) -> Result<QueryResult, String> {
     crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
-    let schema = if database.is_empty() { None } else { Some(database.as_str()) };
-    let sql = db::ddl::rename_table_sql(&kind, schema, &table, &new_name);
+    let ddl_schema = schema_for_ddl(&kind, &database, schema.as_deref());
+    let sql = db::ddl::rename_table_sql(&kind, ddl_schema.as_deref(), &table, &new_name);
     conn.execute_update(&sql).await
 }
 
@@ -1572,13 +1672,14 @@ async fn drop_view(
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
+    schema: Option<String>,
     view: String,
 ) -> Result<QueryResult, String> {
     crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
-    let schema = if database.is_empty() { None } else { Some(database.as_str()) };
-    let sql = db::ddl::drop_view_sql(&kind, schema, &view);
+    let ddl_schema = schema_for_ddl(&kind, &database, schema.as_deref());
+    let sql = db::ddl::drop_view_sql(&kind, ddl_schema.as_deref(), &view);
     conn.execute_update(&sql).await
 }
 
@@ -1588,14 +1689,15 @@ async fn drop_routine(
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
+    schema: Option<String>,
     routine: String,
     routine_type: String,
 ) -> Result<QueryResult, String> {
     crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
-    let schema = if database.is_empty() { None } else { Some(database.as_str()) };
-    let sql = db::ddl::drop_routine_sql(&kind, schema, &routine, &routine_type);
+    let ddl_schema = schema_for_ddl(&kind, &database, schema.as_deref());
+    let sql = db::ddl::drop_routine_sql(&kind, ddl_schema.as_deref(), &routine, &routine_type);
     conn.execute_update(&sql).await
 }
 
@@ -1605,13 +1707,14 @@ async fn drop_trigger(
     state: tauri::State<'_, AppState>,
     id: String,
     database: String,
+    schema: Option<String>,
     trigger: String,
 ) -> Result<QueryResult, String> {
     crate::license::require_pro(&app)?;
     let conn = get_conn(&state, &id).await?;
     let kind = db::ddl::db_kind(&conn)?;
-    let schema = if database.is_empty() { None } else { Some(database.as_str()) };
-    let sql = db::ddl::drop_trigger_sql(&kind, schema, &trigger);
+    let ddl_schema = schema_for_ddl(&kind, &database, schema.as_deref());
+    let sql = db::ddl::drop_trigger_sql(&kind, ddl_schema.as_deref(), &trigger);
     conn.execute_update(&sql).await
 }
 
@@ -1925,6 +2028,8 @@ pub fn run() {
             redis_command,
             execute_query,
             export_data,
+            list_processes,
+            kill_process,
             cancel_query,
             begin_transaction,
             commit_transaction,

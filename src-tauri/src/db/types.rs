@@ -360,6 +360,18 @@ pub struct TableDiff {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessInfo {
+    pub id: String,
+    pub user: String,
+    pub host: String,
+    pub db: String,
+    pub command: String,
+    pub state: String,
+    pub info: String,
+    pub duration: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompareResult {
     pub tables: Vec<TableDiff>,
     pub extra_in_source: Vec<String>,
