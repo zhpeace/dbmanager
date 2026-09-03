@@ -604,6 +604,76 @@ fn redis_reply_to_i64(v: &redis::Value) -> Option<i64> {
     }
 }
 
+fn encode_b64(data: &[u8]) -> String {
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        out.push(B64[(b[0] >> 2) as usize] as char);
+        out.push(B64[(((b[0] & 0x03) << 4) | (b[1] >> 4)) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            B64[(((b[1] & 0x0F) << 2) | (b[2] >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 { B64[(b[2] & 0x3F) as usize] as char } else { '=' });
+    }
+    out
+}
+
+/// Convert raw Redis bytes to a JSON value. Valid UTF-8 becomes a plain string;
+/// binary (non-UTF-8) payloads become `{ __datanex_binary__, b64, len }` so the
+/// frontend can render TEXT/HEX/ASCII/BASE64 faithfully without IPC errors.
+fn redis_bytes_to_json(bytes: &[u8]) -> serde_json::Value {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => serde_json::json!(s),
+        Err(_) => serde_json::json!({
+            "__datanex_binary__": true,
+            "b64": encode_b64(bytes),
+            "len": bytes.len(),
+        }),
+    }
+}
+
+/// Convert a single XRANGE stream entry (raw Value) to `{ id, fields }` without
+/// panicking or erroring on binary field values.
+fn redis_stream_entry_to_json(v: redis::Value) -> serde_json::Value {
+    match v {
+        redis::Value::Array(items) if items.len() >= 2 => {
+            let id = match &items[0] {
+                redis::Value::BulkString(b) => redis_bytes_to_json(b),
+                _ => serde_json::json!("?"),
+            };
+            let mut fmap = serde_json::Map::new();
+            if let redis::Value::Array(field_groups) = &items[1] {
+                for g in field_groups {
+                    if let redis::Value::Array(parts) = g {
+                        if parts.len() >= 2 {
+                            let field = redis_reply_to_string(&parts[0]).unwrap_or_else(|| "?".to_string());
+                            if let redis::Value::Array(kv_pairs) = &parts[1] {
+                                let mut entry = serde_json::Map::new();
+                                for pair in kv_pairs.chunks(2) {
+                                    if pair.len() == 2 {
+                                        let k = redis_reply_to_string(&pair[0]).unwrap_or_else(|| "?".to_string());
+                                        let val = match &pair[1] {
+                                            redis::Value::BulkString(b) => redis_bytes_to_json(b),
+                                            _ => serde_json::json!(redis_bytes_to_json(&[])),
+                                        };
+                                        entry.insert(k, val);
+                                    }
+                                }
+                                fmap.insert(field, serde_json::Value::Object(entry));
+                            }
+                        }
+                    }
+                }
+            }
+            serde_json::json!({"id": id, "fields": serde_json::Value::Object(fmap)})
+        }
+        _ => serde_json::json!({"id": "?", "fields": serde_json::Value::Object(serde_json::Map::new())}),
+    }
+}
+
 fn redis_value_to_json(v: &redis::Value) -> serde_json::Value {
     match v {
         redis::Value::Nil => serde_json::Value::Null,
@@ -1966,20 +2036,20 @@ impl DbConnection {
 
                 let (cols, json_rows, total): (Vec<ColumnInfo>, Vec<serde_json::Value>, i64) = match key_type.as_str() {
                     "string" => {
-                        let val: Option<String> = redis::cmd("GET").arg(table).query_async(&mut conn).await.map_err(|e| e.to_string())?;
+                        let val: Option<Vec<u8>> = redis::cmd("GET").arg(table).query_async(&mut conn).await.map_err(|e| e.to_string())?;
                         let has = val.is_some();
                         let rows = if let Some(v) = val {
-                            vec![serde_json::json!({"value": v})]
+                            vec![serde_json::json!({"value": redis_bytes_to_json(&v)})]
                         } else { vec![] };
                         (make_cols(vec![("value", "string")]), rows, if has { 1 } else { 0 })
                     }
                     "list" => {
                         let total: i64 = redis::cmd("LLEN").arg(table).query_async(&mut conn).await.unwrap_or(0);
                         let end = offset + page_size - 1;
-                        let vals: Vec<String> = redis::cmd("LRANGE").arg(table).arg(offset).arg(end)
+                        let vals: Vec<Vec<u8>> = redis::cmd("LRANGE").arg(table).arg(offset).arg(end)
                             .query_async(&mut conn).await.map_err(|e| e.to_string())?;
                         let rows = vals.into_iter().enumerate()
-                            .map(|(i, v)| serde_json::json!({"index": offset + i as i64, "value": v}))
+                            .map(|(i, v)| serde_json::json!({"index": offset + i as i64, "value": redis_bytes_to_json(&v)}))
                             .collect();
                         (make_cols(vec![("index", "integer"), ("value", "string")]), rows, total)
                     }
@@ -1988,59 +2058,63 @@ impl DbConnection {
                         let mut members = Vec::new();
                         let mut cursor = 0i64;
                         loop {
-                            let result: (i64, Vec<String>) = redis::cmd("SSCAN").arg(table).arg(cursor)
+                            let result: (i64, Vec<Vec<u8>>) = redis::cmd("SSCAN").arg(table).arg(cursor)
                                 .arg("COUNT").arg(500).query_async(&mut conn).await.map_err(|e| e.to_string())?;
                             cursor = result.0;
                             members.extend(result.1);
                             if cursor == 0 { break; }
                         }
-                        let slice: Vec<&String> = members.iter().skip(offset as usize).take(page_size as usize).collect();
-                        let rows = slice.into_iter().map(|m| serde_json::json!({"member": m})).collect();
+                        let slice: Vec<&Vec<u8>> = members.iter().skip(offset as usize).take(page_size as usize).collect();
+                        let rows = slice.into_iter().map(|m| serde_json::json!({"member": redis_bytes_to_json(m)})).collect();
                         (make_cols(vec![("member", "string")]), rows, total)
                     }
                     "hash" => {
                         let total: i64 = redis::cmd("HLEN").arg(table).query_async(&mut conn).await.unwrap_or(0);
-                        let vals: Vec<(String, String)> = redis::cmd("HGETALL").arg(table)
+                        let vals: Vec<(Vec<u8>, Vec<u8>)> = redis::cmd("HGETALL").arg(table)
                             .query_async(&mut conn).await.map_err(|e| e.to_string())?;
                         let rows = vals.into_iter().skip(offset as usize).take(page_size as usize)
-                            .map(|(f, v)| serde_json::json!({"field": f, "value": v}))
+                            .map(|(f, v)| serde_json::json!({"field": redis_bytes_to_json(&f), "value": redis_bytes_to_json(&v)}))
                             .collect();
                         (make_cols(vec![("field", "string"), ("value", "string")]), rows, total)
                     }
                     "zset" => {
                         let total: i64 = redis::cmd("ZCARD").arg(table).query_async(&mut conn).await.unwrap_or(0);
                         let end = offset + page_size - 1;
-                        let vals: Vec<(String, f64)> = if desc {
+                        let vals: Vec<(Vec<u8>, f64)> = if desc {
                             redis::cmd("ZREVRANGE").arg(table).arg(offset).arg(end).arg("WITHSCORES")
                                 .query_async(&mut conn).await.map_err(|e| e.to_string())?
                         } else {
                             redis::cmd("ZRANGE").arg(table).arg(offset).arg(end).arg("WITHSCORES")
                                 .query_async(&mut conn).await.map_err(|e| e.to_string())?
                         };
-                        let rows = vals.into_iter().map(|(m, s)| serde_json::json!({"member": m, "score": s})).collect();
+                        let rows = vals.into_iter().map(|(m, s)| serde_json::json!({"member": redis_bytes_to_json(&m), "score": s})).collect();
                         (make_cols(vec![("member", "string"), ("score", "double")]), rows, total)
                     }
                     "stream" => {
                         let total: i64 = redis::cmd("XLEN").arg(table).query_async(&mut conn).await.unwrap_or(0);
-                        let vals: Vec<(String, Vec<(String, Vec<(String, String)>)>)> =
-                            redis::cmd("XRANGE").arg(table).arg("-").arg("+").arg("COUNT").arg(offset + page_size)
-                                .query_async(&mut conn).await.map_err(|e| e.to_string())?;
-                        let rows = vals.into_iter().skip(offset as usize).take(page_size as usize).map(|(id, fields)| {
-                            let fmap: serde_json::Map<String, serde_json::Value> = fields.into_iter().flat_map(|(_k, v_pairs)| {
-                                v_pairs.into_iter().map(|(fk, fv)| (fk, serde_json::json!(fv)))
-                            }).collect();
-                            serde_json::json!({"id": id, "fields": serde_json::Value::Object(fmap)})
-                        }).collect();
-                        (make_cols(vec![("id", "string"), ("fields", "object")]), rows, total)
+                        // XRANGE returns nested arrays; use raw Value to avoid UTF-8 coercion errors on binary fields.
+                        let raw: redis::Value = redis::cmd("XRANGE").arg(table).arg("-").arg("+").arg("COUNT").arg(offset + page_size)
+                            .query_async(&mut conn).await.map_err(|e| e.to_string())?;
+                        let entries: Vec<serde_json::Value> = match raw {
+                            redis::Value::Array(items) => {
+                                let mut out = Vec::new();
+                                for item in items.into_iter().skip(offset as usize).take(page_size as usize) {
+                                    out.push(redis_stream_entry_to_json(item));
+                                }
+                                out
+                            }
+                            _ => Vec::new(),
+                        };
+                        (make_cols(vec![("id", "string"), ("fields", "object")]), entries, total)
                     }
                     "none" => {
                         (make_cols(vec![("value", "string")]), Vec::new(), 0)
                     }
                     _ => {
-                        let val: Option<String> = redis::cmd("GET").arg(table).query_async(&mut conn).await.map_err(|e| e.to_string())?;
+                        let val: Option<Vec<u8>> = redis::cmd("GET").arg(table).query_async(&mut conn).await.map_err(|e| e.to_string())?;
                         let has = val.is_some();
                         let rows = if let Some(v) = val {
-                            vec![serde_json::json!({"value": v})]
+                            vec![serde_json::json!({"value": redis_bytes_to_json(&v)})]
                         } else { vec![] };
                         (make_cols(vec![("value", "string")]), rows, if has { 1 } else { 0 })
                     }
@@ -4629,6 +4703,31 @@ mod tests {
     use super::*;
     use serde_json::json;
     use sqlx::SqlitePool;
+
+    #[test]
+    fn test_encode_b64() {
+        assert_eq!(encode_b64(b""), "");
+        assert_eq!(encode_b64(b"f"), "Zg==");
+        assert_eq!(encode_b64(b"fo"), "Zm8=");
+        assert_eq!(encode_b64(b"foo"), "Zm9v");
+        assert_eq!(encode_b64(b"foob"), "Zm9vYg==");
+        assert_eq!(encode_b64(&[0x00, 0xff, 0xfe]), "AP/+");
+    }
+
+    #[test]
+    fn test_redis_bytes_to_json() {
+        // Valid UTF-8 stays a plain string.
+        let s = redis_bytes_to_json("hello".as_bytes());
+        assert_eq!(s, json!("hello"));
+        // Binary payloads become a marker object with base64 + length.
+        let b = redis_bytes_to_json(&[0x00, 0xff, 0xfe]);
+        assert_eq!(b["__datanex_binary__"], json!(true));
+        assert_eq!(b["b64"], json!("AP/+"));
+        assert_eq!(b["len"], json!(3));
+        // Mixed valid multibyte text stays a plain string too.
+        let zh = redis_bytes_to_json("数据".as_bytes());
+        assert_eq!(zh, json!("数据"));
+    }
 
     #[tokio::test]
     async fn test_type_mapping() {

@@ -28,33 +28,83 @@ interface RedisValuePanelProps {
 
 type Format = "text" | "json" | "hex" | "ascii" | "base64"
 
+interface BinaryValue {
+  __datanex_binary__: boolean
+  b64: string
+  len: number
+}
+
+function isBinaryValue(v: unknown): v is BinaryValue {
+  return typeof v === "object" && v !== null && (v as any).__datanex_binary__ === true && typeof (v as any).b64 === "string"
+}
+
+/** Treat a string as a latin1 byte string when every char code fits in a byte. */
+function toBytes(s: string): Uint8Array | null {
+  const b = new Uint8Array(s.length)
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c > 255) return null
+    b[i] = c
+  }
+  return b
+}
+
+function bytesToText(bytes: Uint8Array): string {
+  return new TextDecoder("utf-8", { fatal: false }).decode(bytes)
+}
+
+/** Cell display for binary payloads inside list/hash/set/zset tables. */
+function redisValueDisplay(v: unknown): string {
+  if (isBinaryValue(v)) {
+    try {
+      const b = atob(v.b64)
+      const hex = Array.from(new Uint8Array(b.length), (_, i) => b.charCodeAt(i).toString(16).padStart(2, "0"))
+        .slice(0, 16).join(" ")
+      return `[binary ${v.len} B] ${hex}${v.len > 16 ? "…" : ""}`
+    } catch {
+      return `[binary ${v.len} B]`
+    }
+  }
+  if (v === null || v === undefined) return ""
+  if (typeof v === "object") return JSON.stringify(v)
+  return String(v)
+}
+
 function formatStringValue(v: string, format: Format): string {
+  const bytes = toBytes(v)
   switch (format) {
+    case "text":
+      return bytes ? bytesToText(bytes) : v
     case "json": {
+      const s = bytes ? bytesToText(bytes) : v
       try {
-        return JSON.stringify(JSON.parse(v), null, 2)
+        return JSON.stringify(JSON.parse(s), null, 2)
       } catch {
-        return v
+        return s
       }
     }
     case "hex": {
+      const data = bytes ?? new Uint8Array(Array.from(v, (ch) => ch.charCodeAt(0) & 0xff))
       let out = ""
-      for (let i = 0; i < v.length; i++) {
-        out += v.charCodeAt(i).toString(16).padStart(2, "0")
+      for (let i = 0; i < data.length; i++) {
+        out += data[i].toString(16).padStart(2, "0")
         if ((i + 1) % 16 === 0) out += "\n"
         else out += " "
       }
       return out.trimEnd()
     }
     case "base64": {
+      if (bytes) return btoa(v)
       try {
         return btoa(unescape(encodeURIComponent(v)))
       } catch {
         return v
       }
     }
-    case "ascii":
-      return v.replace(/[^\x20-\x7E]/g, "�")
+    case "ascii": {
+      const s = bytes ? bytesToText(bytes) : v
+      return s.replace(/[^\x20-\x7E]/g, "�")
+    }
     default:
       return v
   }
@@ -69,6 +119,8 @@ export function RedisValuePanel({ connectionId, database, table, onClose }: Redi
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [stringValue, setStringValue] = useState("")
+  const [rawBytes, setRawBytes] = useState<string | null>(null)
+  const [initText, setInitText] = useState("")
   const [stringFormat, setStringFormat] = useState<Format>("text")
   const [saving, setSaving] = useState(false)
 
@@ -92,7 +144,24 @@ export function RedisValuePanel({ connectionId, database, table, onClose }: Redi
       setTableData(result)
       if (isString) {
         const first = result.rows[0]
-        setStringValue(typeof first?.value === "string" ? first.value : "")
+        const raw = first?.value
+        if (isBinaryValue(raw)) {
+          let bytesStr: string | null = null
+          try {
+            bytesStr = atob(raw.b64)
+          } catch {
+            bytesStr = null
+          }
+          const text = bytesStr ? bytesToText(toBytes(bytesStr) ?? new Uint8Array()) : ""
+          setRawBytes(bytesStr)
+          setInitText(text)
+          setStringValue(text)
+        } else {
+          const s = typeof raw === "string" ? raw : ""
+          setRawBytes(null)
+          setInitText(s)
+          setStringValue(s)
+        }
       }
     } catch (e: any) {
       setError(String(e))
@@ -271,11 +340,11 @@ export function RedisValuePanel({ connectionId, database, table, onClose }: Redi
                 />
                 {stringFormat !== "text" && (
                   <pre className="max-h-48 overflow-auto border-t p-3 font-mono text-xs whitespace-pre-wrap break-all bg-muted/30">
-                    {formatStringValue(stringValue, stringFormat)}
+                    {formatStringValue(rawBytes ?? stringValue, stringFormat)}
                   </pre>
                 )}
                 <div className="flex items-center gap-2 border-t px-3 py-1.5">
-                  <Button size="sm" variant="default" className="h-7 gap-1" onClick={saveString} disabled={saving || stringValue === (tableData?.rows[0]?.value as string)}>
+                  <Button size="sm" variant="default" className="h-7 gap-1" onClick={saveString} disabled={saving || stringValue === initText}>
                     <Save className="h-3.5 w-3.5" />
                     {t('redispanel.save_value')}
                   </Button>
@@ -296,7 +365,7 @@ export function RedisValuePanel({ connectionId, database, table, onClose }: Redi
                     <tr key={i} className="border-b border-border/50 hover:bg-muted/40">
                       {columns.map((c) => (
                         <td key={c.name} className="px-3 py-1 font-mono whitespace-pre-wrap break-all">
-                          {String(row[c.name] ?? "")}
+                          {redisValueDisplay(row[c.name])}
                         </td>
                       ))}
                     </tr>
