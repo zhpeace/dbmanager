@@ -11,20 +11,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
-import type { ColumnDef, DatabaseType } from "@/lib/db"
-
-export const COMMON_TYPES = [
-  "INT",
-  "BIGINT",
-  "VARCHAR(255)",
-  "TEXT",
-  "DECIMAL(10,2)",
-  "BOOLEAN",
-  "DATE",
-  "DATETIME",
-  "TIMESTAMP",
-  "BLOB",
-]
+import { COMMON_TYPES, type ColumnDef, type DatabaseType } from "@/lib/db"
 
 interface CreateTableDialogProps {
   open: boolean

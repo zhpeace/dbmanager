@@ -14,7 +14,7 @@ import { BinaryEditorDialog } from "./BinaryEditorDialog"
 import { RedisValuePanel } from "./RedisValuePanel"
 import { ExportDialog } from "@/components/connection/ExportDialog"
 import type { TableData, DatabaseType, ColumnDef, IndexInfo, ForeignKeyInfo, ColumnInfo } from "@/lib/db"
-import { COMMON_TYPES } from "@/components/connection/CreateTableDialog"
+import { COMMON_TYPES } from "@/lib/db"
 import {
   isNumericType,
   getSchemaCache,

@@ -184,6 +184,19 @@ export interface ExecResult extends QueryResult {
   isPlan?: boolean
 }
 
+export const COMMON_TYPES = [
+  "INT",
+  "BIGINT",
+  "VARCHAR(255)",
+  "TEXT",
+  "DECIMAL(10,2)",
+  "BOOLEAN",
+  "DATE",
+  "DATETIME",
+  "TIMESTAMP",
+  "BLOB",
+]
+
 export interface ColumnDef {
   name: string
   data_type: string

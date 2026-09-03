@@ -49,9 +49,14 @@ test('truncate table invokes truncate_table', async ({ page }) => {
   await openUsers(page)
   await rightClickUsers(page)
   await page.getByRole('menuitem', { name: 'Truncate Table' }).click()
-  const calls = await page.evaluate(() => (window as any).__ddlCalls || [])
-  expect(calls.some((c: any) => c.cmd === 'truncate_table' &&
-    c.args.id === 'c1' && c.args.database === 'test' && c.args.table === 'users')).toBe(true)
+  // poll for the DDL call instead of reading immediately (avoids a race after the menu click)
+  await expect
+    .poll(async () => {
+      const calls = await page.evaluate(() => (window as any).__ddlCalls || [])
+      return calls.some((c: any) => c.cmd === 'truncate_table' &&
+        c.args.id === 'c1' && c.args.database === 'test' && c.args.table === 'users')
+    })
+    .toBe(true)
 })
 
 test('rename table prefills current name and sends newName', async ({ page }) => {

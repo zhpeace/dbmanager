@@ -6,6 +6,7 @@ const createTableMock = vi.fn()
 
 vi.mock("@/lib/db", () => ({
   createTable: (...args: any[]) => createTableMock(...args),
+  COMMON_TYPES: ["INT", "BIGINT", "VARCHAR(255)", "TEXT", "DECIMAL(10,2)", "BOOLEAN", "DATE", "DATETIME", "TIMESTAMP", "BLOB"],
 }))
 
 const defaultProps = {
