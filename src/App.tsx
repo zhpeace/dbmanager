@@ -49,8 +49,8 @@ import type {
   ExecResult,
   DatabaseType,
 } from "@/lib/db"
-import { createObjectTemplate, getConnectionSecret, saveConnectionSecret, deleteConnectionSecret, buildSelectPreview, loadLicenseStatus, isPro, type LicenseStatus } from "@/lib/db"
-import { splitSqlStatements, parseErrorLine, buildExplainSql } from "@/lib/sql"
+import { createObjectTemplate, getConnectionSecret, saveConnectionSecret, deleteConnectionSecret, buildSelectPreview, loadLicenseStatus, isPro, quoteIdent, dropDatabase, dropTable, dropView, dropRoutine, dropTrigger, truncateTable, renameTable, type LicenseStatus } from "@/lib/db"
+import { splitSqlStatements, parseErrorLine, buildExplainSql, toCsv, toJson, toInsert } from "@/lib/sql"
 import { LicenseDialog } from "@/components/connection/LicenseDialog"
 import { SessionMonitor } from "@/components/connection/SessionMonitor"
 
@@ -969,10 +969,6 @@ function handleDatabaseClick(database: string, connectionId: string) {
 
   async function handleExportTable(database: string, table: string, format: "csv" | "json" | "insert") {
     if (!activeConnectionId) return
-    const { invoke } = await import("@tauri-apps/api/core")
-    const { save } = await import("@tauri-apps/plugin-dialog")
-    const { toCsv, toJson, toInsert } = await import("@/lib/sql")
-    const { quoteIdent } = await import("@/lib/db")
     try {
       const dbType = connDbType(activeConnectionId) as DatabaseType
       const qualified = database ? quoteIdent(`${database}.${table}`, dbType) : quoteIdent(table, dbType)
@@ -1008,8 +1004,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
     const id = activeConnectionId
     if (type === "DATABASE") {
       try {
-        const db = await import("@/lib/db")
-        await db.dropDatabase(id, name)
+        await dropDatabase(id, name)
         setPendingDrop(null)
         handleRefresh(id)
       } catch (e: any) {
@@ -1019,13 +1014,12 @@ function handleDatabaseClick(database: string, connectionId: string) {
       return
     }
     await runDdlAndRefresh(async () => {
-      const db = await import("@/lib/db")
-      if (type === "TABLE") await db.dropTable(id, database, schema, name)
-      else if (type === "VIEW") await db.dropView(id, database, schema, name)
-      else if (type === "FUNCTION") await db.dropRoutine(id, database, schema, name, "FUNCTION")
-      else if (type === "PROCEDURE") await db.dropRoutine(id, database, schema, name, "PROCEDURE")
-      else if (type === "TRIGGER") await db.dropTrigger(id, database, schema, name)
-      else if (type === "DATABASE") await db.dropDatabase(id, name)
+      if (type === "TABLE") await dropTable(id, database, schema, name)
+      else if (type === "VIEW") await dropView(id, database, schema, name)
+      else if (type === "FUNCTION") await dropRoutine(id, database, schema, name, "FUNCTION")
+      else if (type === "PROCEDURE") await dropRoutine(id, database, schema, name, "PROCEDURE")
+      else if (type === "TRIGGER") await dropTrigger(id, database, schema, name)
+      else if (type === "DATABASE") await dropDatabase(id, name)
     }, id, database)
     setPendingDrop(null)
   }
@@ -1034,7 +1028,6 @@ function handleDatabaseClick(database: string, connectionId: string) {
     if (!activeConnectionId) return
     const id = activeConnectionId
     await runDdlAndRefresh(async () => {
-      const { truncateTable } = await import("@/lib/db")
       await truncateTable(id, database, schema, table)
     }, id, database)
   }
@@ -1052,7 +1045,6 @@ function handleDatabaseClick(database: string, connectionId: string) {
     const { database, schema, table } = renameTarget
     const id = activeConnectionId
     await runDdlAndRefresh(async () => {
-      const { renameTable } = await import("@/lib/db")
       await renameTable(id, database, schema, table, renameValue.trim())
     }, id, database)
     setRenameTarget(null)

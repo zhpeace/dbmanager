@@ -11,7 +11,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
-import { COMMON_TYPES, type ColumnDef, type DatabaseType } from "@/lib/db"
+import { COMMON_TYPES, createTable, type ColumnDef, type DatabaseType } from "@/lib/db"
 
 interface CreateTableDialogProps {
   open: boolean
@@ -62,7 +62,6 @@ export function CreateTableDialog({
     setBusy(true)
     setError(null)
     try {
-      const { createTable } = await import("@/lib/db")
       await createTable(connectionId, database, tableName.trim(), columns.map((c) => ({ ...c, name: c.name.trim() })))
       reset()
       onOpenChange(false)
