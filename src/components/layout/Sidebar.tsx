@@ -162,7 +162,7 @@ interface SidebarProps {
   onNewObject: (type: string, database: string) => void
   redisScanCursor: Record<string, number>
   onRedisSearch: (connectionId: string, database: string, pattern: string, typeFilter: string) => void
-  onRedisLoadMore: (connectionId: string, database: string) => void
+  onRedisLoadMore: (connectionId: string, database: string, pattern: string, typeFilter: string) => void
   onRedisKeyAction: (action: "rename" | "duplicate" | "expire" | "persist" | "delete", database: string, key: string) => void
   onOpenLicense?: () => void
   isPro?: boolean
@@ -219,28 +219,30 @@ export function Sidebar({
         <span className="text-xs text-muted-foreground">{connections.length}</span>
       </div>
       <Separator />
-      <div className="flex items-center gap-1 px-3 py-1.5">
-        <div className="flex-1 flex items-center gap-1 rounded border border-border/60 bg-sidebar-accent/20 px-1.5">
-          <Search className="h-3 w-3 shrink-0 text-muted-foreground/70" />
-          <input
-            className="w-full h-6 bg-transparent text-[11px] outline-none"
-            placeholder={t('sidebar.filter_objects')}
-            title={t('sidebar.filter_hint')}
-            value={objectFilter}
-            onChange={(e) => setObjectFilter(e.target.value)}
-          />
-          {objectFilter && (
-            <button
-              type="button"
-              className="shrink-0"
-              onClick={() => setObjectFilter("")}
-              title={t('sidebar.filter_clear')}
-            >
-              <X className="h-3 w-3 text-muted-foreground/70 hover:text-foreground" />
-            </button>
-          )}
+      {connections.some((c) => c.config.type !== "redis") && (
+        <div className="flex items-center gap-1 px-3 py-1.5">
+          <div className="flex-1 flex items-center gap-1 rounded border border-border/60 bg-sidebar-accent/20 px-1.5">
+            <Search className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+            <input
+              className="w-full h-6 bg-transparent text-[11px] outline-none"
+              placeholder={t('sidebar.filter_objects')}
+              title={t('sidebar.filter_hint')}
+              value={objectFilter}
+              onChange={(e) => setObjectFilter(e.target.value)}
+            />
+            {objectFilter && (
+              <button
+                type="button"
+                className="shrink-0"
+                onClick={() => setObjectFilter("")}
+                title={t('sidebar.filter_clear')}
+              >
+                <X className="h-3 w-3 text-muted-foreground/70 hover:text-foreground" />
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
       <ScrollArea className="flex-1">
         <div className="p-2 space-y-1">
           {connections.length === 0 && (
@@ -936,11 +938,11 @@ function ConnectionItem({
                             ))}
                           </select>
                         </div>
-                        {renderTypeGroups(db.name, dbTables, db.name, objectFilter)}
+                        {renderTypeGroups(db.name, dbTables, db.name, isRedis ? "" : objectFilter)}
                         {(redisScanCursor && redisScanCursor[`${connId}:${db.name}`] > 0) && (
                           <button
                             className="w-full mt-0.5 rounded px-2 py-0.5 text-[11px] text-primary hover:bg-sidebar-accent/40"
-                            onClick={() => onRedisLoadMore?.(connId, db.name)}
+                            onClick={() => onRedisLoadMore?.(connId, db.name, redisSearch[db.name] ?? "", redisTypeFilter[db.name] ?? "")}
                           >
                             {t('sidebar.redis_load_more')}
                           </button>
@@ -949,10 +951,10 @@ function ConnectionItem({
                     ) : (
                       <>{renderTypeGroups(db.name, dbTables, db.name, objectFilter)}</>
                     )}
-                    {connection.config.type !== "postgresql" && objectFilter.trim() && dbTables && dbTables.length > 0 && dbTables.filter((o) => matchObjectName(o.name, objectFilter)).length === 0 && (
+                    {connection.config.type !== "postgresql" && connection.config.type !== "redis" && objectFilter.trim() && dbTables && dbTables.length > 0 && dbTables.filter((o) => matchObjectName(o.name, objectFilter)).length === 0 && (
                       <p className="text-xs text-muted-foreground px-2 py-0.5">{t('sidebar.no_match')}</p>
                     )}
-                    {connection.config.type !== "postgresql" && !objectFilter.trim() && dbTables && dbTables.length === 0 && (
+                    {connection.config.type !== "postgresql" && connection.config.type !== "redis" && !objectFilter.trim() && dbTables && dbTables.length === 0 && (
                       <p className="text-xs text-muted-foreground px-2 py-0.5">{t('sidebar.no_objects')}</p>
                     )}
                   </div>

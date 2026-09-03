@@ -533,7 +533,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
     }
   }
 
-  async function handleRedisLoadMore(connectionId: string, database: string) {
+  async function handleRedisLoadMore(connectionId: string, database: string, pattern = "", typeFilter = "") {
     const conn = connectionsRef.current.find((c) => c.id === connectionId)
     if (!conn || conn.config.type !== "redis") return
     const tabKey = `${connectionId}:${database}`
@@ -543,10 +543,10 @@ function handleDatabaseClick(database: string, connectionId: string) {
       const page = await invokeWithTimeout<{ keys: TableInfo[]; cursor: number }>("redis_scan_keys", {
         id: conn.id,
         database,
-        pattern: "*",
+        pattern: pattern || "*",
         cursor,
         count: 200,
-        typeFilter: null,
+        typeFilter: typeFilter || null,
       })
       setTables((prev) => ({
         ...prev,
