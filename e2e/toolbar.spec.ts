@@ -69,7 +69,7 @@ test('theme toggle switches dark class on root', async ({ page }) => {
   // default is dark
   await expect(html).toHaveClass(/dark/)
 
-  const themeBtn = page.locator('header button').filter({ has: page.locator('svg') }).filter({ hasNotText: /中文|EN|New Connection|新建连接/ }).first()
+  const themeBtn = page.locator('header button').filter({ has: page.locator('svg') }).filter({ hasNotText: /./ }).first()
   await themeBtn.click()
   await expect(html).not.toHaveClass(/dark/)
 

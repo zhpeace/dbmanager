@@ -26,7 +26,7 @@ beforeEach(() => {
 
 it("renders title, language toggle, and new connection button", () => {
   render(<TopBar {...defaultProps} />)
-  expect(screen.getByText("DBManager")).toBeInTheDocument()
+  expect(screen.getByText("Datanex")).toBeInTheDocument()
   expect(screen.getByText("中文")).toBeInTheDocument()
   expect(screen.getByText("New Connection")).toBeInTheDocument()
 })

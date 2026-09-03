@@ -142,9 +142,9 @@ export async function installBackend(page: Page, state: StubState, lang = 'en') 
             case 'plugin:event|unlisten':
               return null
             case 'get_license_status':
-              return { activated: true, key: null }
+              return { activated: true, key: null, tier: 'pro', entitlements: { tier: 'pro', connectors: [], ddl: true, bulk: true, export: true, multi_connection: true } }
             case 'activate_license':
-              return { activated: true, key: args.key }
+              return { activated: true, key: args.key, tier: 'pro', entitlements: { tier: 'pro', connectors: [], ddl: true, bulk: true, export: true, multi_connection: true } }
             case 'connect_mysql':
             case 'connect_postgres':
             case 'connect_sqlite':
@@ -504,5 +504,5 @@ export async function openApp(page: Page) {
   await page.goto('/')
   await page.waitForSelector('header', { timeout: 15_000 })
   // wait for license check to settle
-  await page.waitForSelector('header >> text=DBManager', { timeout: 15_000 })
+  await page.waitForSelector('header >> text=Datanex', { timeout: 15_000 })
 }

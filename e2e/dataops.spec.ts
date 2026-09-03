@@ -47,10 +47,12 @@ test('table browser rows info and column tabs', async ({ page }) => {
   // columns tab
   await page.getByRole('tab', { name: 'Columns' }).click()
   await expect(page.getByRole('columnheader', { name: 'Type' })).toBeVisible()
-  await expect(page.getByText('varchar', { exact: true }).first()).toBeVisible()
-  // ddl tab
+  await expect(page.locator('table input[value="varchar"]').first()).toBeVisible()
+  // ddl tab (rendered in a Monaco editor; match the view-lines text)
   await page.getByRole('tab', { name: 'DDL' }).click()
-  await expect(page.getByText(/CREATE TABLE/).first()).toBeVisible()
+  await expect(
+    page.locator('[role="tabpanel"][data-state="active"] .view-lines').first(),
+  ).toContainText('CREATE TABLE', { timeout: 10_000 })
 })
 
 test('adding a row and saving sends batch SQL', async ({ page }) => {

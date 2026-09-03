@@ -19,7 +19,7 @@ beforeEach(() => {
 
 it("renders with title", () => {
   render(<LicenseDialog {...defaultProps} />)
-  expect(screen.getByText("Activate DBManager")).toBeInTheDocument()
+  expect(screen.getByText("Activate Datanex")).toBeInTheDocument()
 })
 
 it("shows activate button disabled when key is empty", () => {

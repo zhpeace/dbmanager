@@ -22,7 +22,7 @@ test('empty state shows welcome and no connections', async ({ page }) => {
   await installBackend(page, { ...state, connections: [] })
   await openApp(page)
   await expect(page.getByText('No connections yet')).toBeVisible()
-  await expect(page.getByText('Welcome to DBManager')).toBeVisible()
+  await expect(page.getByText('Welcome to Datanex')).toBeVisible()
 })
 
 test('sidebar lists saved connections with status', async ({ page }) => {

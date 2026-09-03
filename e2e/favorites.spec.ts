@@ -53,7 +53,7 @@ test('favorite persists across a reload', async ({ page }) => {
   await expect(page.getByText('Favorites').first()).toBeVisible()
 
   await page.reload()
-  await page.waitForSelector('header >> text=DBManager', { timeout: 15_000 })
+  await page.waitForSelector('header >> text=Datanex', { timeout: 15_000 })
   await page.locator('span[title="MySQL A"]').click()
   await page.locator('.monaco-editor').first().waitFor({ state: 'visible', timeout: 30_000 })
   await page.getByTitle('Query History').click()

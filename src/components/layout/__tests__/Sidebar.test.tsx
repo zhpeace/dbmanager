@@ -281,7 +281,7 @@ it("calls onDropObject when drop_database menu item clicked", async () => {
   const dropBtn = await screen.findByText("Drop Database")
   await userEvent.click(dropBtn)
 
-  expect(onDropObject).toHaveBeenCalledWith("DATABASE", "mydb", "mydb")
+  expect(onDropObject).toHaveBeenCalledWith("DATABASE", "mydb", "mydb", undefined)
 })
 
 it("calls onDuplicateDatabase when duplicate menu item clicked", async () => {
@@ -341,7 +341,7 @@ it("calls onDropObject when drop_table menu item clicked", async () => {
   const dropBtn = await screen.findByText("Drop Table")
   await userEvent.click(dropBtn)
 
-  expect(onDropObject).toHaveBeenCalledWith("TABLE", "users", "mydb")
+  expect(onDropObject).toHaveBeenCalledWith("TABLE", "users", "mydb", undefined)
 })
 
 // ── Free/Pro gating: Pro actions open the license dialog instead of firing ──
