@@ -4523,7 +4523,7 @@ pub async fn backup_database(
     let cache = source.get_schema_cache(database).await?;
     let mut file = tokio::fs::File::create(output_path).await.map_err(|e| e.to_string())?;
 
-    let header = format!("-- DBManager Backup\n-- Source: {} / {}\n-- Date: {}\n\n", source_type, database, chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+    let header = format!("-- Datanex Backup\n-- Source: {} / {}\n-- Date: {}\n\n", source_type, database, chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
     file.write_all(header.as_bytes()).await.map_err(|e| e.to_string())?;
 
     let mut table_count = 0i32;

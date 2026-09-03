@@ -4,7 +4,7 @@
 
 ```bash
 npm run tauri:build
-# 产物: src-tauri/target/release/bundle/dmg/DBManager_*.dmg
+# 产物: src-tauri/target/release/bundle/dmg/Datanex_*.dmg
 ```
 
 ## Linux（Docker）
@@ -54,7 +54,7 @@ Coding.net 的 macOS/Windows/Linux 构建节点都在国内，速度快。
 - macOS → `.dmg`
 - Windows → `.msi`  
 - Linux → `.deb` + `.AppImage`
-- 设置了 `DBMANAGER_SKIP_LICENSE=1` 跳过许可校验
+- 设置了 `DATANEX_SKIP_LICENSE=1` 跳过许可校验
 
 ## 为什么不能本机跨平台打包？
 

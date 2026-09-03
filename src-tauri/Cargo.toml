@@ -5,7 +5,7 @@ authors = ["Your Company"]
 license = "LicenseRef-Commercial"
 default-run = "app"
 repository = "https://your-company.example.com/dbmanager"
-description = "DBManager - multi-database management tool"
+description = "Datanex - multi-database management tool"
 edition = "2021"
 rust-version = "1.77.2"
 

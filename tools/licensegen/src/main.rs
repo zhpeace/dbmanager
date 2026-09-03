@@ -1,13 +1,13 @@
-//! Standalone license key generator for DBManager.
+//! Standalone license key generator for Datanex.
 //!
 //! The generated key matches the validation in `src-tauri/src/license.rs`:
-//!   normalized key = "DBM" + BODY + SIG
-//!   SIG = HMAC-SHA256("DBM" + BODY)[..8]  (uppercase hex)
+//!   normalized key = "DXN" + BODY + SIG
+//!   SIG = HMAC-SHA256("DXN" + BODY)[..8]  (uppercase hex)
 //!
 //! IMPORTANT: Set the SAME secret the app is built with, e.g.
-//!   DBMANAGER_LICENSE_SECRET=$(cat secret.txt) cargo run -p licensegen -- 5
+//!   DATANEX_LICENSE_SECRET=$(cat secret.txt) cargo run -p licensegen -- 5
 //!
-//! The app reads the secret from the build-time env var DBMANAGER_LICENSE_SECRET
+//! The app reads the secret from the build-time env var DATANEX_LICENSE_SECRET
 //! (falling back to the DEFAULT_SECRET constant). Use the env var for both so they match.
 
 use hmac::{Hmac, Mac};
@@ -16,10 +16,10 @@ use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
 
-const PREFIX: &str = "DBM";
+const PREFIX: &str = "DXN";
 
 fn secret() -> String {
-    std::env::var("DBMANAGER_LICENSE_SECRET")
+    std::env::var("DATANEX_LICENSE_SECRET")
         .unwrap_or_else(|_| "change-me-in-production-32chars-min".to_string())
 }
 
@@ -55,7 +55,7 @@ fn main() {
     let normalized = format!("{}{}{}", PREFIX, body, sig);
 
     // Pretty-print with dashes (normalize() strips them, so any layout validates).
-    // DBM-<body[0..4]>-<body[4..]>-<sig>
+    // DXN-<body[0..4]>-<body[4..]>-<sig>
     let pretty = format!(
         "{}-{}-{}",
         &normalized[..4],
@@ -65,7 +65,7 @@ fn main() {
 
     println!("License key : {}", pretty);
     println!("Raw (no dashes): {}", normalized);
-    println!("Secret used : {}", if std::env::var("DBMANAGER_LICENSE_SECRET").is_ok() { "<from env>" } else { "<DEFAULT_SECRET>" });
+    println!("Secret used : {}", if std::env::var("DATANEX_LICENSE_SECRET").is_ok() { "<from env>" } else { "<DEFAULT_SECRET>" });
 }
 
 #[cfg(test)]

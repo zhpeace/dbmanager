@@ -6,7 +6,7 @@ use tauri::Manager;
 
 type HmacSha256 = Hmac<Sha256>;
 
-const LICENSE_PREFIX: &str = "DBM";
+const LICENSE_PREFIX: &str = "DXN";
 const DEFAULT_SECRET: &str = "change-me-in-production-32chars-min";
 
 /// All database connectors supported by the application.
@@ -24,7 +24,7 @@ pub const ALL_CONNECTORS: &[&str] = &[
 pub const FREE_CONNECTORS: &[&str] = &["postgresql", "mysql", "sqlite", "redis"];
 
 fn secret() -> String {
-    std::env::var("DBMANAGER_LICENSE_SECRET").unwrap_or_else(|_| DEFAULT_SECRET.to_string())
+    std::env::var("DATANEX_LICENSE_SECRET").unwrap_or_else(|_| DEFAULT_SECRET.to_string())
 }
 
 fn app_license_path(app: &tauri::AppHandle) -> PathBuf {
@@ -54,7 +54,7 @@ fn sign(payload: &str) -> String {
 
 fn validate_key(key: &str) -> bool {
     let k = normalize(key);
-    // canonical form: DBM + BODY + SIG(8)  -> total >= 3 + 8 = 11
+    // canonical form: DXN + BODY + SIG(8)  -> total >= 3 + 8 = 11
     if !k.starts_with(LICENSE_PREFIX) || k.len() < LICENSE_PREFIX.len() + 8 {
         return false;
     }
@@ -66,10 +66,10 @@ fn validate_key(key: &str) -> bool {
     sign(&format!("{}{}", LICENSE_PREFIX, body)) == provided_sig
 }
 
-/// Licensing is bypassed in debug builds and when DBMANAGER_SKIP_LICENSE is set,
+/// Licensing is bypassed in debug builds and when DATANEX_SKIP_LICENSE is set,
 /// so developers / CI are never blocked by the activation gate.
 fn bypass_active() -> bool {
-    cfg!(debug_assertions) || std::env::var("DBMANAGER_SKIP_LICENSE").is_ok()
+    cfg!(debug_assertions) || std::env::var("DATANEX_SKIP_LICENSE").is_ok()
 }
 
 /// Returns the normalized, validated license key if a valid license is present.
@@ -137,7 +137,7 @@ pub fn require_pro(app: &tauri::AppHandle) -> Result<(), String> {
     if is_activated(app) {
         Ok(())
     } else {
-        Err("此功能需要 DBManager Pro 版授权，请激活 License 后使用。".to_string())
+        Err("此功能需要 Datanex Pro 版授权，请激活 License 后使用。".to_string())
     }
 }
 

@@ -26,12 +26,12 @@ jobs:
       - name: Build DMG
         run: npx tauri build --bundles dmg
         env:
-          DBMANAGER_SKIP_LICENSE: "1"
+          DATANEX_SKIP_LICENSE: "1"
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: DBManager-macOS
+          name: Datanex-macOS
           path: src-tauri/target/release/bundle/dmg/*.dmg
 
   build-windows:
@@ -54,12 +54,12 @@ jobs:
       - name: Build MSI
         run: npx tauri build --bundles msi
         env:
-          DBMANAGER_SKIP_LICENSE: "1"
+          DATANEX_SKIP_LICENSE: "1"
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: DBManager-Windows
+          name: Datanex-Windows
           path: src-tauri/target/release/bundle/msi/*.msi
 
   build-linux:
@@ -93,12 +93,12 @@ jobs:
       - name: Build DEB + AppImage
         run: npx tauri build --bundles deb,appimage
         env:
-          DBMANAGER_SKIP_LICENSE: "1"
+          DATANEX_SKIP_LICENSE: "1"
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: DBManager-Linux
+          name: Datanex-Linux
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
