@@ -202,7 +202,6 @@ function AppContent() {
   const [renameValue, setRenameValue] = useState("")
 
   const [license, setLicense] = useState<LicenseStatus | null>(null)
-  const [licenseDismissed, setLicenseDismissed] = useState(false)
   const [licenseManualOpen, setLicenseManualOpen] = useState(false)
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const [checkingLicense, setCheckingLicense] = useState(true)
@@ -1205,7 +1204,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
 
   return (
     <>
-      {(license && !license.activated && !licenseDismissed) || licenseManualOpen ? (
+      {licenseManualOpen ? (
         <LicenseDialog
           open
           onActivated={(st) => {
@@ -1213,7 +1212,6 @@ function handleDatabaseClick(database: string, connectionId: string) {
             setLicenseManualOpen(false)
           }}
           onDismiss={() => {
-            setLicenseDismissed(true)
             setLicenseManualOpen(false)
           }}
         />
