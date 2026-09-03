@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Datanex 品牌规范</title>
+<style>
+  :root {
+    --ink: #0f172a;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --navy: #143a8c;
+    --navy-2: #1e56c0;
+    --cyan: #22d3ee;
+    --bg: #f8fafc;
+    --card: #ffffff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--ink); line-height: 1.6; padding: 32px 20px 64px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 28px; letter-spacing: .5px; }
+  h2 { font-size: 18px; margin: 40px 0 16px; padding-top: 24px; border-top: 1px solid var(--line); }
+  .sub { color: var(--muted); font-size: 14px; margin-top: 6px; }
+  .hero {
+    background: linear-gradient(135deg, var(--navy), var(--navy-2));
+    border-radius: 16px; padding: 40px; color: #fff; text-align: center;
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+  }
+  .hero .name { font-size: 30px; font-weight: 700; letter-spacing: 1px; }
+  .hero .tag { font-size: 13px; color: rgba(255,255,255,.75); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+  .card h3 { font-size: 14px; margin-bottom: 10px; }
+  .card p { font-size: 13px; color: var(--muted); }
+  .swatches { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+  .swatch { width: 76px; }
+  .swatch .box { height: 64px; border-radius: 8px; border: 1px solid rgba(0,0,0,.06); }
+  .swatch .hex { font-size: 12px; color: var(--muted); text-align: center; margin-top: 4px; }
+  .swatch .nm { font-size: 12px; text-align: center; margin-top: 2px; }
+  .compare { display: flex; gap: 16px; flex-wrap: wrap; }
+  .variant { flex: 1 1 200px; border: 1px solid var(--line); border-radius: 12px; padding: 24px; text-align: center; }
+  .variant.light { background: #fff; }
+  .variant.dark { background: var(--ink); color: #fff; }
+  .variant small { display: block; margin-top: 12px; color: var(--muted); font-size: 12px; }
+  .variant.dark small { color: rgba(255,255,255,.55); }
+  .rules li { font-size: 13.5px; margin: 6px 0 6px 18px; color: var(--muted); }
+  .rules li b { color: var(--ink); }
+  .foot { margin-top: 48px; color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Datanex 品牌规范</h1>
+  <p class="sub">数据枢纽 · 多数据库统一汇聚管理平台 — 标识使用参考</p>
+
+  <div class="hero" style="margin-top:20px;">
+    <svg viewBox="0 0 24 24" width="52" height="52" fill="none" stroke="#ffffff" stroke-width="1.3" stroke-linecap="round">
+      <circle cx="12" cy="12" r="2.8" fill="#ffffff" stroke="none"></circle>
+      <line x1="14.8" y1="12" x2="20" y2="12"></line>
+      <line x1="12" y1="14.8" x2="12" y2="20"></line>
+      <line x1="9.2" y1="12" x2="4" y2="12"></line>
+      <line x1="12" y1="9.2" x2="12" y2="4"></line>
+      <line x1="14" y1="10" x2="17.7" y2="6.3"></line>
+      <line x1="10" y1="10" x2="6.3" y2="6.3"></line>
+      <line x1="14" y1="14" x2="17.7" y2="17.7"></line>
+      <line x1="10" y1="14" x2="6.3" y2="17.7"></line>
+      <circle cx="20" cy="12" r="1.5" fill="#22d3ee" stroke="none"></circle>
+      <circle cx="12" cy="20" r="1.5" fill="#22d3ee" stroke="none"></circle>
+      <circle cx="4" cy="12" r="1.5" fill="#22d3ee" stroke="none"></circle>
+      <circle cx="12" cy="4" r="1.5" fill="#22d3ee" stroke="none"></circle>
+      <circle cx="17.7" cy="6.3" r="1.5" fill="#22d3ee" stroke="none"></circle>
+      <circle cx="6.3" cy="6.3" r="1.5" fill="#22d3ee" stroke="none"></circle>
+      <circle cx="17.7" cy="17.7" r="1.5" fill="#22d3ee" stroke="none"></circle>
+      <circle cx="6.3" cy="17.7" r="1.5" fill="#22d3ee" stroke="none"></circle>
+    </svg>
+    <div class="name">Datanex</div>
+    <div class="tag">Data + Nexus — 多源数据的统一枢纽</div>
+  </div>
+
+  <h2>一、标识图形</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>概念</h3>
+      <p>中心核心代表统一的数据枢纽，八个环绕节点辐射汇聚，象征 MySQL、PostgreSQL、SQLite、MongoDB、Oracle、Redis、达梦等异构数据库被统一接入、管理与迁移。</p>
+    </div>
+    <div class="card">
+      <h3>结构</h3>
+      <p>圆心 + 八向连线 + 节点，几何对称、可无限缩放。图形标在小尺寸下仍保持清晰识别（最低 16px）。</p>
+    </div>
+    <div class="card">
+      <h3>字标</h3>
+      <p>名称 <b>Datanex</b>（Data + Nexus）无连字符、无变体，英文小写风格仅限 d、n 等小写形态，正式场合使用首字母大写 <b>Datanex</b>。</p>
+    </div>
+  </div>
+
+  <h2>二、品牌色板</h2>
+  <p class="sub">下列色值为取自品牌图形资产的参考值，正式规范色以设计源文件精确取样为准。</p>
+  <div class="swatches">
+    <div class="swatch"><div class="box" style="background:linear-gradient(135deg,#143a8c,#1e56c0)"></div><div class="nm">主品牌色 · 深海蓝</div><div class="hex">#143A8C → #1E56C0</div></div>
+    <div class="swatch"><div class="box" style="background:#22d3ee"></div><div class="nm">强调色 · 数据青</div><div class="hex">#22D3EE</div></div>
+    <div class="swatch"><div class="box" style="background:#0f172a"></div><div class="nm">文字 · 墨色</div><div class="hex">#0F172A</div></div>
+    <div class="swatch"><div class="box" style="background:#ffffff;border:1px solid #e2e8f0"></div><div class="nm">反白底</div><div class="hex">#FFFFFF</div></div>
+    <div class="swatch"><div class="box" style="background:#f8fafc"></div><div class="nm">浅灰底</div><div class="hex">#F8FAFC</div></div>
+  </div>
+
+  <h2>三、应用变体</h2>
+  <div class="compare">
+    <div class="variant light">
+      <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#143a8c" stroke-width="1.3" stroke-linecap="round">
+        <circle cx="12" cy="12" r="2.8" fill="#143a8c" stroke="none"></circle>
+        <circle cx="20" cy="12" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="12" cy="20" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="4" cy="12" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="12" cy="4" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="17.7" cy="6.3" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="6.3" cy="6.3" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="17.7" cy="17.7" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="6.3" cy="17.7" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <line x1="14.8" y1="12" x2="20" y2="12"></line><line x1="12" y1="14.8" x2="12" y2="20"></line>
+        <line x1="9.2" y1="12" x2="4" y2="12"></line><line x1="12" y1="9.2" x2="12" y2="4"></line>
+        <line x1="14" y1="10" x2="17.7" y2="6.3"></line><line x1="10" y1="10" x2="6.3" y2="6.3"></line>
+        <line x1="14" y1="14" x2="17.7" y2="17.7"></line><line x1="10" y1="14" x2="6.3" y2="17.7"></line>
+      </svg>
+      <div style="margin-top:10px;font-weight:600;">Datanex</div>
+      <small>浅色版 — 白/浅灰底 + 深海蓝图形</small>
+    </div>
+    <div class="variant dark">
+      <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#ffffff" stroke-width="1.3" stroke-linecap="round">
+        <circle cx="12" cy="12" r="2.8" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="20" cy="12" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="12" cy="20" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="4" cy="12" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="12" cy="4" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="17.7" cy="6.3" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="6.3" cy="6.3" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="17.7" cy="17.7" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="6.3" cy="17.7" r="1.4" fill="#22d3ee" stroke="none"></circle>
+        <line x1="14.8" y1="12" x2="20" y2="12"></line><line x1="12" y1="14.8" x2="12" y2="20"></line>
+        <line x1="9.2" y1="12" x2="4" y2="12"></line><line x1="12" y1="9.2" x2="12" y2="4"></line>
+        <line x1="14" y1="10" x2="17.7" y2="6.3"></line><line x1="10" y1="10" x2="6.3" y2="6.3"></line>
+        <line x1="14" y1="14" x2="17.7" y2="17.7"></line><line x1="10" y1="14" x2="6.3" y2="17.7"></line>
+      </svg>
+      <div style="margin-top:10px;font-weight:600;">Datanex</div>
+      <small>深色版 — 深墨底 + 数据青核心</small>
+    </div>
+    <div class="variant light">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#143a8c" stroke-width="1.6" stroke-linecap="round">
+        <circle cx="12" cy="12" r="2.6" fill="#143a8c" stroke="none"></circle>
+        <circle cx="20" cy="12" r="1.3" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="12" cy="20" r="1.3" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="4" cy="12" r="1.3" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="12" cy="4" r="1.3" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="17.7" cy="6.3" r="1.3" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="6.3" cy="6.3" r="1.3" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="17.7" cy="17.7" r="1.3" fill="#22d3ee" stroke="none"></circle>
+        <circle cx="6.3" cy="17.7" r="1.3" fill="#22d3ee" stroke="none"></circle>
+        <line x1="14.8" y1="12" x2="20" y2="12"></line><line x1="12" y1="14.8" x2="12" y2="20"></line>
+        <line x1="9.2" y1="12" x2="4" y2="12"></line><line x1="12" y1="9.2" x2="12" y2="4"></line>
+        <line x1="14" y1="10" x2="17.7" y2="6.3"></line><line x1="10" y1="10" x2="6.3" y2="6.3"></line>
+        <line x1="14" y1="14" x2="17.7" y2="17.7"></line><line x1="10" y1="14" x2="6.3" y2="17.7"></line>
+      </svg>
+      <small>最小尺寸 — favicon/小图标（≥16px）</small>
+    </div>
+  </div>
+
+  <h2>四、使用规则</h2>
+  <ul class="rules">
+    <li><b>安全区</b>：图形标四周至少保留自身高度 1/4 的留白，不与其它元素贴边。</li>
+    <li><b>最小尺寸</b>：屏幕展示不小于 16px，打印/物料不小于 6mm。</li>
+    <li><b>保持比例</b>：禁止拉伸、压缩、旋转或倾斜图形标。</li>
+    <li><b>颜色使用</b>：浅色底用深海蓝/白图形，深色底用数据青/白图形；禁止擅自更换为其它配色。</li>
+    <li><b>禁止特效</b>：禁止添加投影、描边、渐变叠加、发光等效果改变识别。</li>
+    <li><b>品牌名</b>：正式场合使用 <b>Datanex</b>，不缩写为 DNX、不写作 DataNex/DatanexX。</li>
+  </ul>
+
+  <div class="foot">Datanex 品牌规范 · 2026-09 · 与源码组件 DatanexMark 保持一致</div>
+</div>
+</body>
+</html>
