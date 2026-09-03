@@ -25,7 +25,7 @@
   "sidebar.group_sets": "集合",
   "sidebar.group_zsets": "有序集合",
   "sidebar.group_streams": "流",
-  "sidebar.redis_search": "搜索 key...",
+  "sidebar.redis_search": "搜索 key（支持 * ? 通配符）...",
   "sidebar.filter_objects": "筛选对象（表/视图/函数...）",
   "sidebar.filter_clear": "清除筛选",
   "sidebar.filter_hint": "支持通配符 *（任意串）与 ?（单字符），如 user* 匹配以 user 开头的对象",

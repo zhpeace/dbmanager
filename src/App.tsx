@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { invokeWithTimeout } from "@/lib/invoke"
+import { redisKeyPattern } from "@/lib/redisPattern"
 import { open, save } from "@tauri-apps/plugin-dialog"
 import { useTranslation } from "react-i18next"
 import { TopBar } from "@/components/layout/TopBar"
@@ -527,7 +528,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
     const tabKey = `${connectionId}:${database}`
     setLoading((prev) => ({ ...prev, [tabKey]: true }))
     try {
-      await redisScan(tabKey, conn, database, pattern, typeFilter)
+      await redisScan(tabKey, conn, database, redisKeyPattern(pattern), typeFilter)
     } finally {
       setLoading((prev) => ({ ...prev, [tabKey]: false }))
     }
@@ -543,7 +544,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
       const page = await invokeWithTimeout<{ keys: TableInfo[]; cursor: number }>("redis_scan_keys", {
         id: conn.id,
         database,
-        pattern: pattern || "*",
+        pattern: redisKeyPattern(pattern),
         cursor,
         count: 200,
         typeFilter: typeFilter || null,

@@ -25,7 +25,7 @@
   "sidebar.group_sets": "Sets",
   "sidebar.group_zsets": "Sorted Sets",
   "sidebar.group_streams": "Streams",
-  "sidebar.redis_search": "Search keys...",
+  "sidebar.redis_search": "Search keys (* ? wildcards)...",
   "sidebar.filter_objects": "Filter objects (tables/views/functions...)",
   "sidebar.filter_clear": "Clear filter",
   "sidebar.filter_hint": "Supports wildcards * (any) and ? (single char), e.g. user* matches names starting with user",
