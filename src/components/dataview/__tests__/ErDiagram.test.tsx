@@ -104,3 +104,42 @@ it("renders foreign key paths", async () => {
     expect(container.querySelector("path")).toBeInTheDocument()
   })
 })
+
+/** Build a schema with `total` tables where only the first one has a FK to the second. */
+function buildLargeSchema(total: number): SchemaCache {
+  const tables = Array.from({ length: total }, (_, i) => ({
+    table: `tbl_${i}`,
+    columns: [{ name: "id", data_type: "INT", nullable: false, key: "PRI", default_value: null, extra: "" }],
+    primary_keys: ["id"],
+    foreign_keys: [] as { column_name: string; ref_table: string; ref_column: string }[],
+    indexes: [],
+    views: [],
+    routines: [],
+    triggers: [],
+  }))
+  tables[0].foreign_keys = [{ column_name: "id", ref_table: "tbl_1", ref_column: "id" }]
+  return { tables }
+}
+
+it("renders only related tables when count exceeds limit", async () => {
+  vi.mocked(invoke).mockResolvedValue(buildLargeSchema(200))
+  render(<ErDiagram connectionId="c1" database="mydb" />)
+  await waitFor(() => {
+    expect(screen.getByText("tbl_0")).toBeInTheDocument()
+  })
+  expect(screen.getByText("tbl_1")).toBeInTheDocument()
+  expect(screen.queryByText("tbl_99")).not.toBeInTheDocument()
+  expect(screen.getByText(/200 tables/)).toBeInTheDocument()
+  expect(screen.getByText("Show all")).toBeInTheDocument()
+})
+
+it("shows all tables after toggling show all", async () => {
+  vi.mocked(invoke).mockResolvedValue(buildLargeSchema(200))
+  render(<ErDiagram connectionId="c1" database="mydb" />)
+  await waitFor(() => {
+    expect(screen.getByText("Show all")).toBeInTheDocument()
+  })
+  await screen.getByText("Show all").click()
+  expect(screen.getByText("tbl_150")).toBeInTheDocument()
+  expect(screen.getByText("Related only")).toBeInTheDocument()
+})

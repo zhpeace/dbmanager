@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { useTranslation } from "react-i18next"
-import type { SchemaCache } from "@/lib/db"
+import type { SchemaCache, TableSchemaInfo } from "@/lib/db"
 
 interface ErDiagramProps {
   connectionId: string
@@ -10,11 +10,14 @@ interface ErDiagramProps {
 
 interface Box { x: number; y: number; width: number; height: number }
 
-function layoutTables(schema: SchemaCache, width: number): Box[] {
+/** Above this table count, default to showing only related tables to stay usable. */
+const ER_MAX_TABLES = 120
+
+function layoutTables(tables: TableSchemaInfo[], width: number): Box[] {
   const colW = 240
   const cols = Math.max(2, Math.floor((width - 80) / colW))
   const colHeights = new Array(cols).fill(40)
-  return schema.tables.map((t) => {
+  return tables.map((t) => {
     const h = 38 + t.columns.length * 20
     const ci = colHeights.indexOf(Math.min(...colHeights))
     const x = 40 + ci * colW
@@ -24,11 +27,40 @@ function layoutTables(schema: SchemaCache, width: number): Box[] {
   })
 }
 
+/** Memoized table box so viewBox zoom/pan does not re-render every table node. */
+const TableNode = memo(function TableNode({
+  box, table, columns,
+}: {
+  box: Box; table: string; columns: TableSchemaInfo["columns"]
+}) {
+  return (
+    <g>
+      <rect x={box.x} y={box.y} width={box.width} height={box.height} rx="6" className="fill-background stroke-border" strokeWidth="1.5" />
+      <rect x={box.x} y={box.y} width={box.width} height="28" rx="6" className="fill-primary/10 stroke-border" strokeWidth="1.5" />
+      <text x={box.x + box.width / 2} y={box.y + 18} textAnchor="middle" className="fill-foreground" fontSize="12" fontWeight="600">{table}</text>
+      {columns.map((col, ci) => (
+        <text key={col.name} x={box.x + 8} y={box.y + 46 + ci * 20} className="fill-muted-foreground" fontSize="11">
+          {col.key === "PRI" ? "\u{1F511} " : ""}{col.name} : {col.data_type}
+        </text>
+      ))}
+    </g>
+  )
+})
+
+const FkPath = memo(function FkPath({ d }: { d: string }) {
+  return (
+    <path d={d} className="stroke-blue-400 fill-none" strokeWidth="1" strokeDasharray="4,2" markerEnd="url(#arrowhead)" />
+  )
+})
+
+interface ViewBox { x: number; y: number; w: number; h: number }
+
 export function ErDiagram({ connectionId, database }: ErDiagramProps) {
   const { t } = useTranslation()
   const [schema, setSchema] = useState<SchemaCache | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [showAll, setShowAll] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const [vb, setVb] = useState<ViewBox>({ x: 0, y: 0, w: 100, h: 100 })
@@ -37,10 +69,32 @@ export function ErDiagram({ connectionId, database }: ErDiagramProps) {
     startX: 0, startY: 0, vb: { x: 0, y: 0, w: 0, h: 0 }, active: false,
   })
 
-  const boxes = useMemo(() => {
-    if (!schema) return []
-    return layoutTables(schema, window.innerWidth)
+  const overLimit = !!schema && schema.tables.length > ER_MAX_TABLES
+
+  const related = useMemo(() => {
+    if (!schema) return new Set<string>()
+    const s = new Set<string>()
+    for (const tb of schema.tables) {
+      if (tb.foreign_keys.length > 0) s.add(tb.table)
+      for (const fk of tb.foreign_keys) s.add(fk.ref_table)
+    }
+    return s
   }, [schema])
+
+  const displayTables = useMemo(() => {
+    if (!schema) return []
+    if (showAll || !overLimit) return schema.tables
+    const rel = schema.tables.filter((tb) => related.has(tb.table))
+    return rel.length > 0 ? rel : schema.tables.slice(0, ER_MAX_TABLES)
+  }, [schema, showAll, overLimit, related])
+
+  const boxes = useMemo(() => layoutTables(displayTables, window.innerWidth), [displayTables])
+
+  const tableIndex = useMemo(() => {
+    const m = new Map<string, number>()
+    displayTables.forEach((tb, i) => m.set(tb.table, i))
+    return m
+  }, [displayTables])
 
   const totalW = useMemo(() => {
     if (boxes.length === 0) return 100
@@ -55,12 +109,12 @@ export function ErDiagram({ connectionId, database }: ErDiagramProps) {
   }, [connectionId, database])
 
   useEffect(() => {
-    if (!schema || schema.tables.length === 0 || !containerRef.current) return
-    const bs = layoutTables(schema, containerRef.current.clientWidth)
+    if (!schema || displayTables.length === 0 || !containerRef.current) return
+    const bs = layoutTables(displayTables, containerRef.current.clientWidth)
     const cw = Math.max(...bs.map(b => b.x + b.width)) + 80
     const ch = Math.max(...bs.map(b => b.y + b.height)) + 80
     setVb({ x: 0, y: 0, w: cw, h: ch })
-  }, [schema])
+  }, [schema, displayTables])
 
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault()
@@ -109,7 +163,21 @@ export function ErDiagram({ connectionId, database }: ErDiagramProps) {
   if (!schema || schema.tables.length === 0) return <div className="flex items-center justify-center h-full text-xs text-muted-foreground">{t('erdiagram.no_tables')}</div>
 
   return (
-    <div ref={containerRef} className="h-full overflow-hidden">
+    <div ref={containerRef} className="relative h-full overflow-hidden">
+      {overLimit && (
+        <div className="absolute top-2 left-2 z-10 flex items-center gap-2 rounded-md bg-background/95 border px-2.5 py-1 text-xs shadow-sm">
+          <span className="text-muted-foreground">
+            {t('erdiagram.table_count', { total: schema.tables.length, shown: displayTables.length })}
+          </span>
+          <button
+            type="button"
+            className="text-primary font-medium hover:underline"
+            onClick={() => setShowAll((v) => !v)}
+          >
+            {showAll ? t('erdiagram.show_related') : t('erdiagram.show_all')}
+          </button>
+        </div>
+      )}
       <svg
         ref={svgRef}
         width="100%"
@@ -127,42 +195,26 @@ export function ErDiagram({ connectionId, database }: ErDiagramProps) {
             <polygon points="0 0, 8 3, 0 6" className="fill-blue-400" />
           </marker>
         </defs>
-        {schema.tables.map((t, i) => {
-          const box = boxes[i]
-          return (
-            <g key={t.table}>
-              <rect x={box.x} y={box.y} width={box.width} height={box.height} rx="6" className="fill-background stroke-border" strokeWidth="1.5" />
-              <rect x={box.x} y={box.y} width={box.width} height="28" rx="6" className="fill-primary/10 stroke-border" strokeWidth="1.5" />
-              <text x={box.x + box.width / 2} y={box.y + 18} textAnchor="middle" className="fill-foreground" fontSize="12" fontWeight="600">{t.table}</text>
-              {t.columns.map((col, ci) => (
-                <text key={col.name} x={box.x + 8} y={box.y + 46 + ci * 20} className="fill-muted-foreground" fontSize="11">
-                  {col.key === "PRI" ? "\u{1F511} " : ""}{col.name} : {col.data_type}
-                </text>
-              ))}
-            </g>
-          )
-        })}
-        {schema.tables.flatMap((t, i) =>
-          t.foreign_keys.map((fk, fi) => {
-            const targetIdx = schema.tables.findIndex(st => st.table === fk.ref_table)
-            if (targetIdx === -1) return null
+        {displayTables.map((tb, i) => (
+          <TableNode key={tb.table} box={boxes[i]} table={tb.table} columns={tb.columns} />
+        ))}
+        {displayTables.flatMap((tb, i) =>
+          tb.foreign_keys.map((fk, fi) => {
+            const targetIdx = tableIndex.get(fk.ref_table)
+            if (targetIdx === undefined) return null
             const src = boxes[i]
             const dst = boxes[targetIdx]
-            const srcColIdx = t.columns.findIndex(c => c.name === fk.column_name)
-            const dstColIdx = schema.tables[targetIdx].columns.findIndex(c => c.name === fk.ref_column)
+            const srcColIdx = tb.columns.findIndex(c => c.name === fk.column_name)
+            const dstColIdx = displayTables[targetIdx].columns.findIndex(c => c.name === fk.ref_column)
             const x1 = src.x + src.width
             const y1 = src.y + 46 + srcColIdx * 20
             const x2 = dst.x
             const y2 = dst.y + 46 + dstColIdx * 20
             const cx = (x1 + x2) / 2
             return (
-              <path
+              <FkPath
                 key={`fk-${i}-${fi}`}
                 d={`M${x1} ${y1} Q${cx} ${y1} ${cx} ${(y1 + y2) / 2} Q${cx} ${y2} ${x2} ${y2}`}
-                className="stroke-blue-400 fill-none"
-                strokeWidth="1"
-                strokeDasharray="4,2"
-                markerEnd="url(#arrowhead)"
               />
             )
           })
@@ -171,5 +223,3 @@ export function ErDiagram({ connectionId, database }: ErDiagramProps) {
     </div>
   )
 }
-
-interface ViewBox { x: number; y: number; w: number; h: number }
