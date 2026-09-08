@@ -1,14 +1,14 @@
-# DBManager
+# Datanex
 
 A cross-platform, multi-database management and migration desktop application built with [Tauri v2](https://v2.tauri.app/).
 
 ## Features
 
-- **Multi-Database Support**: MySQL, PostgreSQL, SQLite, MongoDB, Oracle, Redis
+- **Multi-Database Support**: MySQL, PostgreSQL, SQLite, MongoDB, Oracle, Redis, Dameng
 - **SQL Editor**: Monaco-based editor with multi-tab support and query execution
 - **Schema Designer**: Visual table creation and modification (add/drop/modify/rename columns)
 - **Data Browser**: Paginated table browsing with scroll-based lazy loading
-- **ER Diagram**: Auto-layout entity-relationship visualization
+- **ER Diagram**: Auto-layout entity-relationship visualization; large schemas (>120 tables) render only foreign-key-related tables by default with a "show all" toggle
 - **Migration Engine**: Cross-database data and schema transfer with:
   - Conflict strategies (Error / Ignore / Replace)
   - Index, foreign key, view, routine, and trigger migration
@@ -18,6 +18,12 @@ A cross-platform, multi-database management and migration desktop application bu
   - Real-time log streaming
 - **Compare & Sync**: Schema comparison between databases, diff viewer, sync SQL generation
 - **Import**: File-based data import into tables
+- **Redis Tooling**: Binary-safe value browsing (HEX/ASCII/BASE64 views), wildcard key search (`*` `?` — plain text auto-matches as substring), type-filtered loading with pagination
+- **Backup & Restore**: Full database backup and restore flows
+- **Scheduled Tasks**: Recurring backup/sync jobs with a scheduler
+- **Session Monitor**: Live connection session overview
+- **Find in Table**: Quick value search across table data
+- **Licensing**: Pro activation via offline activation codes; free tier never shows activation dialogs, activated builds show a Pro badge instead of an activate button
 - **Secrets Management**: OS keyring integration (macOS Keychain, Linux Secret Service, Windows Credential Vault)
 - **Themes**: Dark / Light mode toggle
 - **i18n**: English and Chinese locales
