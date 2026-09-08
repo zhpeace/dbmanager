@@ -61,6 +61,7 @@ export function ErDiagram({ connectionId, database }: ErDiagramProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showAll, setShowAll] = useState(false)
+  const [filter, setFilter] = useState("")
   const containerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const [vb, setVb] = useState<ViewBox>({ x: 0, y: 0, w: 100, h: 100 })
@@ -83,10 +84,26 @@ export function ErDiagram({ connectionId, database }: ErDiagramProps) {
 
   const displayTables = useMemo(() => {
     if (!schema) return []
+    const kw = filter.trim().toLowerCase()
+    // 搜索模式：匹配表 + 它们的一跳外键关联表（双向）
+    if (kw) {
+      const matched = schema.tables.filter((tb) => tb.table.toLowerCase().includes(kw))
+      if (matched.length === 0) return []
+      const mset = new Set(matched.map((tb) => tb.table))
+      const hops = new Set<string>()
+      for (const tb of schema.tables) {
+        if (mset.has(tb.table)) for (const fk of tb.foreign_keys) hops.add(fk.ref_table)
+        for (const fk of tb.foreign_keys) if (mset.has(fk.ref_table)) hops.add(tb.table)
+      }
+      const keep = new Set([...mset, ...hops])
+      return schema.tables.filter((tb) => keep.has(tb.table))
+    }
     if (showAll || !overLimit) return schema.tables
     const rel = schema.tables.filter((tb) => related.has(tb.table))
-    return rel.length > 0 ? rel : schema.tables.slice(0, ER_MAX_TABLES)
-  }, [schema, showAll, overLimit, related])
+    if (rel.length === 0) return schema.tables.slice(0, ER_MAX_TABLES)
+    // 稠密大库：关联表仍超限时截断，防止渲染卡顿
+    return rel.length > ER_MAX_TABLES ? rel.slice(0, ER_MAX_TABLES) : rel
+  }, [schema, showAll, overLimit, related, filter])
 
   const boxes = useMemo(() => layoutTables(displayTables, window.innerWidth), [displayTables])
 
@@ -164,20 +181,44 @@ export function ErDiagram({ connectionId, database }: ErDiagramProps) {
 
   return (
     <div ref={containerRef} className="relative h-full overflow-hidden">
-      {overLimit && (
-        <div className="absolute top-2 left-2 z-10 flex items-center gap-2 rounded-md bg-background/95 border px-2.5 py-1 text-xs shadow-sm">
-          <span className="text-muted-foreground">
-            {t('erdiagram.table_count', { total: schema.tables.length, shown: displayTables.length })}
-          </span>
-          <button
-            type="button"
-            className="text-primary font-medium hover:underline"
-            onClick={() => setShowAll((v) => !v)}
-          >
-            {showAll ? t('erdiagram.show_related') : t('erdiagram.show_all')}
-          </button>
-        </div>
-      )}
+      <div className="absolute top-2 left-2 z-10 flex flex-wrap items-center gap-2 rounded-md bg-background/95 border px-2.5 py-1.5 text-xs shadow-sm">
+        <input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder={t('erdiagram.filter_placeholder')}
+          className="w-44 rounded border border-border bg-background px-2 py-0.5 text-xs outline-none focus:border-primary"
+        />
+        {filter.trim() ? (
+          <>
+            <span className="text-muted-foreground">
+              {t('erdiagram.filter_count', { shown: displayTables.length })}
+            </span>
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => setFilter("")}
+            >
+              ✕
+            </button>
+          </>
+        ) : overLimit ? (
+          <>
+            <span className="text-muted-foreground">
+              {t('erdiagram.table_count', { total: schema.tables.length, shown: displayTables.length })}
+            </span>
+            {!showAll && displayTables.length >= ER_MAX_TABLES && (
+              <span className="text-amber-600">{t('erdiagram.truncated')}</span>
+            )}
+            <button
+              type="button"
+              className="text-primary font-medium hover:underline"
+              onClick={() => setShowAll((v) => !v)}
+            >
+              {showAll ? t('erdiagram.show_related') : t('erdiagram.show_all')}
+            </button>
+          </>
+        ) : null}
+      </div>
       <svg
         ref={svgRef}
         width="100%"

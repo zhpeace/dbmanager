@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, fireEvent } from "@testing-library/react"
 import { invoke } from "@tauri-apps/api/core"
 import { ErDiagram } from "../ErDiagram"
 import type { SchemaCache } from "@/lib/db"
@@ -142,4 +142,48 @@ it("shows all tables after toggling show all", async () => {
   await screen.getByText("Show all").click()
   expect(screen.getByText("tbl_150")).toBeInTheDocument()
   expect(screen.getByText("Related only")).toBeInTheDocument()
+})
+
+/** Build a schema where nearly every table has a FK to the next one (dense relations). */
+function buildDenseSchema(total: number): SchemaCache {
+  const tables = Array.from({ length: total }, (_, i) => ({
+    table: `tbl_${i}`,
+    columns: [{ name: "id", data_type: "INT", nullable: false, key: "PRI", default_value: null, extra: "" }],
+    primary_keys: ["id"],
+    foreign_keys: [] as { column_name: string; ref_table: string; ref_column: string }[],
+    indexes: [],
+    views: [],
+    routines: [],
+    triggers: [],
+  }))
+  for (let i = 0; i < total - 1; i++) {
+    tables[i].foreign_keys = [{ column_name: "id", ref_table: `tbl_${i + 1}`, ref_column: "id" }]
+  }
+  return { tables }
+}
+
+it("truncates related tables when still over the limit", async () => {
+  vi.mocked(invoke).mockResolvedValue(buildDenseSchema(200))
+  render(<ErDiagram connectionId="c1" database="mydb" />)
+  await waitFor(() => {
+    expect(screen.getByText(/Too many tables/)).toBeInTheDocument()
+  })
+  // cap keeps the first 120 related tables
+  expect(screen.getByText("tbl_0")).toBeInTheDocument()
+  expect(screen.getByText("tbl_119")).toBeInTheDocument()
+  expect(screen.queryByText("tbl_150")).not.toBeInTheDocument()
+})
+
+it("filters to matched tables and their one-hop relations", async () => {
+  vi.mocked(invoke).mockResolvedValue(buildDenseSchema(200))
+  render(<ErDiagram connectionId="c1" database="mydb" />)
+  const input = await screen.findByPlaceholderText("Filter by table name…")
+  // tbl_0 has a FK to tbl_1; filtering "tbl_0" keeps both and drops the rest
+  fireEvent.change(input, { target: { value: "tbl_0" } })
+  await waitFor(() => {
+    expect(screen.getByText("tbl_0")).toBeInTheDocument()
+  })
+  expect(screen.getByText("tbl_1")).toBeInTheDocument()
+  expect(screen.queryByText("tbl_5")).not.toBeInTheDocument()
+  expect(screen.getByText(/tables matched/)).toBeInTheDocument()
 })
