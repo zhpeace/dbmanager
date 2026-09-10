@@ -417,15 +417,16 @@ function ConnectionItem({
       locatedSchemaRef.current = null
       return
     }
-    // PostgreSQL / Oracle with no explicit database connect to the database or
-    // schema named after the user (e.g. user "oushutest" → db "oushutest",
-    // user "SCOTT" → schema "SCOTT"), so the default-database locate falls back
-    // to the username. Other types require an explicit database.
+    // Oracle has no database concept like other engines: the expanded list is
+    // schemas (usernames), and the "database" field holds a service name that is
+    // never in that list. So Oracle always locates by username. PostgreSQL with
+    // no explicit database connects to the user-named database, so it also falls
+    // back to the username. Other types require an explicit database.
     const cfgDb =
-      connection.config.database ||
-      (connection.config.type === "postgresql" || connection.config.type === "oracle"
+      connection.config.type === "oracle"
         ? connection.config.user
-        : undefined)
+        : connection.config.database ||
+          (connection.config.type === "postgresql" ? connection.config.user : undefined)
     if (!cfgDb) return
     if (!databases.some((d) => d.name === cfgDb)) return
     const cfgSchema = connection.config.schema
