@@ -389,7 +389,8 @@ function ConnectionItem({
   const [redisSearch, setRedisSearch] = useState<Record<string, string>>({})
   const [redisTypeFilter, setRedisTypeFilter] = useState<Record<string, string>>({})
   const isRedis = connection.config.type === "redis"
-  const locatedRef = useRef(false)
+  const locatedRef = useRef<string | null>(null)
+  const locatedSchemaRef = useRef<string | null>(null)
 
   // When the connection is first expanded, auto-expand and focus the configured
   // default database (and schema for PostgreSQL), marking them as the default context.
@@ -399,11 +400,21 @@ function ConnectionItem({
     const cfgDb = connection.config.database
     if (!cfgDb) return
     if (!databases.some((d) => d.name === cfgDb)) return
-    if (!locatedRef.current) {
-      locatedRef.current = true
-      setExpandedDbs((prev) => new Set(prev).add(cfgDb))
-    }
     const cfgSchema = connection.config.schema
+
+    // Locate (re-run) only when the configured database/schema changed since the
+    // last locate, so editing the connection re-focuses, but manually collapsing
+    // the default database is respected afterwards.
+    if (locatedRef.current !== cfgDb || locatedSchemaRef.current !== (cfgSchema || null)) {
+      locatedRef.current = cfgDb
+      locatedSchemaRef.current = cfgSchema || null
+      setExpandedDbs((prev) => new Set(prev).add(cfgDb))
+      // Load the default database's contents (tables + schemas) right away;
+      // schema drill-down below depends on this data arriving, otherwise the
+      // schema match check can never succeed.
+      if (!tables[cfgDb] && !tableLoading[`${connId}:${cfgDb}`]) onLoadTables(cfgDb)
+    }
+
     if (cfgSchema && connection.config.type === "postgresql") {
       if ((schemas[cfgDb] || []).some((s) => s.name === cfgSchema)) {
         setExpandedSchemas((prev) => new Set(prev).add(`${cfgDb}:${cfgSchema}`))

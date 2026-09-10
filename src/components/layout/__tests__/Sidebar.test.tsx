@@ -430,3 +430,97 @@ it("auto-expands default schema and loads its tables for postgres", async () => 
   })
   expect(screen.getByText("users")).toBeInTheDocument()
 })
+
+it("loads the default database first, then drills into the schema when its data arrives", async () => {
+  const conn = makeConnection({
+    config: makeConnConfig({ type: "postgresql", database: "mydb", schema: "public" }),
+  })
+  const databases = [{ name: "mydb" }, { name: "other" }] as DatabaseInfo[]
+  const onLoadTables = vi.fn()
+
+  const { rerender } = render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+      tables={{ c1: {} }}
+      schemas={{ c1: {} }}
+      onLoadTables={onLoadTables}
+    />
+  )
+
+  await userEvent.click(screen.getByText("Test DB"))
+
+  // default database expanded even though its content is not loaded yet,
+  // and a content load was requested so schema data can arrive
+  await waitFor(() => {
+    expect(onLoadTables).toHaveBeenCalledWith("c1", "mydb")
+  })
+
+  // simulate the async load finishing: tables + schemas arrive
+  rerender(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+      tables={{ c1: { mydb: [{ name: "users", object_type: "TABLE", schema: "public" }] } }}
+      schemas={{ c1: { mydb: [{ name: "public" }, { name: "audit" }] } }}
+      onLoadTables={onLoadTables}
+    />
+  )
+
+  await waitFor(() => {
+    expect(screen.getByTitle("Default schema")).toBeInTheDocument()
+  })
+  expect(screen.getByText("users")).toBeInTheDocument()
+})
+
+it("re-locates when the configured default database changes", async () => {
+  const databases = [{ name: "mydb" }, { name: "other" }] as DatabaseInfo[]
+  const onLoadTables = vi.fn()
+
+  const firstConn = makeConnection({
+    config: makeConnConfig({ type: "postgresql", database: "mydb", schema: "public" }),
+  })
+  const { rerender } = render(
+    <Sidebar
+      {...defaultProps}
+      connections={[firstConn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+      tables={{ c1: { mydb: [{ name: "users", object_type: "TABLE", schema: "public" }] } }}
+      schemas={{ c1: { mydb: [{ name: "public" }] } }}
+      onLoadTables={onLoadTables}
+    />
+  )
+
+  await userEvent.click(screen.getByText("Test DB"))
+  await waitFor(() => {
+    expect(screen.getByTitle("Default schema")).toBeInTheDocument()
+  })
+
+  // user edits the connection: default database changes to "other" without schema
+  const editedConn = makeConnection({
+    config: makeConnConfig({ type: "postgresql", database: "other" }),
+  })
+  rerender(
+    <Sidebar
+      {...defaultProps}
+      connections={[editedConn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+      tables={{ c1: { mydb: [{ name: "users", object_type: "TABLE", schema: "public" }] } }}
+      schemas={{ c1: { mydb: [{ name: "public" }] } }}
+      onLoadTables={onLoadTables}
+    />
+  )
+
+  // collapse + re-expand the connection: the new default database is located
+  await userEvent.click(screen.getByText("Test DB"))
+  await userEvent.click(screen.getByText("Test DB"))
+  await waitFor(() => {
+    expect(onLoadTables).toHaveBeenCalledWith("c1", "other")
+  })
+})
