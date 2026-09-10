@@ -784,8 +784,23 @@ impl DbConnection {
                     std::time::Duration::from_secs(5),
                     tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
                         let conn = conn.lock().map_err(|e| format!("Oracle lock failed: {}", e))?;
-                        let mut stmt = conn.query("SELECT username FROM all_users ORDER BY username", &[])
-                            .map_err(|e| format!("Oracle query failed: {}", e))?;
+                        // Hide Oracle's built-in system schemas so the sidebar only
+                        // shows business schemas (SCOTT, custom users, ...). Keep
+                        // everything else, including the current user and any
+                        // user-created schemas.
+                        let mut stmt = conn.query(
+                            "SELECT username FROM all_users \
+                             WHERE username NOT IN (\
+                               'ANONYMOUS','APPQOSSYS','AUDSYS','CTXSYS','DBSFWUSER','DBSNMP',\
+                               'DIP','DVF','DVSYS','GGSYS','GSMADMIN_INTERNAL','GSMCATUSER',\
+                               'GSMUSER','LBACSYS','MDDATA','MDSYS','OJVMSYS','OLAPSYS',\
+                               'ORACLE_OCM','ORDDATA','ORDPLUGINS','ORDSYS','OUTLN','PDBADMIN',\
+                               'REMOTE_SCHEDULER_AGENT','SI_INFORMTN_SCHEMA','SYS','SYS$UMF',\
+                               'SYSBACKUP','SYSDG','SYSKM','SYSRAC','SYSTEM','WMSYS','XDB','XS$NULL'\
+                             ) ORDER BY username",
+                            &[],
+                        )
+                        .map_err(|e| format!("Oracle query failed: {}", e))?;
                         let mut names = Vec::new();
                         while let Some(row) = stmt.next() {
                             let row = row.map_err(|e| format!("Oracle row failed: {}", e))?;
