@@ -557,3 +557,70 @@ it("re-locates when the connection is collapsed and re-expanded", async () => {
     expect(onLoadTables).toHaveBeenCalledWith("c1", "mydb")
   })
 })
+
+// ── Expand-while-connecting & disconnect collapse ──
+
+it("expands immediately while the connection is loading (shows loading state)", async () => {
+  const conn = makeConnection()
+  render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      loading={{ c1: true }}
+    />
+  )
+
+  expect(screen.queryByText("sales_db")).not.toBeInTheDocument()
+
+  await userEvent.click(screen.getByText("Test DB"))
+
+  // While connecting, the expanded area renders with a loading indicator
+  // instead of waiting for `connected` to become true.
+  expect(
+    screen.getByText((content) => content.includes("加载中") || content.includes("Loading"))
+  ).toBeInTheDocument()
+})
+
+it("collapses the row when the connection is disconnected, so the next click expands again", async () => {
+  const conn = makeConnection()
+  const databases = [{ name: "sales_db" }] as DatabaseInfo[]
+
+  const { rerender } = render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+    />
+  )
+
+  await userEvent.click(screen.getByText("Test DB"))
+  expect(screen.getByText("sales_db")).toBeInTheDocument()
+
+  // Disconnect: the row should collapse (expanded resets), not stay "open"
+  // with an empty area that would turn the next click into a collapse.
+  rerender(
+    <Sidebar
+      {...defaultProps}
+      connections={[{ ...conn, connected: false }]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+    />
+  )
+  expect(screen.queryByText("sales_db")).not.toBeInTheDocument()
+
+  // Reconnect: still collapsed; a single click expands and shows the list.
+  rerender(
+    <Sidebar
+      {...defaultProps}
+      connections={[{ ...conn, connected: true }]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+    />
+  )
+  expect(screen.queryByText("sales_db")).not.toBeInTheDocument()
+
+  await userEvent.click(screen.getByText("Test DB"))
+  expect(screen.getByText("sales_db")).toBeInTheDocument()
+})
