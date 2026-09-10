@@ -524,3 +524,36 @@ it("re-locates when the configured default database changes", async () => {
     expect(onLoadTables).toHaveBeenCalledWith("c1", "other")
   })
 })
+
+it("re-locates when the connection is collapsed and re-expanded", async () => {
+  const conn = makeConnection({
+    config: makeConnConfig({ type: "postgresql", database: "mydb", schema: "public" }),
+  })
+  const databases = [{ name: "mydb" }, { name: "other" }] as DatabaseInfo[]
+  const onLoadTables = vi.fn()
+
+  render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+      tables={{ c1: {} }}
+      schemas={{ c1: {} }}
+      onLoadTables={onLoadTables}
+    />
+  )
+
+  await userEvent.click(screen.getByText("Test DB"))
+  await waitFor(() => {
+    expect(onLoadTables).toHaveBeenCalledWith("c1", "mydb")
+  })
+  onLoadTables.mockClear()
+
+  // collapse the connection, then re-expand: locate should run again
+  await userEvent.click(screen.getByText("Test DB"))
+  await userEvent.click(screen.getByText("Test DB"))
+  await waitFor(() => {
+    expect(onLoadTables).toHaveBeenCalledWith("c1", "mydb")
+  })
+})

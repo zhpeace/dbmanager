@@ -396,7 +396,15 @@ function ConnectionItem({
   // default database (and schema for PostgreSQL), marking them as the default context.
   // Schema drill-down retries when schema data arrives asynchronously.
   useEffect(() => {
-    if (!expanded) return
+    if (!expanded) {
+      // Reset the locate markers whenever the connection is collapsed, so that
+      // re-expanding re-locates the configured default database/schema.
+      // While the connection stays expanded, a manual collapse of the default
+      // database is still respected (markers are not reset by DB toggles).
+      locatedRef.current = null
+      locatedSchemaRef.current = null
+      return
+    }
     const cfgDb = connection.config.database
     if (!cfgDb) return
     if (!databases.some((d) => d.name === cfgDb)) return
