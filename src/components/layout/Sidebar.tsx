@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { DatanexMark } from "@/components/brand/DatanexMark"
 import {
@@ -392,6 +392,20 @@ function ConnectionItem({
   const locatedRef = useRef<string | null>(null)
   const locatedSchemaRef = useRef<string | null>(null)
 
+  // The database the app treats as the connection's default context.
+  // Oracle has no database concept: the expanded list is schemas (usernames)
+  // and the database field holds a service name never present in that list,
+  // so Oracle always locates by username. PostgreSQL with no explicit database
+  // connects to the user-named database, so it also falls back to the username.
+  // Other types require an explicit database.
+  const defaultDb = useMemo(() => {
+    if (connection.config.type === "oracle") return connection.config.user
+    return (
+      connection.config.database ||
+      (connection.config.type === "postgresql" ? connection.config.user : undefined)
+    )
+  }, [connection.config.type, connection.config.database, connection.config.user])
+
   // When the connection is disconnected (e.g. via the hover close button), the
   // database list disappears but `expanded` would otherwise stay true, so the
   // next click on the row would be interpreted as a collapse ("no visible
@@ -417,16 +431,7 @@ function ConnectionItem({
       locatedSchemaRef.current = null
       return
     }
-    // Oracle has no database concept like other engines: the expanded list is
-    // schemas (usernames), and the "database" field holds a service name that is
-    // never in that list. So Oracle always locates by username. PostgreSQL with
-    // no explicit database connects to the user-named database, so it also falls
-    // back to the username. Other types require an explicit database.
-    const cfgDb =
-      connection.config.type === "oracle"
-        ? connection.config.user
-        : connection.config.database ||
-          (connection.config.type === "postgresql" ? connection.config.user : undefined)
+    const cfgDb = defaultDb
     if (!cfgDb) return
     if (!databases.some((d) => d.name === cfgDb)) return
     const cfgSchema = connection.config.schema
@@ -451,7 +456,7 @@ function ConnectionItem({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded, databases, schemas, tables, tableLoading, connId])
+  }, [expanded, databases, schemas, tables, tableLoading, connId, defaultDb])
 
   // While filtering, only make sure databases the user has ALREADY expanded have
   // their table lists loaded, so object-name filtering can match within them.
@@ -886,7 +891,7 @@ function ConnectionItem({
                       )}
                       <Database className="h-3 w-3 shrink-0 text-amber-500" />
                       <span className="truncate min-w-0" title={db.name}>{db.name}</span>
-                      {connection.config.database === db.name && (
+                      {defaultDb === db.name && (
                         <span title={t('sidebar.default_database')}><Star className="h-3 w-3 shrink-0 fill-amber-500/30 text-amber-500" /></span>
                       )}
                     </div>

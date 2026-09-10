@@ -728,3 +728,32 @@ it("locates by username for Oracle when database is empty", async () => {
     expect(onLoadTables).toHaveBeenCalledWith("c1", "SCOTT")
   })
 })
+
+it("marks the user-named schema with the default-database star for Oracle", async () => {
+  const conn = makeConnection({
+    config: makeConnConfig({ type: "oracle", user: "SCOTT", database: "ORCLPDB1" }),
+  })
+  const databases = [{ name: "SCOTT" }, { name: "SYS" }] as DatabaseInfo[]
+
+  render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+      tables={{ c1: {} }}
+      schemas={{ c1: {} }}
+      onLoadTables={vi.fn()}
+    />
+  )
+
+  await userEvent.click(screen.getByText("Test DB"))
+
+  // The star follows the locate logic (username for Oracle), so it sits on SCOTT
+  await waitFor(() => {
+    expect(screen.getByTitle("Default database")).toBeInTheDocument()
+  })
+  const star = screen.getByTitle("Default database")
+  expect(star.closest("div")?.textContent).toContain("SCOTT")
+  expect(star.closest("div")?.textContent).not.toContain("SYS")
+})
