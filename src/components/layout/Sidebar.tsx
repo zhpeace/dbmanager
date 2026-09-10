@@ -780,10 +780,8 @@ function ConnectionItem({
           >
             {isLoading ? (
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-            ) : connection.connected ? (
-              <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")} />
             ) : (
-              <span className="w-3.5" />
+              <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform", !expanded && "-rotate-90")} />
             )}
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
               <div className={cn(
