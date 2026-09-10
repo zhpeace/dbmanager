@@ -624,3 +624,57 @@ it("collapses the row when the connection is disconnected, so the next click exp
   await userEvent.click(screen.getByText("Test DB"))
   expect(screen.getByText("sales_db")).toBeInTheDocument()
 })
+
+// ── Default database fallback to username (PostgreSQL) ──
+
+it("locates the user-named database for PostgreSQL when database is empty", async () => {
+  const conn = makeConnection({
+    config: makeConnConfig({ type: "postgresql", user: "oushutest", database: "" }),
+  })
+  const databases = [{ name: "oushutest" }, { name: "other" }] as DatabaseInfo[]
+  const onLoadTables = vi.fn()
+
+  render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+      tables={{ c1: {} }}
+      schemas={{ c1: {} }}
+      onLoadTables={onLoadTables}
+    />
+  )
+
+  await userEvent.click(screen.getByText("Test DB"))
+  await waitFor(() => {
+    expect(onLoadTables).toHaveBeenCalledWith("c1", "oushutest")
+  })
+  // The user-named database is expanded and starred as the default context
+  expect(screen.getByText("oushutest")).toBeInTheDocument()
+})
+
+it("does not fall back to username for non-PostgreSQL connections", async () => {
+  const conn = makeConnection({
+    config: makeConnConfig({ type: "mysql", user: "root", database: "" }),
+  })
+  const databases = [{ name: "root" }, { name: "other" }] as DatabaseInfo[]
+  const onLoadTables = vi.fn()
+
+  render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+      tables={{ c1: {} }}
+      schemas={{ c1: {} }}
+      onLoadTables={onLoadTables}
+    />
+  )
+
+  await userEvent.click(screen.getByText("Test DB"))
+  await waitFor(() => {
+    expect(onLoadTables).not.toHaveBeenCalledWith("c1", "root")
+  })
+})
