@@ -393,13 +393,16 @@ function ConnectionItem({
 
   // When the connection is first expanded, auto-expand and focus the configured
   // default database (and schema for PostgreSQL), marking them as the default context.
+  // Schema drill-down retries when schema data arrives asynchronously.
   useEffect(() => {
-    if (!expanded || locatedRef.current) return
+    if (!expanded) return
     const cfgDb = connection.config.database
     if (!cfgDb) return
     if (!databases.some((d) => d.name === cfgDb)) return
-    locatedRef.current = true
-    setExpandedDbs((prev) => new Set(prev).add(cfgDb))
+    if (!locatedRef.current) {
+      locatedRef.current = true
+      setExpandedDbs((prev) => new Set(prev).add(cfgDb))
+    }
     const cfgSchema = connection.config.schema
     if (cfgSchema && connection.config.type === "postgresql") {
       if ((schemas[cfgDb] || []).some((s) => s.name === cfgSchema)) {
@@ -408,7 +411,7 @@ function ConnectionItem({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expanded])
+  }, [expanded, databases, schemas, tables, tableLoading, connId])
 
   // While filtering, only make sure databases the user has ALREADY expanded have
   // their table lists loaded, so object-name filtering can match within them.
@@ -749,11 +752,11 @@ function ConnectionItem({
               {DB_DISPLAY_NAMES[connection.config.type]}
             </Badge>
             {connection.connected && (
-              <div className="hidden group-hover:flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
-                <Button variant="ghost" size="icon" className="h-5 w-5" onClick={onRefresh}>
+              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
+                <Button type="button" variant="ghost" size="icon" className="h-5 w-5" onClick={onRefresh}>
                   <Loader2 className={cn("h-3 w-3", isLoading && "animate-spin")} />
                 </Button>
-                <Button variant="ghost" size="icon" className="h-5 w-5 text-destructive" onClick={onDisconnect}>
+                <Button type="button" variant="ghost" size="icon" className="h-5 w-5 text-destructive" onClick={onDisconnect}>
                   <Unplug className="h-3 w-3" />
                 </Button>
               </div>

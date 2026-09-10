@@ -128,7 +128,7 @@
   "connection.database": "Database (optional)",
   "connection.database_placeholder": "Leave empty to show all databases",
   "connection.schema": "Schema (default)",
-  "connection.schema_placeholder": "Optional, e.g. public",
+  "connection.schema_placeholder": "Also set the database above, e.g. public",
   "connection.database_index": "Database Index",
   "connection.database_index_placeholder": "0",
   "connection.test": "Test Connection",
