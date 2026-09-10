@@ -22,6 +22,7 @@ A cross-platform, multi-database management and migration desktop application bu
 - **Backup & Restore**: Full database backup and restore flows
 - **Scheduled Tasks**: Recurring backup/sync jobs with a scheduler
 - **Default Database / Schema Focus**: connections can carry a default database (and schema for PostgreSQL/Oracle/Dameng); expanding the connection auto-expands and star-marks the configured context
+- **Oracle Schema Filtering**: the Oracle sidebar filters out built-in system schemas (SYS, SYSTEM, XDB, ...) and lists only business schemas; the default schema is matched by the connection username
 - **Session Monitor**: Live connection session overview
 - **Find in Table**: Quick value search across table data
 - **Licensing**: Pro activation via offline activation codes; free tier never shows activation dialogs, activated builds show a Pro badge instead of an activate button
