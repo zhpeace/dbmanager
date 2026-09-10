@@ -392,6 +392,18 @@ function ConnectionItem({
   const locatedRef = useRef<string | null>(null)
   const locatedSchemaRef = useRef<string | null>(null)
 
+  // When the connection is disconnected (e.g. via the hover close button), the
+  // database list disappears but `expanded` would otherwise stay true, so the
+  // next click on the row would be interpreted as a collapse ("no visible
+  // change"), requiring a second click to expand again. Collapse the row on
+  // disconnect so the next click expands + reconnects in one step.
+  useEffect(() => {
+    if (!connection.connected && expanded) {
+      setExpanded(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection.connected])
+
   // When the connection is first expanded, auto-expand and focus the configured
   // default database (and schema for PostgreSQL), marking them as the default context.
   // Schema drill-down retries when schema data arrives asynchronously.
@@ -828,7 +840,7 @@ function ConnectionItem({
         </ContextMenuContent>
       </ContextMenu>
 
-      {connection.connected && expanded && (
+      {(connection.connected || isLoading) && expanded && (
         <>
           <div className="ml-4 mt-1 space-y-0.5">
           {databases.length === 0 && !isLoading && (
