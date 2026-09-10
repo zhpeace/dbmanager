@@ -678,3 +678,28 @@ it("does not fall back to username for non-PostgreSQL connections", async () => 
     expect(onLoadTables).not.toHaveBeenCalledWith("c1", "root")
   })
 })
+
+it("locates the user-named database for Oracle when database is empty", async () => {
+  const conn = makeConnection({
+    config: makeConnConfig({ type: "oracle", user: "SCOTT", database: "" }),
+  })
+  const databases = [{ name: "SCOTT" }, { name: "SYS" }] as DatabaseInfo[]
+  const onLoadTables = vi.fn()
+
+  render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+      tables={{ c1: {} }}
+      schemas={{ c1: {} }}
+      onLoadTables={onLoadTables}
+    />
+  )
+
+  await userEvent.click(screen.getByText("Test DB"))
+  await waitFor(() => {
+    expect(onLoadTables).toHaveBeenCalledWith("c1", "SCOTT")
+  })
+})
