@@ -72,6 +72,7 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig, li
   const [user, setUser] = useState(editingConfig?.user || "root")
   const [password, setPassword] = useState(editingConfig?.password || "")
   const [database, setDatabase] = useState(editingConfig?.database || "")
+  const [schema, setSchema] = useState(editingConfig?.schema || "")
   const [filePath, setFilePath] = useState(editingConfig?.filePath || "")
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
@@ -101,6 +102,7 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig, li
     setUser(editingConfig?.user || "root")
     setPassword(editingConfig?.password || "")
     setDatabase(editingConfig?.database || "")
+    setSchema(editingConfig?.schema || "")
     setFilePath(editingConfig?.filePath || "")
     setTestResult(null)
     setTesting(false)
@@ -164,6 +166,7 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig, li
       user: isSqlite || isRedis ? undefined : user,
       password: isSqlite ? undefined : (connPassword || undefined),
       database: isSqlite ? undefined : database,
+      schema: isSqlite || !["postgresql", "oracle", "dameng"].includes(type) ? undefined : schema,
       filePath: isSqlite ? filePath : undefined,
       ...(ssh ? { ssh } : {}),
       ...(ssl ? { ssl } : {}),
@@ -316,6 +319,16 @@ export function ConnectionDialog({ open, onOpenChange, onSave, editingConfig, li
                   onChange={(e) => setDatabase(e.target.value)}
                 />
               </div>
+              {["postgresql", "oracle", "dameng"].includes(type) && (
+                <div className="grid gap-2">
+                  <Label>{t('connection.schema')}</Label>
+                  <Input
+                    placeholder={t('connection.schema_placeholder')}
+                    value={schema}
+                    onChange={(e) => setSchema(e.target.value)}
+                  />
+                </div>
+              )}
               <SshSslSections
                 sshEnabled={sshEnabled} setSshEnabled={setSshEnabled}
                 sshHost={sshHost} setSshHost={setSshHost}

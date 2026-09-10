@@ -9,6 +9,7 @@ export interface ConnectionConfig {
   user?: string
   password?: string
   database?: string
+  schema?: string
   filePath?: string
   color?: string
   ssh?: SshConfig

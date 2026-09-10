@@ -21,6 +21,7 @@ A cross-platform, multi-database management and migration desktop application bu
 - **Redis Tooling**: Binary-safe value browsing (HEX/ASCII/BASE64 views), wildcard key search (`*` `?` — plain text auto-matches as substring), type-filtered loading with pagination
 - **Backup & Restore**: Full database backup and restore flows
 - **Scheduled Tasks**: Recurring backup/sync jobs with a scheduler
+- **Default Database / Schema Focus**: connections can carry a default database (and schema for PostgreSQL/Oracle/Dameng); expanding the connection auto-expands and star-marks the configured context
 - **Session Monitor**: Live connection session overview
 - **Find in Table**: Quick value search across table data
 - **Licensing**: Pro activation via offline activation codes; free tier never shows activation dialogs, activated builds show a Pro badge instead of an activate button

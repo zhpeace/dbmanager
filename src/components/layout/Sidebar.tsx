@@ -33,6 +33,7 @@ import {
   Waves,
   Timer,
   Search,
+  Star,
   X,
 } from "lucide-react"
 import { cn, formatBytes, formatCount } from "@/lib/utils"
@@ -388,6 +389,26 @@ function ConnectionItem({
   const [redisSearch, setRedisSearch] = useState<Record<string, string>>({})
   const [redisTypeFilter, setRedisTypeFilter] = useState<Record<string, string>>({})
   const isRedis = connection.config.type === "redis"
+  const locatedRef = useRef(false)
+
+  // When the connection is first expanded, auto-expand and focus the configured
+  // default database (and schema for PostgreSQL), marking them as the default context.
+  useEffect(() => {
+    if (!expanded || locatedRef.current) return
+    const cfgDb = connection.config.database
+    if (!cfgDb) return
+    if (!databases.some((d) => d.name === cfgDb)) return
+    locatedRef.current = true
+    setExpandedDbs((prev) => new Set(prev).add(cfgDb))
+    const cfgSchema = connection.config.schema
+    if (cfgSchema && connection.config.type === "postgresql") {
+      if ((schemas[cfgDb] || []).some((s) => s.name === cfgSchema)) {
+        setExpandedSchemas((prev) => new Set(prev).add(`${cfgDb}:${cfgSchema}`))
+        if (!tables[cfgDb] && !tableLoading[`${connId}:${cfgDb}`]) onLoadTables(cfgDb)
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded])
 
   // While filtering, only make sure databases the user has ALREADY expanded have
   // their table lists loaded, so object-name filtering can match within them.
@@ -822,6 +843,9 @@ function ConnectionItem({
                       )}
                       <Database className="h-3 w-3 shrink-0 text-amber-500" />
                       <span className="truncate min-w-0" title={db.name}>{db.name}</span>
+                      {connection.config.database === db.name && (
+                        <span title={t('sidebar.default_database')}><Star className="h-3 w-3 shrink-0 fill-amber-500/30 text-amber-500" /></span>
+                      )}
                     </div>
                   </ContextMenuTrigger>
                   <ContextMenuContent>
@@ -893,6 +917,9 @@ function ConnectionItem({
                                     )}
                                     <Layers className="h-3 w-3 shrink-0 text-cyan-500" />
                                     <span className="truncate min-w-0" title={schema.name}>{schema.name}</span>
+                                    {connection.config.schema === schema.name && (
+                                      <span title={t('sidebar.default_schema')}><Star className="h-3 w-3 shrink-0 fill-cyan-500/30 text-cyan-500" /></span>
+                                    )}
                                     <span className="text-[10px] text-muted-foreground/60">({schemaObjects.length})</span>
                                   </div>
                                 </ContextMenuTrigger>

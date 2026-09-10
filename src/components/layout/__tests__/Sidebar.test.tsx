@@ -373,3 +373,60 @@ it("opens license dialog when duplicate_database clicked in free mode", async ()
   expect(onDuplicateDatabase).not.toHaveBeenCalled()
   expect(onOpenLicense).toHaveBeenCalledTimes(1)
 })
+
+// ── Default database / schema focus ──
+
+it("auto-expands and marks the configured default database", async () => {
+  const conn = makeConnection({
+    config: makeConnConfig({ database: "prod" }),
+  })
+  const databases = [{ name: "prod" }, { name: "dev" }] as DatabaseInfo[]
+
+  render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+    />
+  )
+
+  await userEvent.click(screen.getByText("Test DB"))
+
+  // prod is auto-expanded and carries the default-database star
+  await waitFor(() => {
+    expect(screen.getByTitle("Default database")).toBeInTheDocument()
+  })
+  expect(screen.getByText("prod")).toBeInTheDocument()
+  expect(screen.getByText("dev")).toBeInTheDocument()
+})
+
+it("auto-expands default schema and loads its tables for postgres", async () => {
+  const conn = makeConnection({
+    config: makeConnConfig({ type: "postgresql", database: "mydb", schema: "public" }),
+  })
+  const databases = [{ name: "mydb" }, { name: "other" }] as DatabaseInfo[]
+  const schemasData = { mydb: [{ name: "public" }, { name: "audit" }] } as Record<string, DatabaseInfo[]>
+  const tableData: TableInfo[] = [{ name: "users", object_type: "TABLE", schema: "public" }]
+  const onLoadTables = vi.fn()
+
+  render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      activeConnectionId="c1"
+      databases={{ c1: databases }}
+      schemas={{ c1: schemasData }}
+      tables={{ c1: { mydb: tableData } }}
+      onLoadTables={onLoadTables}
+    />
+  )
+
+  await userEvent.click(screen.getByText("Test DB"))
+
+  // public schema auto-expanded and marked; its tables visible
+  await waitFor(() => {
+    expect(screen.getByTitle("Default schema")).toBeInTheDocument()
+  })
+  expect(screen.getByText("users")).toBeInTheDocument()
+})
