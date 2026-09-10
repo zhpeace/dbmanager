@@ -42,8 +42,8 @@ async fn open_ssh_if_needed(
     }
 }
 
-fn kill_ssh_tunnel(state: &AppState, id: &str) {
-    let mut tunnels = state.ssh_tunnels.blocking_lock();
+async fn kill_ssh_tunnel(state: &AppState, id: &str) {
+    let mut tunnels = state.ssh_tunnels.lock().await;
     if let Some(mut child) = tunnels.remove(id) {
         let _ = child.start_kill();
     }
@@ -296,9 +296,17 @@ async fn disconnect(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    kill_ssh_tunnel(&state, &id);
+    let _ = std::fs::write(
+        "/tmp/datanex_disconnect.log",
+        format!("disconnect called {} at {}\n", id, Utc::now()),
+    );
+    kill_ssh_tunnel(&state, &id).await;
     let mut connections = state.connections.lock().await;
     connections.remove(&id);
+    let _ = std::fs::write(
+        "/tmp/datanex_disconnect.log",
+        format!("disconnect finished {} at {}\n", id, Utc::now()),
+    );
     Ok(())
 }
 

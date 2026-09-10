@@ -403,9 +403,13 @@ async function handleSelectConnection(id: string, restoreBrowse = false) {
 }
 
   async function handleDisconnect(id: string) {
+    console.log("[datanex] handleDisconnect called for", id, "at", Date.now())
     try {
       await invoke("disconnect", { id })
-    } catch {}
+      console.log("[datanex] disconnect invoke resolved at", Date.now())
+    } catch (e) {
+      console.log("[datanex] disconnect invoke failed:", e)
+    }
     const current = connectionsRef.current
     const updated = current.map((c) =>
       c.id === id ? { ...c, connected: false } : c

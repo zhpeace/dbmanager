@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DBManager 完整测试报告</title>
+<style>
+  :root {
+    --text: #1A1B1C; --sub: #6B7280; --bg: #F4F3EE; --card: #FFFFFF;
+    --border: #E4E3DD; --accent: #9EACEA; --ok: #52C41A; --warn: #FAAD14;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'PingFang SC','Microsoft YaHei',-apple-system,Segoe UI,Arial,sans-serif; color: var(--text); background: var(--bg); line-height: 1.6; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 28px 20px 48px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  .sub { color: var(--sub); font-size: 13px; margin-bottom: 20px; }
+  .banner { background: linear-gradient(135deg, rgba(82,196,26,0.12), rgba(82,196,26,0.22)); border: 1px solid rgba(82,196,26,0.4); border-radius: 12px; padding: 14px 16px; font-size: 14px; margin-bottom: 24px; }
+  .banner b { color: #2f9e44; }
+  h2 { font-size: 17px; margin: 28px 0 12px; border-left: 4px solid var(--accent); padding-left: 10px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 10px; overflow: hidden; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { background: #f0efea; font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  .pass { color: var(--ok); font-weight: 600; }
+  .warn { color: var(--warn); font-weight: 600; }
+  code { background: #ecebe6; border-radius: 4px; padding: 1px 6px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0; }
+  .card { flex: 1 1 170px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .card .n { font-size: 24px; font-weight: 700; }
+  .card .l { font-size: 12px; color: var(--sub); }
+  .note { font-size: 12.5px; color: var(--sub); margin-top: 14px; }
+  .note li { margin: 4px 0; }
+  .cmd { background: #26272b; color: #d8d8dc; border-radius: 8px; padding: 12px 14px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; overflow-x: auto; margin: 10px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>DBManager 完整测试报告</h1>
+  <div class="sub">项目：/Users/hp/Documents/opencodetest/dbmanager · 测试日期：2026-09-03 · 环境：macOS (Apple Silicon) / node v22.23.2 / cargo 1.97.0 / Playwright 1.62.1 (chromium-1234)</div>
+
+  <div class="banner">✅ <b>最终结论：全链路测试通过。</b>lint → 单测 → 构建 → Rust check → E2E 五个环节全部通过；E2E 全量 <b>160/160 通过</b>。共修复 6 个文件（含 3 个 e2e spec 按 v0.2.0 新 UI 改写），修复项均有重跑佐证。</div>
+
+  <h2>一、测试链路结果</h2>
+  <table>
+    <tr><th>环节</th><th>命令</th><th>结果</th><th>说明</th></tr>
+    <tr><td>Lint</td><td><code>npm run lint</code>（oxlint 1.71）</td><td class="pass">通过</td><td>0 errors / 2 warnings（非阻断）</td></tr>
+    <tr><td>单元测试</td><td><code>npm test</code>（vitest 4.1）</td><td class="pass">通过</td><td>27 files / 312 tests 全绿</td></tr>
+    <tr><td>前端构建</td><td><code>npm run build</code>（tsc -b &amp;&amp; vite build）</td><td class="pass">通过</td><td>仅 chunk&gt;500KB 与 INEFFECTIVE_DYNAMIC_IMPORT 非阻断警告</td></tr>
+    <tr><td>Rust 检查</td><td><code>cargo check</code>（src-tauri/）</td><td class="pass">通过</td><td>仅 vendor/sqlx-postgres 旧式警告 + get_redis_value dead_code 警告</td></tr>
+    <tr><td>E2E</td><td><code>npx playwright test</code>（16 个 spec）</td><td class="pass">通过</td><td><b>160 passed / 0 failed</b>（3.9 分钟）</td></tr>
+  </table>
+
+  <h2>二、修复明细（6 个文件）</h2>
+  <table>
+    <tr><th>文件</th><th>环节</th><th>问题</th><th>修复</th></tr>
+    <tr><td><code>src/components/layout/__tests__/Sidebar.test.tsx</code></td><td>单测</td><td>onDropObject 断言停留在旧 3 参数签名，与新增 schema 参数不一致</td><td>284、344 行断言补第 4 参数 <code>undefined</code></td></tr>
+    <tr><td><code>e2e/helpers.ts</code></td><td>E2E mock</td><td>license mock 缺 tier 字段，isPro() 全 false → 所有 Pro 功能测试失败</td><td>get_license_status / activate_license 补 <code>tier:'pro'</code> + entitlements（ddl/bulk/export/multi_connection）</td></tr>
+    <tr><td><code>e2e/toolbar.spec.ts</code></td><td>E2E 定位器</td><td>新增 Sessions 按钮破坏 theme 按钮 <code>.first()</code> 定位</td><td>72 行改为 <code>filter({ hasNotText: /./ })</code> 匹配无文本 icon 按钮</td></tr>
+    <tr><td><code>e2e/designtable.spec.ts</code></td><td>E2E 改写</td><td>v0.2.0 将 Design Table 从对话框迁移到 TableBrowser embedded tabs，旧交互失效</td><td>按新 UI 重写 6 个测试（无对话框、Add→Apply 两段式、索引列用 Popover 勾选）</td></tr>
+    <tr><td><code>e2e/tablesdesign.spec.ts</code></td><td>E2E 改写</td><td>4 个 design table 测试仍等待 <code>[role="dialog"]</code></td><td>改用 active tabpanel 定位，适配新交互与 Apply 语义</td></tr>
+    <tr><td><code>e2e/dataops.spec.ts</code></td><td>E2E 修正</td><td>Type 列改 TypeCombobox（Input 控件），getByText 匹配不到 value；DDL 为 Monaco 渲染</td><td>改为 <code>input[value="varchar"]</code>；DDL 用 <code>.view-lines toContainText</code></td></tr>
+  </table>
+
+  <h2>三、修复过程中的关键排查结论</h2>
+  <ul>
+    <li><b>根因 A（license mock 回归）</b>：提交 7c4bf31 将 <code>isPro()</code> 改为要求 <code>status.tier === 'pro'</code>，mock 未同步 → Transfer/Backup/Import/Design 等 Pro 功能全部失败。</li>
+    <li><b>根因 B（Design Table 交互迁移）</b>：提交 ea17d97 把 Design Table 从独立对话框改为数据浏览 tab 的 columns/indexes/fks/ddl 子视图，<code>handleDesignTable</code> 现在调用 <code>openTableTab(..., "columns")</code>，原 DesignTableDialog 组件已删除。新交互为两段式：Add 加入本地列表 → Apply 才提交 DDL（经 runStructDdl 生成 alter_table_add/drop/modify、create/drop_index、add/drop_foreign_key 等步骤）。</li>
+    <li><b>测试语义修正</b>：Apply 会触发 loadSchema 从后端重载，故"行/列表可见"断言置于 Apply 前，DDL 调用断言置于 Apply 后。</li>
+  </ul>
+
+  <h2>四、E2E 修复前后对比</h2>
+  <div class="cards">
+    <div class="card"><div class="n">105 → 160</div><div class="l">E2E 通过数（首轮 → 最终）</div></div>
+    <div class="card"><div class="n">55 → 0</div><div class="l">E2E 失败数（首轮 → 最终）</div></div>
+    <div class="card"><div class="n">312 / 312</div><div class="l">单元测试通过</div></div>
+    <div class="card"><div class="n">5 / 5</div><div class="l">测试环节全绿</div></div>
+  </div>
+
+  <h2>五、残留项与备注</h2>
+  <ul class="note">
+    <li><span class="warn">●</span> lint 2 个 warnings：<code>CreateTableDialog.tsx:16</code> COMMON_TYPES only-export-components、<code>highlight.ts:85</code> no-useless-escape（非阻断，可后续清理）。</li>
+    <li><span class="warn">●</span> build 警告：单 chunk &gt;500KB、INEFFECTIVE_DYNAMIC_IMPORT（性能优化项，不影响构建）。</li>
+    <li><span class="warn">●</span> cargo 警告：vendor/sqlx-postgres 4 个旧式生命周期警告、<code>src/db/mod.rs:2142</code> get_redis_value dead_code（依赖版本与未用函数，非错误）。</li>
+    <li><span class="note">i</span> 会话监控 + PG schema 语义改动（App.tsx/Sidebar.tsx/TopBar.tsx/db.ts/lib.rs/types.ts/SessionMonitor.tsx）为工作区未提交的开发中内容，本次测试未触碰其业务逻辑；测试修复也均在工作区，未提交 git。</li>
+  </ul>
+
+  <h2>六、复跑命令</h2>
+  <div class="cmd">cd /Users/hp/Documents/opencodetest/dbmanager<br>npm run lint        # 静态检查<br>npm test            # 单元测试（312 个）<br>npm run build       # 前端构建<br>cd src-tauri &amp;&amp; cargo check   # Rust 检查<br>cd .. &amp;&amp; npx playwright test   # E2E 全量（约 4-6 分钟）</div>
+</div>
+</body>
+</html>

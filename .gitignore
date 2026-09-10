@@ -55,3 +55,4 @@ Desktop.ini
 
 # Docker compose overrides
 docker-compose.override.yml
+test-results/
