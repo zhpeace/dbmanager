@@ -2030,9 +2030,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(app_state)
         .menu(|app| {
-            // Minimal macOS menu bar: keep the app menu (About / Quit, which
-            // macOS requires) and the Edit menu (so clipboard shortcuts keep
-            // working in native inputs); drop the empty File/View/Window/Help.
+            // Minimal macOS menu bar: only the app menu (About / Quit) remains.
             use tauri::menu::{Menu, PredefinedMenuItem, Submenu};
             let app_menu = Submenu::with_items(
                 app,
@@ -2044,21 +2042,7 @@ pub fn run() {
                     &PredefinedMenuItem::quit(app, None)?,
                 ],
             )?;
-            let edit_menu = Submenu::with_items(
-                app,
-                "Edit",
-                true,
-                &[
-                    &PredefinedMenuItem::undo(app, None)?,
-                    &PredefinedMenuItem::redo(app, None)?,
-                    &PredefinedMenuItem::separator(app)?,
-                    &PredefinedMenuItem::cut(app, None)?,
-                    &PredefinedMenuItem::copy(app, None)?,
-                    &PredefinedMenuItem::paste(app, None)?,
-                    &PredefinedMenuItem::select_all(app, None)?,
-                ],
-            )?;
-            Menu::with_items(app, &[&app_menu, &edit_menu])
+            Menu::with_items(app, &[&app_menu])
         })
         .setup(|app| {
             if cfg!(debug_assertions) {

@@ -38,7 +38,7 @@ A cross-platform, multi-database management and migration desktop application bu
 - **Secrets Management**: OS keyring integration (macOS Keychain, Linux Secret Service, Windows Credential Vault)
 - **Themes**: Dark / Light mode toggle
 - **i18n**: English and Chinese locales
-- **Minimal macOS menu bar**: only the app menu (About / Quit) and the Edit menu (undo/redo/cut/copy/paste/select-all for clipboard shortcuts) remain; the empty File/View/Window/Help menus are removed
+- **Minimal macOS menu bar**: only the app menu (About / Quit) remains; the default Edit/File/View/Window/Help menus are removed
 
 ## Quick Start
 
