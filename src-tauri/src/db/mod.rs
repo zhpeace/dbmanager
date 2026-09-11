@@ -39,6 +39,7 @@ pub struct AppState {
     pub scheduler: scheduler::SchedulerManager,
     pub ssh_tunnels: tokio::sync::Mutex<HashMap<String, tokio::process::Child>>,
     pub transfer_cancels: tokio::sync::Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
+    pub db_cache: tokio::sync::Mutex<HashMap<String, (std::time::Instant, Vec<DatabaseInfo>)>>,
 }
 
 impl AppState {
@@ -51,6 +52,7 @@ impl AppState {
             scheduler: scheduler::SchedulerManager::new(Vec::new()),
             ssh_tunnels: tokio::sync::Mutex::new(HashMap::new()),
             transfer_cancels: tokio::sync::Mutex::new(HashMap::new()),
+            db_cache: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -782,8 +784,13 @@ impl DbConnection {
             }
             DbConnection::Oracle(conn) => {
                 let conn = conn.clone();
+                // The Oracle connection is a single Mutex shared by every
+                // operation (get_tables etc.). A slow dictionary query can hold
+                // the lock longer than a short timeout, which made the sidebar
+                // succeed while the migration dialog fell back to ["ORCL"].
+                // Use a generous timeout so the schema list actually arrives.
                 let result = tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
+                    std::time::Duration::from_secs(30),
                     tokio::task::spawn_blocking(move || -> Result<Vec<String>, String> {
                         let conn = conn.lock().map_err(|e| format!("Oracle lock failed: {}", e))?;
                         // Hide Oracle's built-in system schemas so the sidebar only
@@ -1146,58 +1153,95 @@ impl DbConnection {
             DbConnection::Oracle(conn) => {
                 let conn = conn.clone();
                 let database = database.to_string();
-                let tables = tokio::task::spawn_blocking(move || {
-                    let conn = conn.lock().map_err(|e| e.to_string())?;
-                    let owner = database.to_uppercase();
-                    let sql = format!(
-                        "SELECT table_name, 'TABLE' FROM all_tables WHERE owner = '{}' \
-                         UNION ALL \
-                         SELECT view_name, 'VIEW' FROM all_views WHERE owner = '{}' \
-                         UNION ALL \
-                         SELECT object_name, object_type FROM all_procedures WHERE owner = '{}' AND object_type IN ('FUNCTION','PROCEDURE') \
-                         UNION ALL \
-                         SELECT trigger_name, 'TRIGGER' FROM all_triggers WHERE owner = '{}' \
-                         ORDER BY 2, 1",
-                        owner.replace('\'', "''"),
-                        owner.replace('\'', "''"),
-                        owner.replace('\'', "''"),
-                        owner.replace('\'', "''"),
-                    );
-                    let mut stmt = conn.query(&sql, &[]).map_err(|e| e.to_string())?;
-                    let mut result: Vec<TableInfo> = Vec::new();
-                    while let Some(row) = stmt.next() {
-                        let row = row.map_err(|e| e.to_string())?;
-                        let name = row.get::<usize, String>(0).unwrap_or_default();
-                        let otype = row.get::<usize, String>(1).unwrap_or_default();
-                        let (size_bytes, row_count) = if otype == "TABLE" {
-                            let size_q = format!(
-                                "SELECT COALESCE((SELECT SUM(bytes) FROM user_segments WHERE segment_name = :1 AND segment_type = 'TABLE'), 0), \
-                                        COALESCE((SELECT num_rows FROM user_tables WHERE table_name = :1), 0) FROM dual"
-                            );
-                            let mut size_stmt = conn.query(&size_q, &[&name]).map_err(|e| e.to_string())?;
-                            let mut size_bytes = None;
-                            let mut row_count = None;
-                            while let Some(srow) = size_stmt.next() {
-                                let srow = srow.map_err(|e| e.to_string())?;
-                                size_bytes = srow.get::<usize, f64>(0).ok().map(|v| v.max(0.0) as u64);
-                                row_count = srow.get::<usize, f64>(1).ok().map(|v| v.max(0.0) as i64);
+                // Oracle connections share a single Mutex with every other
+                // operation. A long dictionary walk here blocked get_databases
+                // (the migration dialog schema dropdown timed out and fell back
+                // to ["ORCL"]). Cap this with a timeout and batch the per-table
+                // size/row-count lookups instead of the previous N+1 queries.
+                let tables = tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    tokio::task::spawn_blocking(move || -> Result<Vec<TableInfo>, String> {
+                        let conn = conn.lock().map_err(|e| e.to_string())?;
+                        let owner = database.to_uppercase();
+                        let mut size_map: HashMap<String, u64> = HashMap::new();
+                        let mut count_map: HashMap<String, i64> = HashMap::new();
+                        if let Ok(mut size_stmt) = conn.query(
+                            "SELECT segment_name, SUM(bytes) FROM user_segments \
+                             WHERE segment_type = 'TABLE' GROUP BY segment_name",
+                            &[],
+                        ) {
+                            while let Some(row) = size_stmt.next() {
+                                let row = row.map_err(|e| e.to_string())?;
+                                if let (Ok(n), Ok(b)) = (
+                                    row.get::<usize, String>(0),
+                                    row.get::<usize, f64>(1),
+                                ) {
+                                    size_map.insert(n, b.max(0.0) as u64);
+                                }
                             }
-                            (size_bytes, row_count)
-                        } else {
-                            (None, None)
-                        };
-                        result.push(TableInfo {
-                            name,
-                            object_type: otype,
-                            schema: Some(database.clone()),
-                            size_bytes,
-                            row_count,
-                        ttl: None,
-                        });
+                        }
+                        if let Ok(mut cnt_stmt) = conn.query(
+                            "SELECT table_name, num_rows FROM user_tables",
+                            &[],
+                        ) {
+                            while let Some(row) = cnt_stmt.next() {
+                                let row = row.map_err(|e| e.to_string())?;
+                                if let (Ok(n), Ok(c)) = (
+                                    row.get::<usize, String>(0),
+                                    row.get::<usize, f64>(1),
+                                ) {
+                                    count_map.insert(n, c.max(0.0) as i64);
+                                }
+                            }
+                        }
+                        let sql = format!(
+                            "SELECT table_name, 'TABLE' FROM all_tables WHERE owner = '{}' \
+                             UNION ALL \
+                             SELECT view_name, 'VIEW' FROM all_views WHERE owner = '{}' \
+                             UNION ALL \
+                             SELECT object_name, object_type FROM all_procedures WHERE owner = '{}' AND object_type IN ('FUNCTION','PROCEDURE') \
+                             UNION ALL \
+                             SELECT trigger_name, 'TRIGGER' FROM all_triggers WHERE owner = '{}' \
+                             ORDER BY 2, 1",
+                            owner.replace('\'', "''"),
+                            owner.replace('\'', "''"),
+                            owner.replace('\'', "''"),
+                            owner.replace('\'', "''"),
+                        );
+                        let mut stmt = conn.query(&sql, &[]).map_err(|e| e.to_string())?;
+                        let mut result: Vec<TableInfo> = Vec::new();
+                        while let Some(row) = stmt.next() {
+                            let row = row.map_err(|e| e.to_string())?;
+                            let name = row.get::<usize, String>(0).unwrap_or_default();
+                            let otype = row.get::<usize, String>(1).unwrap_or_default();
+                            let (size_bytes, row_count) = if otype == "TABLE" {
+                                (size_map.get(&name).copied(), count_map.get(&name).copied())
+                            } else {
+                                (None, None)
+                            };
+                            result.push(TableInfo {
+                                name,
+                                object_type: otype,
+                                schema: Some(database.clone()),
+                                size_bytes,
+                                row_count,
+                                ttl: None,
+                            });
+                        }
+                        Ok(result)
+                    })
+                )
+                .await;
+                match tables {
+                    Ok(Ok(Ok(t))) => Ok(t),
+                    Ok(Ok(Err(e))) => return Err(e),
+                    Ok(Err(join_err)) => {
+                        return Err(format!("Oracle get_tables join failed: {}", join_err));
                     }
-                    Ok(result)
-                }).await.map_err(|e| e.to_string())?;
-                tables
+                    Err(_) => {
+                        return Err("Oracle get_tables timed out".to_string());
+                    }
+                }
             }
             DbConnection::Redis(conn) => {
                 let mut conn = conn.clone();

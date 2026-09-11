@@ -372,7 +372,25 @@ async fn get_databases(
             DbConnection::Redis(c) => DbConnection::Redis(c.clone()),
         })?
     };
-    conn.get_databases().await
+    let is_oracle = matches!(conn, DbConnection::Oracle(_));
+    // Oracle schema lists are expensive to fetch and the single shared
+    // connection lock can time out the query while get_tables is walking the
+    // dictionary. Cache the result per connection for 60s so the sidebar and
+    // the migration dialog both get an instant answer after the first load.
+    if is_oracle {
+        let cache = state.db_cache.lock().await;
+        if let Some((ts, dbs)) = cache.get(&id) {
+            if ts.elapsed() < std::time::Duration::from_secs(60) {
+                return Ok(dbs.clone());
+            }
+        }
+    }
+    let dbs = conn.get_databases().await?;
+    if is_oracle {
+        let mut cache = state.db_cache.lock().await;
+        cache.insert(id, (std::time::Instant::now(), dbs.clone()));
+    }
+    Ok(dbs)
 }
 
 #[tauri::command]
@@ -2006,6 +2024,7 @@ pub fn run() {
         scheduler: db::scheduler::SchedulerManager::new(initial_tasks),
         ssh_tunnels: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         transfer_cancels: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        db_cache: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     };
 
     tauri::Builder::default()
