@@ -494,7 +494,15 @@ function handleDatabaseClick(database: string, connectionId: string) {
   if (tb.browse?.table) return
   setTabs((prev) =>
     prev.map((t2) =>
-      t2.id === currentId ? { ...t2, browse: { connectionId, database, table: "" } } : t2
+      t2.id === currentId
+        ? {
+            ...t2,
+            browse: { connectionId, database, table: "" },
+            // Keep the tab's per-connection database map in sync so the
+            // top bar / editor reflect the database picked in the sidebar.
+            database: { ...t2.database, [connectionId]: database },
+          }
+        : t2
     )
   )
 }
@@ -1323,7 +1331,13 @@ function handleDatabaseClick(database: string, connectionId: string) {
   const tabConnId = activeTabConnectionId()
   const tabDbs = activeTab()?.database
   const activeConnForTab = connections.find((c) => c.id === tabConnId)
-  const currentDatabase = (tabConnId && tabDbs ? tabDbs[tabConnId] : undefined) ?? activeConnForTab?.config.database ?? null
+  const currentDatabase = (activeBrowse?.database && activeBrowse.connectionId === activeConnectionId
+    ? activeBrowse.database
+    : (activeConnectionId && activeTab()?.database ? activeTab()!.database![activeConnectionId] : undefined) ?? activeConnection?.config.database ?? null)
+  // The editor runs against the tab's *bound* connection, so its database
+  // selector follows that connection's selection (not the global browse
+  // context shown in the top bar).
+  const editorCurrentDb = (tabConnId && tabDbs ? tabDbs[tabConnId] : undefined) ?? activeConnForTab?.config.database ?? null
   const connectedConnectionOptions = connections
     .filter((c) => c.connected)
     .map((c) => ({ id: c.id, label: c.config.name || c.config.host || c.config.type, color: c.config.color }))
@@ -1608,7 +1622,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
                         value={activeTab()?.sql || ""}
                         onChange={setActiveTabSql}
                         connectionId={tabConnId}
-                        currentDatabase={currentDatabase}
+                        currentDatabase={editorCurrentDb}
                         databases={databases[tabConnId || ""] || []}
                         onChangeDatabase={handleDatabaseChange}
                         dbType={connDbType(tabConnId)}
