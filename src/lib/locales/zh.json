@@ -494,5 +494,14 @@
   "task.summary_success": "完成 {{done}}/{{total}} 表",
   "task.summary_error": "完成 {{done}}/{{total}} 表 · {{errs}} 个错误",
   "task.summary_cancelled": "已取消 ({{done}}/{{total}})",
-  "task.summary_running": "{{done}}/{{total}} 表"
+  "task.summary_running": "{{done}}/{{total}} 表",
+  "task.resume": "恢复",
+  "task.col_done": "已完成",
+  "task.col_failed": "失败",
+  "task.col_elapsed": "耗时",
+  "task.filter_all": "全部",
+  "task.filter_errors": "仅看失败",
+  "task.filter_tables": "按表统计",
+  "task.logs_empty": "暂无日志",
+  "task.logs_no_error": "无失败记录"
 }

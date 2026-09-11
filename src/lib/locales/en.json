@@ -494,5 +494,14 @@
   "task.summary_success": "Done {{done}}/{{total}} tables",
   "task.summary_error": "Done {{done}}/{{total}} tables · {{errs}} errors",
   "task.summary_cancelled": "Cancelled ({{done}}/{{total}})",
-  "task.summary_running": "{{done}}/{{total}} tables"
+  "task.summary_running": "{{done}}/{{total}} tables",
+  "task.resume": "Resume",
+  "task.col_done": "Done",
+  "task.col_failed": "Failed",
+  "task.col_elapsed": "Elapsed",
+  "task.filter_all": "All",
+  "task.filter_errors": "Errors only",
+  "task.filter_tables": "By table",
+  "task.logs_empty": "No logs yet",
+  "task.logs_no_error": "No failures"
 }

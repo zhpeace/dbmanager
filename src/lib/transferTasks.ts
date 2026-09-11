@@ -28,6 +28,13 @@ export interface TransferTask {
   finishedAt?: number
   /** [sourceId, targetId] —— 迁移期间被锁定的连接 */
   lockedConnections: [string, string]
+  /** 断点上下文：取消/部分失败后可从任务中心直接恢复 */
+  checkpoint: {
+    sourceId: string
+    sourceDb: string
+    targetId: string
+    targetDb: string
+  } | null
 }
 
 let tasks: TransferTask[] = []
@@ -122,6 +129,20 @@ export async function startTransferTask(p: StartTransferParams): Promise<void> {
     logs: [],
     startedAt: Date.now(),
     lockedConnections: [p.opts.source_id, p.opts.target_id],
+    checkpoint: p.checkpoint,
+  }
+  // 同断点上下文的历史已取消任务被新任务取代（恢复/重新开始后不再堆积重复记录）
+  if (p.checkpoint) {
+    const cp = p.checkpoint
+    tasks = tasks.filter((t) => {
+      if (t.status !== "cancelled" || !t.checkpoint) return true
+      return !(
+        t.checkpoint.sourceId === cp.sourceId &&
+        t.checkpoint.sourceDb === cp.sourceDb &&
+        t.checkpoint.targetId === cp.targetId &&
+        t.checkpoint.targetDb === cp.targetDb
+      )
+    })
   }
   tasks = [task, ...tasks].slice(0, 50)
   notify()

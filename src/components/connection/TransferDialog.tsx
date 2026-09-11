@@ -11,14 +11,23 @@ import { Loader2, ArrowRight, XCircle, ChevronDown, Plus, Trash2, Undo2 } from "
 import type { Connection, DatabaseInfo, TableInfo, TransferOptions, ColumnMapping, CheckpointState } from "@/lib/db"
 import { getCheckpoint, clearCheckpoint, getConnectionSecret } from "@/lib/db"
 import { startTransferTask, isConnectionBusy } from "@/lib/transferTasks"
+import { launchTransferAnimation, TRANSFER_START_BTN_ID } from "@/lib/transferAnimation"
 
 interface TransferDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   connections: Connection[]
+  /** 从任务中心「恢复」取消任务时预填的源/目标连接与库 */
+  resumeRequest?: {
+    sourceId: string
+    sourceDb: string
+    targetId: string
+    targetDb: string
+    nonce: number
+  } | null
 }
 
-export function TransferDialog({ open, onOpenChange, connections }: TransferDialogProps) {
+export function TransferDialog({ open, onOpenChange, connections, resumeRequest }: TransferDialogProps) {
   const { t } = useTranslation()
   const connected = connections.filter((c) => c.connected)
 
@@ -97,6 +106,52 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
       setCheckpoint(null)
     }
   }, [open, sourceId, sourceDb, targetId, targetDb])
+
+  // 任务中心「恢复」入口：按断点上下文预填连接/库并加载表
+  useEffect(() => {
+    if (!open || !resumeRequest) return
+    const rq = resumeRequest
+    ;(async () => {
+      setSourceId(rq.sourceId)
+      setTargetId(rq.targetId)
+      setSelectedTables([])
+      setSelectAll(false)
+      setCheckpoint(null)
+      try {
+        const sdbs: DatabaseInfo[] = await invoke("get_databases", { id: rq.sourceId })
+        setSourceDbs(sdbs)
+      } catch {}
+      try {
+        const tdbs: DatabaseInfo[] = await invoke("get_databases", { id: rq.targetId })
+        setTargetDbs(tdbs)
+      } catch {}
+      setSourceDb(rq.sourceDb)
+      setTargetDb(rq.targetDb)
+      const srcConn = connected.find((c) => c.id === rq.sourceId)
+      if (srcConn) {
+        try { await ensureDatabase(srcConn, rq.sourceDb) } catch {}
+      }
+      const tgtConn = connected.find((c) => c.id === rq.targetId)
+      if (tgtConn) {
+        try { await ensureDatabase(tgtConn, rq.targetDb) } catch {}
+      }
+      try {
+        const tables: TableInfo[] = await invoke("get_tables", { id: rq.sourceId, database: rq.sourceDb })
+        const filtered = tables.filter((t) => t.object_type === "TABLE" || t.object_type === "BASE TABLE" || t.object_type === "COLLECTION")
+        setSourceTables(filtered)
+        // 自动勾选未完成的表，使「继续」可直接生效（断点已完成表将被后端跳过）
+        try {
+          const cp = await getCheckpoint(rq.sourceId, rq.sourceDb, rq.targetId, rq.targetDb)
+          const done = new Set(cp?.completed_tables ?? [])
+          const pending = filtered.filter((t) => !done.has(t.name)).map((t) => t.name)
+          setSelectedTables(pending)
+          setSelectAll(pending.length > 0 && pending.length === filtered.length)
+        } catch {
+          setSelectedTables(filtered.map((t) => t.name))
+        }
+      } catch {}
+    })()
+  }, [open, resumeRequest])
 
   const handleSourceChange = async (id: string) => {
     setSourceId(id)
@@ -183,6 +238,7 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
   }
 
   const handleTransfer = async (resume = false) => {
+    if (starting) return
     if (!sourceId || !targetId || !sourceDb || !targetDb || selectedTables.length === 0) return
     if (isConnectionBusy(sourceId) || isConnectionBusy(targetId)) {
       setBusyError(true)
@@ -226,15 +282,21 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
     }
 
     const taskId = crypto.randomUUID()
+    // 关闭对话框前捕获「开始迁移」按钮位置，用于投递动画起点
+    const startBtn = document.getElementById(TRANSFER_START_BTN_ID)
+    const startRect = startBtn ? startBtn.getBoundingClientRect() : null
     onOpenChange(false)
     try {
-      await startTransferTask({
+      // startTransferTask 同步创建任务（busy 竞态时同步抛错，动画不播）
+      const p = startTransferTask({
         taskId,
         opts,
         sourceLabel,
         targetLabel,
         checkpoint: { sourceId, sourceDb, targetId, targetDb },
       })
+      launchTransferAnimation(startRect)
+      await p
     } catch (e: any) {
       if (String(e).includes("connection_busy")) {
         setBusyError(true)
@@ -353,7 +415,7 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                       </span>
                     </div>
                     <div className="flex gap-1">
-                      <Button size="sm" variant="outline" className="h-7 text-[10px]" onClick={() => handleTransfer(true)}>
+                      <Button size="sm" variant="outline" className="h-7 text-[10px]" disabled={starting} onClick={() => handleTransfer(true)}>
                         {t('transfer.resume')}
                       </Button>
                       <Button size="sm" variant="ghost" className="h-7 text-[10px]" onClick={async () => {
@@ -548,6 +610,7 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
               <DialogFooter className="gap-2">
                 <Button variant="outline" onClick={() => onOpenChange(false)}>{t('transfer.cancel')}</Button>
                 <Button
+                  id={TRANSFER_START_BTN_ID}
                   onClick={() => handleTransfer(false)}
                   disabled={!sourceId || !targetId || !sourceDb || !targetDb || selectedTables.length === 0 || starting}
                 >

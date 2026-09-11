@@ -6,6 +6,7 @@ import {
   startTransferTask,
   __resetTransferTasksForTest,
 } from "@/lib/transferTasks"
+import { TRANSFER_ARRIVED_EVENT } from "@/lib/transferAnimation"
 
 const baseOpts = {
   source_id: "s1",
@@ -117,4 +118,86 @@ it("shows a finished error task with logs", async () => {
   // expand to see the error detail
   await user.click(screen.getByText(/MySQL/))
   expect(screen.getAllByText(/Failed to create table 'b'/).length).toBeGreaterThan(0)
+})
+
+it("shows a Resume action for a cancelled task with checkpoint and dispatches resume", async () => {
+  const user = userEvent.setup()
+  let rejectTransfer: (v: unknown) => void
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === "transfer_data") {
+      return new Promise((_, rej) => { rejectTransfer = rej })
+    }
+    return null
+  })
+
+  const p = startTransferTask({
+    taskId: "t1",
+    opts: baseOpts as never,
+    sourceLabel: "MySQL · db1",
+    targetLabel: "PG · db2",
+    checkpoint: { sourceId: "s1", sourceDb: "db1", targetId: "t1", targetDb: "db2" },
+  })
+  await waitFor(() => expect(rejectTransfer).toBeDefined())
+  rejectTransfer!("Transfer cancelled")
+  await p
+
+  render(<TaskCenter />)
+  await user.click(screen.getByRole("button", { name: /Tasks/i }))
+
+  const onResume = vi.fn()
+  window.addEventListener("datanex:open-transfer-resume", onResume)
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: /Resume/i })).toBeInTheDocument()
+  })
+  await user.click(screen.getByRole("button", { name: /Resume/i }))
+  expect(onResume).toHaveBeenCalledTimes(1)
+  const detail = onResume.mock.calls[0][0].detail
+  expect(detail).toEqual({ sourceId: "s1", sourceDb: "db1", targetId: "t1", targetDb: "db2" })
+  window.removeEventListener("datanex:open-transfer-resume", onResume)
+})
+
+it("expands a running task to show stats and log viewer", async () => {
+  const user = userEvent.setup()
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === "transfer_data") {
+      return new Promise(() => {})
+    }
+    return null
+  })
+
+  const p = startTransferTask({
+    taskId: "t3",
+    opts: baseOpts as never,
+    sourceLabel: "MySQL · db1",
+    targetLabel: "PG · db2",
+    checkpoint: null,
+  })
+
+  render(<TaskCenter />)
+  await user.click(screen.getByRole("button", { name: /Tasks/i }))
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: /Cancel task/i })).toBeInTheDocument()
+  })
+
+  // expand running card -> stats + log tabs
+  await user.click(screen.getByText(/MySQL/))
+  expect(screen.getByText("Done")).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: /Errors only/i })).toBeInTheDocument()
+  expect(screen.getByRole("button", { name: /By table/i })).toBeInTheDocument()
+  expect(screen.getByText(/No logs yet/)).toBeInTheDocument()
+
+  // switch to errors-only tab
+  await user.click(screen.getByRole("button", { name: /Errors only/i }))
+  expect(screen.getByText(/No failures/)).toBeInTheDocument()
+
+  // cleanup: reject so the promise settles
+  vi.mocked(invoke).mockReset()
+})
+
+it("opens the task center when the transfer-arrived event fires", async () => {
+  render(<TaskCenter />)
+  fireEvent(window, new CustomEvent(TRANSFER_ARRIVED_EVENT))
+  await waitFor(() => {
+    expect(screen.getByText(/No tasks yet/)).toBeInTheDocument()
+  })
 })

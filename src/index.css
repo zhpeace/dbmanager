@@ -79,3 +79,13 @@ body {
   width: 100% !important;
   min-width: 0 !important;
 }
+
+/* 任务中心徽标弹跳（投递动画到达时） */
+@keyframes transfer-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.7); }
+  100% { transform: scale(1); }
+}
+.transfer-pop {
+  animation: transfer-pop 0.45s ease-out;
+}

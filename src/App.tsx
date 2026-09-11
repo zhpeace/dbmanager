@@ -187,6 +187,13 @@ function AppContent() {
   }, [bottomPanelHeight])
   const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
+  const [transferResumeRequest, setTransferResumeRequest] = useState<{
+    sourceId: string
+    sourceDb: string
+    targetId: string
+    targetDb: string
+    nonce: number
+  } | null>(null)
   const [compareDialogOpen, setCompareDialogOpen] = useState(false)
   const [backupDialogOpen, setBackupDialogOpen] = useState(false)
   const [restoreDialogOpen, setRestoreDialogOpen] = useState(false)
@@ -901,6 +908,18 @@ function handleDatabaseClick(database: string, connectionId: string) {
     setTransferDialogOpen(true)
   }
 
+  // 任务中心「恢复」入口：预填迁移对话框的连接/库
+  useEffect(() => {
+    const onResume = (e: Event) => {
+      const detail = (e as CustomEvent<{ sourceId: string; sourceDb: string; targetId: string; targetDb: string }>).detail
+      if (!detail) return
+      setTransferResumeRequest({ ...detail, nonce: Date.now() })
+      setTransferDialogOpen(true)
+    }
+    window.addEventListener("datanex:open-transfer-resume", onResume)
+    return () => window.removeEventListener("datanex:open-transfer-resume", onResume)
+  }, [])
+
   function handleOpenCompare() {
     setCompareDialogOpen(true)
   }
@@ -1494,6 +1513,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
         open={transferDialogOpen}
         onOpenChange={setTransferDialogOpen}
         connections={connections}
+        resumeRequest={transferResumeRequest}
       />
       <CompareDialog
         open={compareDialogOpen}
