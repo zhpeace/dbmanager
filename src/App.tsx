@@ -488,10 +488,7 @@ async function handleSelectConnection(id: string, restoreBrowse = false) {
   }
 
 function handleDatabaseClick(database: string, connectionId: string) {
-  const tb = activeTab()
-  if (!tb) return
   const currentId = activeTabIdRef.current || tabs[0]?.id || ""
-  if (tb.browse?.table) return
   // Activate the connection being browsed, matching the table-click path,
   // so the top strip / editor context follow the sidebar click.
   if (connectionId !== activeConnectionId) {

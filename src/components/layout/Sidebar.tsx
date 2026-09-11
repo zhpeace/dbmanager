@@ -600,6 +600,9 @@ function ConnectionItem({
                       onClick={(e) => {
                         e.stopPropagation()
                         setSelectedObjKey(objKey)
+                        // Single click switches the top strip to this object's
+                        // connection + database too (not just double-click).
+                        onDatabaseClick(databaseName, connId)
                       }}
                       onDoubleClick={(e) => {
                         e.stopPropagation()
@@ -978,7 +981,7 @@ function ConnectionItem({
                               </ContextMenu>
                                 {isSchemaExpanded && (
                                  <div className="ml-3 mt-0.5 space-y-0.5">
-                                   {renderTypeGroups(schemaKey, schemaObjects, schema.name, objectFilter)}
+                                   {renderTypeGroups(schemaKey, schemaObjects, db.name, objectFilter)}
                                   {schemaObjects.length === 0 && (
                                     <p className="text-xs text-muted-foreground px-2 py-0.5">{t('sidebar.no_objects')}</p>
                                   )}
