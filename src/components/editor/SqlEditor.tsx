@@ -61,7 +61,7 @@ interface SqlEditorProps {
   errorMarker: { line: number; message: string } | null
   connections?: { id: string; label: string }[]
   boundConnectionId?: string | null
-  onChangeConnection?: (id: string) => void
+  onChangeConnection?: (id: string | null) => void
 }
 
 export function SqlEditor({
@@ -418,10 +418,10 @@ export function SqlEditor({
       <div className="flex items-center justify-between border-b px-3 py-1.5">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-xs font-medium text-muted-foreground shrink-0">{t('editor.title')}</span>
-          {boundConnectionId && connections && connections.length > 0 && (
+          {boundConnectionId !== null && boundConnectionId !== undefined && connections && connections.length > 0 && (
             <Select
-              value={boundConnectionId}
-              onValueChange={(v) => v && onChangeConnection?.(v)}
+              value={boundConnectionId === "__unbound__" ? "__none__" : (boundConnectionId ?? "__none__")}
+              onValueChange={(v) => v && onChangeConnection?.(v === "__none__" ? null : v)}
             >
               <SelectTrigger className="h-6 w-auto max-w-[170px] text-xs gap-1 px-2 min-w-0" title={t('editor.select_connection')}>
                 <Server className="h-3 w-3 shrink-0" />
@@ -431,6 +431,7 @@ export function SqlEditor({
                 {connections.map((c) => (
                   <SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>
                 ))}
+                <SelectItem value="__none__">{t('editor.unbind_connection')}</SelectItem>
               </SelectContent>
             </Select>
           )}

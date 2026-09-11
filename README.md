@@ -6,7 +6,7 @@ A cross-platform, multi-database management and migration desktop application bu
 
 - **Multi-Database Support**: MySQL, PostgreSQL, SQLite, MongoDB, Oracle, Redis, Dameng
 - **SQL Editor**: Monaco-based editor with multi-tab support and query execution
-- **Editor–Connection Binding**: every query tab is bound to a connection (DBeaver/DataGrip-style); the editor toolbar shows the bound connection and a database selector, the connection can be switched per tab via the toolbar switcher, and clicking a sidebar connection binds an unbound query tab — switching the sidebar selection never redirects an already-bound editor, so a query always runs against the connection shown in its toolbar
+- **Editor–Connection Binding**: every query tab is bound to a connection (DBeaver/DataGrip-style); the editor toolbar shows the bound connection and a database selector, the connection can be switched per tab via the toolbar switcher (including "None" to unbind), and clicking a sidebar connection binds an unbound query tab — switching the sidebar selection never redirects an already-bound editor, so a query always runs against the connection shown in its toolbar
 - **Schema Designer**: Visual table creation and modification (add/drop/modify/rename columns)
 - **Data Browser**: Paginated table browsing with scroll-based lazy loading
 - **ER Diagram**: Auto-layout entity-relationship visualization; large schemas (>120 tables) render only foreign-key-related tables by default with a "show all" toggle

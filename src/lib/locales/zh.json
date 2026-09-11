@@ -371,6 +371,7 @@
   "editor.last_exec": "上次：{{duration}} | {{count}} 行",
   "editor.select_database": "选择数据库",
   "editor.select_connection": "切换连接",
+  "editor.unbind_connection": "无连接",
   "editor.select_connection_first": "请先在编辑器工具栏选择一个连接",
   "editor.run": "运行",
   "editor.stop": "停止",

@@ -398,7 +398,7 @@ async function handleSelectConnection(id: string, restoreBrowse = false) {
         setActiveTabId(queryTab.id)
         // Bind an unbound query tab to the clicked connection so the editor
         // runs against it immediately (mainstream client behavior).
-        if (!queryTab.connectionId) {
+        if (!queryTab.connectionId || queryTab.connectionId === "__unbound__") {
           setTabs((prev) =>
             prev.map((tb) =>
               tb.id === queryTab.id ? { ...tb, connectionId: id } : tb
@@ -658,7 +658,12 @@ function handleDatabaseClick(database: string, connectionId: string) {
 
   async function runSql(sql: string, opts?: { startLine?: number; plan?: boolean }) {
     const tb = activeTab()
-    const connId = tb?.connectionId ?? tb?.browse?.connectionId ?? activeConnectionId
+    const rawConnId = tb?.connectionId
+    if (rawConnId === "__unbound__") {
+      setErrorBanner(t('editor.select_connection_first'))
+      return
+    }
+    const connId = rawConnId ?? tb?.browse?.connectionId ?? activeConnectionId
     if (!connId) {
       setErrorBanner(t('editor.select_connection_first'))
       return
@@ -1154,10 +1159,19 @@ function handleDatabaseClick(database: string, connectionId: string) {
 
   // Bind the active query tab to a different connection (DBeaver-style
   // Active datasource switcher). The tab keeps its SQL text; its database
-  // selection resets to the new connection's default database.
-  function handleTabChangeConnection(id: string) {
+  // selection resets to the new connection's default database. Passing null
+  // unbinds the tab (DBeaver "None"), so queries require a connection again.
+  function handleTabChangeConnection(id: string | null) {
     const tabId = activeTabIdRef.current || tabs[0]?.id
     if (!tabId) return
+    if (id === null) {
+      setTabs((prev) =>
+        prev.map((tb) =>
+          tb.id === tabId ? { ...tb, connectionId: "__unbound__" } : tb
+        )
+      )
+      return
+    }
     const conn = connectionsRef.current.find((c) => c.id === id)
     setTabs((prev) =>
       prev.map((tb) =>
@@ -1499,7 +1513,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
                         history={sqlHistory}
                         errorMarker={errorMarker}
                         connections={connectedConnectionOptions}
-                        boundConnectionId={!activeBrowse ? tabConnId : null}
+                        boundConnectionId={!activeBrowse ? (tabConnId ?? "__unbound__") : null}
                         onChangeConnection={handleTabChangeConnection}
                       />
                     </div>

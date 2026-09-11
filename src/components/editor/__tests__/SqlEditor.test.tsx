@@ -173,3 +173,33 @@ it("does not render connection switcher when unbound or no connections", () => {
   render(<SqlEditor {...baseProps} boundConnectionId={null} connections={[]} />)
   expect(screen.queryByTitle("Switch connection")).not.toBeInTheDocument()
 })
+
+it("unbinds the connection via the None option", async () => {
+  const user = userEvent.setup()
+  const onChangeConnection = vi.fn()
+  render(
+    <SqlEditor
+      {...baseProps}
+      boundConnectionId="c1"
+      connections={[{ id: "c1", label: "127.0.0.1 (mysql)" }]}
+      onChangeConnection={onChangeConnection}
+    />
+  )
+  await user.click(screen.getByTitle("Switch connection"))
+  const none = await screen.findByText("None")
+  await user.click(none)
+  expect(onChangeConnection).toHaveBeenCalledWith(null)
+})
+
+it("shows the switcher as unbound when no connection is bound", () => {
+  render(
+    <SqlEditor
+      {...baseProps}
+      boundConnectionId="__unbound__"
+      connections={[{ id: "c1", label: "127.0.0.1 (mysql)" }]}
+      onChangeConnection={vi.fn()}
+    />
+  )
+  expect(screen.getByTitle("Switch connection")).toBeInTheDocument()
+  expect(screen.getByText("None")).toBeInTheDocument()
+})
