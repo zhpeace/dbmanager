@@ -44,7 +44,7 @@ it("shows a running task with progress and cancels it", async () => {
     opts: baseOpts as never,
     sourceLabel: "MySQL · db1",
     targetLabel: "PG · db2",
-    checkpoint: null,
+    checkpoint: { sourceId: "s1", sourceDb: "db1", targetId: "t1", targetDb: "db2" },
   })
 
   render(<TaskCenter />)
@@ -70,6 +70,18 @@ it("shows a running task with progress and cancels it", async () => {
   await waitFor(() => {
     expect(screen.getByText(/Cancelled/)).toBeInTheDocument()
   })
+
+  // cancelled tasks still persist a checkpoint (resume support)
+  expect(invoke).toHaveBeenCalledWith(
+    "save_checkpoint",
+    expect.objectContaining({
+      sourceId: "s1",
+      sourceDatabase: "db1",
+      targetId: "t1",
+      targetDatabase: "db2",
+      completedTables: [],
+    }),
+  )
 })
 
 it("shows a finished error task with logs", async () => {

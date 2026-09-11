@@ -16,6 +16,7 @@ A cross-platform, multi-database management and migration desktop application bu
   - Auto-increment / sequence translation
   - Checkpoint & resume on partial failure
   - **Background execution + Task Center**: starting a migration closes the dialog immediately and runs in the background, so the app stays fully usable; the Task Center (top bar) tracks progress (x/y tables, current table, elapsed time), supports cancel, and keeps a history of finished tasks with per-task logs and errors; source/target connections are locked against concurrent transfers while a task is running
+  - **Cancel & resume**: cancelling a running migration saves a checkpoint of completed tables; reopening the transfer dialog with the same source/target shows a resume banner ("N tables completed — continue?") with Continue / Restart actions, so an interrupted migration can be resumed from where it stopped
   - Real-time log streaming; result page drops redundant table-name chips (per-table stats cover them), groups per-table logs with failed tables expanded by default, and offers a failed-only stats filter
   - PostgreSQL/openGauss targets create tables under the target connection's schema (default `public`) instead of the source database name
 - **Compare & Sync**: Schema comparison between databases, diff viewer, sync SQL generation

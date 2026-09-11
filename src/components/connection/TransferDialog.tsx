@@ -90,12 +90,13 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
   }, [open])
 
   useEffect(() => {
-    if (sourceId && sourceDb && targetId && targetDb) {
+    if (open && sourceId && sourceDb && targetId && targetDb) {
+      // 打开对话框或切换连接/库时加载断点（取消/失败后可恢复）
       getCheckpoint(sourceId, sourceDb, targetId, targetDb).then(setCheckpoint)
     } else {
       setCheckpoint(null)
     }
-  }, [sourceId, sourceDb, targetId, targetDb])
+  }, [open, sourceId, sourceDb, targetId, targetDb])
 
   const handleSourceChange = async (id: string) => {
     setSourceId(id)

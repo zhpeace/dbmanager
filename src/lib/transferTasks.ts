@@ -165,6 +165,19 @@ export async function startTransferTask(p: StartTransferParams): Promise<void> {
   } catch (e: any) {
     const msg = String(e ?? "")
     const cancelled = /cancel/i.test(msg)
+    if (cancelled && p.checkpoint) {
+      // 取消时也保存断点：已结束（完成或失败）的表 = 前 done 个，恢复时从其后继续
+      const t = tasks.find((x) => x.id === p.taskId)
+      const doneTables = p.opts.tables.slice(0, t?.done ?? 0)
+      await saveCheckpoint(
+        p.checkpoint.sourceId,
+        p.checkpoint.sourceDb,
+        p.checkpoint.targetId,
+        p.checkpoint.targetDb,
+        doneTables,
+        0,
+      )
+    }
     updateTask(p.taskId, (t) => ({
       ...t,
       status: cancelled ? "cancelled" : "error",
