@@ -362,3 +362,49 @@ describe("groupLogs", () => {
     expect(groups[1].hasError).toBe(true)
   })
 })
+
+it("collapses table chips and groups logs on result", async () => {
+  const user = userEvent.setup()
+  let resolveTransfer: (v: unknown) => void
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === "transfer_data") {
+      return new Promise((res) => { resolveTransfer = res })
+    }
+    if (cmd === "get_databases") return [{ name: "mydb" }, { name: "target_db" }]
+    if (cmd === "get_tables") return [{ name: "users", object_type: "TABLE" }]
+    return null
+  })
+
+  render(<TransferDialog {...defaultProps} />)
+  await setupTransferDialog(user)
+  await user.click(screen.getByText(/Select All/))
+  await user.click(screen.getByRole("button", { name: /Start Transfer/i }))
+
+  const manyTables = Array.from({ length: 40 }, (_, i) => `tbl_${i}`)
+  resolveTransfer!({
+    tables_transferred: manyTables,
+    rows_transferred: 100,
+    errors: [],
+    duration: "1.2s",
+    logs: [
+      "Starting table: users",
+      "Creating table 'users'...",
+      "Completed table: users",
+      "Starting table: broken",
+      "Creating table 'broken'...",
+      "Failed to create table 'broken': error returned from database: nope",
+    ],
+  })
+
+  await waitFor(() => {
+    expect(screen.getByText(/All 40 tables/)).toBeInTheDocument()
+  })
+  // chips: only first 30 visible, no overflow
+  expect(screen.getByText("tbl_0")).toBeInTheDocument()
+  expect(screen.queryByText("tbl_39")).not.toBeInTheDocument()
+
+  // grouped log: one summary per table; success collapsed, failure expanded
+  expect(screen.getByText("users")).toBeInTheDocument()
+  expect(screen.getByText("broken")).toBeInTheDocument()
+  expect(screen.getByText(/error returned from database/)).toBeInTheDocument()
+})
