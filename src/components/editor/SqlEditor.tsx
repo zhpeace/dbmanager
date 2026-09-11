@@ -59,7 +59,7 @@ interface SqlEditorProps {
   dbType: string
   history: string[]
   errorMarker: { line: number; message: string } | null
-  connections?: { id: string; label: string }[]
+  connections?: { id: string; label: string; color?: string }[]
   boundConnectionId?: string | null
   onChangeConnection?: (id: string | null) => void
 }
@@ -429,7 +429,12 @@ export function SqlEditor({
               </SelectTrigger>
               <SelectContent>
                 {connections.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>
+                  <SelectItem key={c.id} value={c.id} className="gap-2">
+                    {c.color && (
+                      <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: c.color }} />
+                    )}
+                    <span className="truncate">{c.label}</span>
+                  </SelectItem>
                 ))}
                 <SelectItem value="__none__">{t('editor.unbind_connection')}</SelectItem>
               </SelectContent>
@@ -594,6 +599,7 @@ export function SqlEditor({
               <span className="hidden sm:inline">{t('editor.begin')}</span>
             </Button>
           ))}
+          <div className="w-px h-4 bg-border mx-1" />
           <Button size="sm" variant="ghost" className="h-7 gap-1" onClick={handleFormat} title={t('editor.format')}>
             <Wand2 className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">{t('editor.format')}</span>
@@ -604,11 +610,12 @@ export function SqlEditor({
             <span className="hidden sm:inline">{t('editor.explain')}</span>
           </Button>
           )}
+          <div className="w-px h-4 bg-border mx-1" />
           <Button size="sm" variant="ghost" className="h-7 gap-1" onClick={handleRunAll} title={t('editor.run_all')}>
             <ListTodo className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">{t('editor.run_all')}</span>
           </Button>
-          <Button size="sm" variant="default" className="h-7 gap-1" onClick={executing ? onCancel : handleExecute} title={executing ? t('editor.stop') : t('editor.run')}>
+          <Button size="sm" variant="default" className="h-7 gap-1 px-3 font-medium" onClick={executing ? onCancel : handleExecute} title={executing ? t('editor.stop') : t('editor.run')}>
             {executing ? (
               <Square className="h-3 w-3 fill-current" />
             ) : (

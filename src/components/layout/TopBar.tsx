@@ -1,6 +1,8 @@
-import { Plus, Moon, Sun, GitBranch, Upload, ArrowLeftRight, Diff, Download, Upload as RestoreIcon, Clock, Search, KeyRound, Activity } from "lucide-react"
+import { useState } from "react"
+import { Plus, Moon, Sun, GitBranch, ArrowLeftRight, Diff, Upload, Download, Upload as RestoreIcon, Clock, Search, KeyRound, Activity, MoreHorizontal } from "lucide-react"
 import { DatanexMark } from "@/components/brand/DatanexMark"
 import { Button } from "@/components/ui/button"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useTheme } from "@/lib/theme"
 import { useTranslation } from "react-i18next"
 import { TaskCenter } from "@/components/layout/TaskCenter"
@@ -47,6 +49,7 @@ export function TopBar({
   const { theme, toggleTheme } = useTheme()
   const { t, i18n } = useTranslation()
   const isRedis = dbType === "redis"
+  const [moreOpen, setMoreOpen] = useState(false)
 
   return (
     <header className="flex h-12 items-center justify-between border-b bg-sidebar px-4">
@@ -97,10 +100,6 @@ export function TopBar({
               <GitBranch className="h-4 w-4 mr-1" />
               {t('topbar.er_diagram')}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => (isPro ? onOpenImport?.() : onOpenLicense?.())}>
-              <Upload className="h-4 w-4 mr-1" />
-              {t('topbar.import')}{!isPro ? " (Pro)" : ""}
-            </Button>
             <Button size="sm" variant="ghost" onClick={() => (isPro ? onOpenTransfer?.() : onOpenLicense?.())}>
               <ArrowLeftRight className="h-4 w-4 mr-1" />
               {t('topbar.transfer')}{!isPro ? " (Pro)" : ""}
@@ -109,26 +108,59 @@ export function TopBar({
               <Diff className="h-4 w-4 mr-1" />
               {t('topbar.compare')}{!isPro ? " (Pro)" : ""}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => (isPro ? onOpenBackup?.() : onOpenLicense?.())}>
-              <Download className="h-4 w-4 mr-1" />
-              {t('topbar.backup')}{!isPro ? " (Pro)" : ""}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => (isPro ? onOpenRestore?.() : onOpenLicense?.())}>
-              <RestoreIcon className="h-4 w-4 mr-1" />
-              {t('topbar.restore')}{!isPro ? " (Pro)" : ""}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => (isPro ? onOpenSchedule?.() : onOpenLicense?.())}>
-              <Clock className="h-4 w-4 mr-1" />
-              {t('topbar.schedule')}{!isPro ? " (Pro)" : ""}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={onOpenFind}>
-              <Search className="h-4 w-4 mr-1" />
-              {t('topbar.find')}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={onOpenSessions}>
-              <Activity className="h-4 w-4 mr-1" />
-              {t('topbar.sessions')}
-            </Button>
+            <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+              <PopoverTrigger asChild>
+                <Button size="sm" variant="ghost">
+                  <MoreHorizontal className="h-4 w-4 mr-1" />
+                  {t('topbar.more')}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-48 p-1">
+                <button
+                  className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted/60 rounded"
+                  onClick={() => { setMoreOpen(false); isPro ? onOpenImport?.() : onOpenLicense?.() }}
+                >
+                  <Upload className="h-4 w-4" />
+                  {t('topbar.import')}{!isPro ? " (Pro)" : ""}
+                </button>
+                <button
+                  className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted/60 rounded"
+                  onClick={() => { setMoreOpen(false); isPro ? onOpenBackup?.() : onOpenLicense?.() }}
+                >
+                  <Download className="h-4 w-4" />
+                  {t('topbar.backup')}{!isPro ? " (Pro)" : ""}
+                </button>
+                <button
+                  className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted/60 rounded"
+                  onClick={() => { setMoreOpen(false); isPro ? onOpenRestore?.() : onOpenLicense?.() }}
+                >
+                  <RestoreIcon className="h-4 w-4" />
+                  {t('topbar.restore')}{!isPro ? " (Pro)" : ""}
+                </button>
+                <button
+                  className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted/60 rounded"
+                  onClick={() => { setMoreOpen(false); isPro ? onOpenSchedule?.() : onOpenLicense?.() }}
+                >
+                  <Clock className="h-4 w-4" />
+                  {t('topbar.schedule')}{!isPro ? " (Pro)" : ""}
+                </button>
+                <div className="h-px bg-border my-1" />
+                <button
+                  className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted/60 rounded"
+                  onClick={() => { setMoreOpen(false); onOpenFind?.() }}
+                >
+                  <Search className="h-4 w-4" />
+                  {t('topbar.find')}
+                </button>
+                <button
+                  className="w-full flex items-center gap-2 px-2 py-1.5 text-xs hover:bg-muted/60 rounded"
+                  onClick={() => { setMoreOpen(false); onOpenSessions?.() }}
+                >
+                  <Activity className="h-4 w-4" />
+                  {t('topbar.sessions')}
+                </button>
+              </PopoverContent>
+            </Popover>
           </>
         )}
         <TaskCenter />

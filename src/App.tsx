@@ -79,8 +79,8 @@ function AppContent() {
   const [tables, setTables] = useState<Record<string, Record<string, TableInfo[]>>>({})
   const [redisScanCursor, setRedisScanCursor] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState<Record<string, boolean>>({})
-  const [tabs, setTabs] = useState<{ id: string; title: string; sql: string; filePath: string | null; browse?: { connectionId: string; database: string; table: string; defaultTab?: string; objectType?: string } | null; connectionId?: string | null; database?: Record<string, string | null> }[]>(
-    () => [{ id: crypto.randomUUID(), title: t('editor.tab_query') + " 1", sql: "", filePath: null, connectionId: null, database: {} }]
+  const [tabs, setTabs] = useState<{ id: string; title: string; sql: string; filePath: string | null; browse?: { connectionId: string; database: string; table: string; defaultTab?: string; objectType?: string } | null; connectionId?: string | null; database?: Record<string, string | null>; error?: string | null }[]>(
+    () => [{ id: crypto.randomUUID(), title: t('editor.tab_query') + " 1", sql: "", filePath: null, connectionId: null, database: {}, error: null }]
   )
   const backendConnDbRef = useRef<{ id: string; db: string } | null>(null)
   const [activeTabId, setActiveTabId] = useState<string>(() => "")
@@ -375,6 +375,7 @@ async function handleSelectConnection(id: string, restoreBrowse = false) {
   setActiveConnectionId(id)
   if (id !== activeConnectionId) {
     setActiveBottomTab("results")
+    setQueryResults([])
   }
   const conn = connectionsRef.current.find((c) => c.id === id)
 
@@ -401,10 +402,11 @@ async function handleSelectConnection(id: string, restoreBrowse = false) {
         if (!queryTab.connectionId || queryTab.connectionId === "__unbound__") {
           setTabs((prev) =>
             prev.map((tb) =>
-              tb.id === queryTab.id ? { ...tb, connectionId: id } : tb
+              tb.id === queryTab.id ? { ...tb, connectionId: id, error: null } : tb
             )
           )
         }
+        setErrorBanner(null)
       } else {
         openInNewTab("")
       }
@@ -660,12 +662,12 @@ function handleDatabaseClick(database: string, connectionId: string) {
     const tb = activeTab()
     const rawConnId = tb?.connectionId
     if (rawConnId === "__unbound__") {
-      setErrorBanner(t('editor.select_connection_first'))
+      setActiveTabError(t('editor.select_connection_first'))
       return
     }
     const connId = rawConnId ?? tb?.browse?.connectionId ?? activeConnectionId
     if (!connId) {
-      setErrorBanner(t('editor.select_connection_first'))
+      setActiveTabError(t('editor.select_connection_first'))
       return
     }
     const conn = connectionsRef.current.find((c) => c.id === connId)
@@ -1112,6 +1114,14 @@ function handleDatabaseClick(database: string, connectionId: string) {
     return tb?.connectionId ?? tb?.browse?.connectionId ?? null
   }
 
+  // Per-tab error banner: follows the tab, so switching to a healthy tab
+  // hides the red bar instead of letting a global banner linger.
+  function setActiveTabError(msg: string | null) {
+    const id = activeTabIdRef.current || tabs[0]?.id
+    if (!id) return
+    setTabs((prev) => prev.map((tb) => (tb.id === id ? { ...tb, error: msg } : tb)))
+  }
+
   function setActiveTabSql(sql: string) {
     const id = activeTabIdRef.current || tabs[0]?.id
     if (!id) return
@@ -1167,20 +1177,24 @@ function handleDatabaseClick(database: string, connectionId: string) {
     if (id === null) {
       setTabs((prev) =>
         prev.map((tb) =>
-          tb.id === tabId ? { ...tb, connectionId: "__unbound__" } : tb
+          tb.id === tabId ? { ...tb, connectionId: "__unbound__", error: null } : tb
         )
       )
+      setErrorBanner(null)
+      setQueryResults([])
       return
     }
     const conn = connectionsRef.current.find((c) => c.id === id)
     setTabs((prev) =>
       prev.map((tb) =>
         tb.id === tabId
-          ? { ...tb, connectionId: id, database: { ...(tb.database || {}), [id]: conn?.config.database || null } }
+          ? { ...tb, connectionId: id, database: { ...(tb.database || {}), [id]: conn?.config.database || null }, error: null }
           : tb
       )
     )
+    setErrorBanner(null)
     setActiveConnectionId(id)
+    setQueryResults([])
     if (conn && !databases[id]?.length) {
       invoke("get_databases", { id }).then((dbs) => {
         setDatabases((prev) => ({ ...prev, [id]: dbs as DatabaseInfo[] }))
@@ -1212,6 +1226,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
     const id = crypto.randomUUID()
     const n = tabs.length + 1
     const connId = activeConnectionId
+    setErrorBanner(null)
     setTabs((prev) => [...prev, {
       id,
       title: t('editor.tab_query') + " " + n,
@@ -1219,6 +1234,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
       filePath: null,
       connectionId: connId,
       database: connId ? { [connId]: activeConnection?.config.database || null } : {},
+      error: null,
     }])
     setActiveTabId(id)
   }
@@ -1228,12 +1244,13 @@ function handleDatabaseClick(database: string, connectionId: string) {
   }
 
   function closeTab(id: string) {
+    setErrorBanner(null)
     setTabs((prev) => {
       const next = prev.filter((tb) => tb.id !== id)
       if (next.length === 0) {
         const nid = crypto.randomUUID()
         setActiveTabId(nid)
-        return [{ id: nid, title: t('editor.tab_query') + " 1", sql: "", filePath: null, connectionId: activeConnectionId, database: {} }]
+        return [{ id: nid, title: t('editor.tab_query') + " 1", sql: "", filePath: null, connectionId: activeConnectionId, database: {}, error: null }]
       }
       if (id === activeTabId) {
         const idx = prev.findIndex((tb) => tb.id === id)
@@ -1271,7 +1288,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
   const currentDatabase = (tabConnId && tabDbs ? tabDbs[tabConnId] : undefined) ?? activeConnForTab?.config.database ?? null
   const connectedConnectionOptions = connections
     .filter((c) => c.connected)
-    .map((c) => ({ id: c.id, label: `${c.config.host} (${c.config.type})` }))
+    .map((c) => ({ id: c.id, label: c.config.name || c.config.host || c.config.type, color: c.config.color }))
   const connectionMeta = activeConnection?.config && activeConnection.config.type !== "sqlite"
     ? `${activeConnection.config.user || ""}@${activeConnection.config.host || ""}:${activeConnection.config.port ?? ""}`
     : null
@@ -1369,12 +1386,12 @@ function handleDatabaseClick(database: string, connectionId: string) {
           onOpenLicense={() => setLicenseManualOpen(true)}
         />
         <main className="flex-1 flex flex-col min-w-0">
-          {errorBanner && (
+          {(activeTab()?.error || errorBanner) && (
             <div className="bg-red-600 text-white text-sm px-4 py-2 flex items-center justify-between">
-              <span className="break-all">{errorBanner}</span>
+              <span className="break-all">{activeTab()?.error || errorBanner}</span>
               <button
                 className="ml-4 shrink-0 underline"
-                onClick={() => setErrorBanner(null)}
+                onClick={() => { setActiveTabError(null); setErrorBanner(null) }}
               >
                 ✕
               </button>
@@ -1414,6 +1431,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
                             handleSelectConnection(tb.browse.connectionId)
                           }
                           setActiveTabId(tb.id)
+                          setErrorBanner(null)
                         }}
                         title={tb.title}
                       >

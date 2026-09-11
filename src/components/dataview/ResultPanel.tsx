@@ -5,6 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { DataTable } from "./DataTable"
 import { PlanView } from "./PlanView"
+import { ErrorBlock, fmtDuration } from "./ErrorBlock"
 import { save } from "@tauri-apps/plugin-dialog"
 import { invoke } from "@tauri-apps/api/core"
 import { toCsv, toJson, toInsert } from "@/lib/sql"
@@ -67,16 +68,16 @@ export function ResultPanel({ results }: ResultPanelProps) {
         {t('resultpanel.rows')}: <span className="font-mono">{active.rowCount}</span>
       </span>
       <span>
-        {t('resultpanel.duration')}: <span className="font-mono">{active.duration}</span>
+        {t('resultpanel.duration')}: <span className="font-mono">{fmtDuration(active.duration)}</span>
       </span>
-      {active.error && <span className="ml-auto truncate max-w-[50%] text-destructive">{active.error}</span>}
+      {active.error && <span className="ml-auto truncate max-w-[50%] text-destructive" title={active.error}>{active.error.split("\n")[0]}</span>}
     </div>
   )
 
   const exportBar = !active.error && active.columns.length > 0 && (
     <div className="flex items-center justify-end gap-1 border-b px-3 py-1">
       <span className="text-[10px] text-muted-foreground mr-auto">
-        {t('resultpanel.duration')}: <span className="font-mono">{active.duration}</span> · {t('resultpanel.rows')}:{" "}
+        {t('resultpanel.duration')}: <span className="font-mono">{fmtDuration(active.duration)}</span> · {t('resultpanel.rows')}:{" "}
         <span className="font-mono">{active.rowCount}</span> · {t('resultpanel.columns')}:{" "}
         <span className="font-mono">{active.columns.length}</span>
       </span>
@@ -173,9 +174,14 @@ export function ResultPanel({ results }: ResultPanelProps) {
       </TabsContent>
       <TabsContent value="info" className="flex-1 mt-0 p-3 min-h-0">
         <div className="text-xs space-y-2 text-muted-foreground">
+          {active.error && (
+            <div className="rounded border border-destructive/30 bg-destructive/5 p-2">
+              <ErrorBlock error={active.error} />
+            </div>
+          )}
           <div className="flex justify-between">
             <span>{t('resultpanel.duration')}</span>
-            <span className="font-mono">{active.duration}</span>
+            <span className="font-mono">{fmtDuration(active.duration)}</span>
           </div>
           <div className="flex justify-between">
             <span>{t('resultpanel.rows')}</span>

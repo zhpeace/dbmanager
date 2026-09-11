@@ -337,6 +337,8 @@
   "resultpanel.tab_results": "结果",
   "resultpanel.tab_info": "信息",
   "resultpanel.duration": "耗时",
+  "resultpanel.error_help": "帮助文档",
+  "resultpanel.error_copied": "已复制",
   "resultpanel.rows": "行数",
   "resultpanel.columns": "列数",
   "resultpanel.columns_heading": "列：",
@@ -506,5 +508,6 @@
   "task.filter_errors": "仅看失败",
   "task.filter_tables": "按表统计",
   "task.logs_empty": "暂无日志",
-  "task.logs_no_error": "无失败记录"
+  "task.logs_no_error": "无失败记录",
+  "topbar.more": "更多"
 }

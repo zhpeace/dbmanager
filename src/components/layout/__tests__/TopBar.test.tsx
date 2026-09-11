@@ -80,14 +80,18 @@ it("shows 'No database selected' when connected but no database chosen", () => {
   expect(screen.getByText("No database selected")).toBeInTheDocument()
 })
 
-it("shows action buttons when connectionId is provided", () => {
+it("shows action buttons when connectionId is provided", async () => {
+  const user = userEvent.setup()
   render(
     <TopBar {...defaultProps} connectionId="c1" isPro />
   )
   expect(screen.getByText("ER Diagram")).toBeInTheDocument()
-  expect(screen.getByText("Import")).toBeInTheDocument()
   expect(screen.getByText("Transfer")).toBeInTheDocument()
   expect(screen.getByText("Compare")).toBeInTheDocument()
+  // Low-frequency actions live in the "More" menu
+  expect(screen.getByText("More")).toBeInTheDocument()
+  await user.click(screen.getByText("More"))
+  expect(await screen.findByText("Import")).toBeInTheDocument()
   expect(screen.getByText("Backup")).toBeInTheDocument()
   expect(screen.getByText("Restore")).toBeInTheDocument()
   expect(screen.getByText("Schedule")).toBeInTheDocument()
@@ -99,14 +103,14 @@ it("shows (Pro) suffix on migration buttons and opens license dialog when clicke
   render(
     <TopBar {...defaultProps} connectionId="c1" onOpenLicense={mockOnOpenLicense} />
   )
-  const importBtn = screen.getByText("Import (Pro)").closest("button")!
-  expect(importBtn).not.toBeDisabled()
   expect(screen.getByText("Transfer (Pro)")).toBeInTheDocument()
   expect(screen.getByText("Compare (Pro)")).toBeInTheDocument()
+  await user.click(screen.getByText("More"))
+  const importItem = await screen.findByText("Import (Pro)")
   expect(screen.getByText("Backup (Pro)")).toBeInTheDocument()
   expect(screen.getByText("Restore (Pro)")).toBeInTheDocument()
   expect(screen.getByText("Schedule (Pro)")).toBeInTheDocument()
-  await user.click(importBtn)
+  await user.click(importItem)
   expect(mockOnOpenLicense).toHaveBeenCalledTimes(1)
 })
 
@@ -127,7 +131,8 @@ it("calls onOpenErDiagram when ER Diagram button is clicked", async () => {
 it("calls onOpenImport when Import button is clicked", async () => {
   const user = userEvent.setup()
   render(<TopBar {...defaultProps} connectionId="c1" isPro onOpenImport={mockOnOpenImport} />)
-  await user.click(screen.getByText("Import"))
+  await user.click(screen.getByText("More"))
+  await user.click(await screen.findByText("Import"))
   expect(mockOnOpenImport).toHaveBeenCalledTimes(1)
 })
 
@@ -148,21 +153,24 @@ it("calls onOpenCompare when Compare button is clicked", async () => {
 it("calls onOpenBackup when Backup button is clicked", async () => {
   const user = userEvent.setup()
   render(<TopBar {...defaultProps} connectionId="c1" isPro onOpenBackup={mockOnOpenBackup} />)
-  await user.click(screen.getByText("Backup"))
+  await user.click(screen.getByText("More"))
+  await user.click(await screen.findByText("Backup"))
   expect(mockOnOpenBackup).toHaveBeenCalledTimes(1)
 })
 
 it("calls onOpenRestore when Restore button is clicked", async () => {
   const user = userEvent.setup()
   render(<TopBar {...defaultProps} connectionId="c1" isPro onOpenRestore={mockOnOpenRestore} />)
-  await user.click(screen.getByText("Restore"))
+  await user.click(screen.getByText("More"))
+  await user.click(await screen.findByText("Restore"))
   expect(mockOnOpenRestore).toHaveBeenCalledTimes(1)
 })
 
 it("calls onOpenSchedule when Schedule button is clicked", async () => {
   const user = userEvent.setup()
   render(<TopBar {...defaultProps} connectionId="c1" isPro onOpenSchedule={mockOnOpenSchedule} />)
-  await user.click(screen.getByText("Schedule"))
+  await user.click(screen.getByText("More"))
+  await user.click(await screen.findByText("Schedule"))
   expect(mockOnOpenSchedule).toHaveBeenCalledTimes(1)
 })
 

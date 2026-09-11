@@ -337,6 +337,8 @@
   "resultpanel.tab_results": "Results",
   "resultpanel.tab_info": "Info",
   "resultpanel.duration": "Duration",
+  "resultpanel.error_help": "Help doc",
+  "resultpanel.error_copied": "Copied",
   "resultpanel.rows": "Rows",
   "resultpanel.columns": "Columns",
   "resultpanel.columns_heading": "Columns:",
@@ -506,5 +508,6 @@
   "task.filter_errors": "Errors only",
   "task.filter_tables": "By table",
   "task.logs_empty": "No logs yet",
-  "task.logs_no_error": "No failures"
+  "task.logs_no_error": "No failures",
+  "topbar.more": "More"
 }

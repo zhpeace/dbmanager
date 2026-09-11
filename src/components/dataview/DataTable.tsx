@@ -12,6 +12,7 @@ import {
 import { ArrowUpDown, ChevronUp, ChevronDown, Pencil, CirclePlus, XCircle, Maximize2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { toCsv, toInsert, toUpdate } from "@/lib/sql"
+import { ErrorBlock } from "./ErrorBlock"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -331,8 +332,8 @@ export function DataTable({
   if (error) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="text-center">
-          <p className="text-sm font-medium text-destructive">{error}</p>
+        <div className="text-center max-w-[90%]">
+          <ErrorBlock error={error} className="text-left" />
         </div>
       </div>
     )
