@@ -133,6 +133,7 @@ export interface TransferOptions {
   source_database: string
   target_id: string
   target_database: string
+  target_schema?: string | null
   tables: string[]
   mode?: 'structure_and_data' | 'structure_only' | 'data_only'
   conflict_strategy?: 'error' | 'ignore' | 'replace'
@@ -641,6 +642,7 @@ export type TaskConfig =
       source_database: string
       target_id: string
       target_database: string
+      target_schema?: string | null
       tables: string[]
       mode?: "structure_and_data" | "structure_only" | "data_only"
       conflict_strategy?: "error" | "ignore" | "replace"

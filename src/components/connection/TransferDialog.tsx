@@ -222,6 +222,7 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
         source_database: sourceDb,
         target_id: targetId,
         target_database: targetDb,
+        target_schema: connected.find((c) => c.id === targetId)?.config.schema ?? null,
         tables: selectedTables,
         mode: mode as 'structure_and_data' | 'structure_only' | 'data_only',
         conflict_strategy: conflictStrategy as 'error' | 'ignore' | 'replace',

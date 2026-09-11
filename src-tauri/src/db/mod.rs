@@ -3852,10 +3852,30 @@ fn create_foreign_key_sql(
     source_table: &str,
     fk: &ForeignKeyInfo,
     target_type: &str,
+    database: Option<&str>,
 ) -> String {
-    let quoted_table = escape_identifier(source_table, target_type);
+    let qualified = |t: &str| -> String {
+        match target_type {
+            "mysql" => {
+                if let Some(db) = database {
+                    format!("`{}`.{}", db.replace('`', "``"), escape_identifier(t, target_type))
+                } else {
+                    escape_identifier(t, target_type)
+                }
+            }
+            "postgresql" | "oracle" => {
+                if let Some(db) = database {
+                    format!("\"{}\".{}", db.replace('"', "\"\""), escape_identifier(t, target_type))
+                } else {
+                    escape_identifier(t, target_type)
+                }
+            }
+            _ => escape_identifier(t, target_type),
+        }
+    };
+    let quoted_table = qualified(source_table);
     let quoted_col = escape_identifier(&fk.column_name, target_type);
-    let quoted_ref_table = escape_identifier(&fk.ref_table, target_type);
+    let quoted_ref_table = qualified(&fk.ref_table);
     let quoted_ref_col = escape_identifier(&fk.ref_column, target_type);
     let constraint_name = fk.constraint_name.as_deref()
         .map(|n| format!("CONSTRAINT {} ", escape_identifier(n, target_type)))
@@ -4156,6 +4176,19 @@ pub async fn transfer_data(
         DbConnection::Dameng(_) => "dameng",
     };
 
+    // Qualified-name prefix used for CREATE TABLE / indexes / DML on the target.
+    // - PostgreSQL / openGauss: the connection is already bound to a database
+    //   (switch_database switches it); the qualifier must be the target *schema*
+    //   (connection config, default "public"). Using the source database name
+    //   here breaks e.g. MySQL -> openGauss with `schema "test" does not exist`.
+    // - MySQL: qualifier is the target database.
+    // - Oracle: qualifier is the target schema (its "database" concept).
+    let target_qualifier: String = if target_type == "postgresql" {
+        opts.target_schema.clone().unwrap_or_else(|| "public".to_string())
+    } else {
+        opts.target_database.clone()
+    };
+
     let completed: Vec<&str> = opts.checkpoint_id.as_ref()
         .map(|cp| cp.split(',').collect())
         .unwrap_or_default();
@@ -4250,9 +4283,9 @@ pub async fn transfer_data(
                     if opts.drop_target {
                     { let _msg = format!("  Dropping table '{}'...", table); if let Some(ref _tx) = log_tx { let _ = _tx.send(_msg.clone()); } logs.push(_msg); }
                         let qualified_table = if target_type == "mysql" {
-                            format!("`{}`.{}", opts.target_database.replace('`', "``"), escape_identifier(table, target_type))
+                            format!("`{}`.{}", target_qualifier.replace('`', "``"), escape_identifier(table, target_type))
                         } else if target_type == "postgresql" || target_type == "oracle" {
-                            format!("\"{}\".{}", opts.target_database.replace('"', "\"\""), escape_identifier(table, target_type))
+                            format!("\"{}\".{}", target_qualifier.replace('"', "\"\""), escape_identifier(table, target_type))
                         } else {
                             escape_identifier(table, target_type)
                         };
@@ -4260,7 +4293,7 @@ pub async fn transfer_data(
                         target.execute_query(&drop_ddl).await.ok();
                     }
                     { let _msg = format!("  Creating table '{}'...", table); if let Some(ref _tx) = log_tx { let _ = _tx.send(_msg.clone()); } logs.push(_msg); }
-                    let create_sql = create_table_sql(table, &target_cols, source_type, target_type, Some(&opts.target_database));
+                    let create_sql = create_table_sql(table, &target_cols, source_type, target_type, Some(&target_qualifier));
                     if let Err(e) = target.execute_query(&create_sql).await {
                         errors.push(format!("Failed to create table '{}': {}", table, e));
                         check_error_mode!();
@@ -4272,7 +4305,7 @@ pub async fn transfer_data(
                     if opts.transfer_indexes {
                     logs.push(format!("  Creating indexes for '{}'...", table));
                         for idx in &indexes {
-                            let idx_sql = create_index_sql(table, idx, target_type, Some(&opts.target_database));
+                            let idx_sql = create_index_sql(table, idx, target_type, Some(&target_qualifier));
                             if let Err(e) = target.execute_query(&idx_sql).await {
                                 errors.push(format!("Failed to create index '{}' on '{}': {}", idx.name, table, e));
                                 check_error_mode!();
@@ -4286,7 +4319,13 @@ pub async fn transfer_data(
 
                 if opts.truncate_target && target_type != "mongodb" {
                     { let _msg = format!("  Truncating '{}'...", table); if let Some(ref _tx) = log_tx { let _ = _tx.send(_msg.clone()); } logs.push(_msg); }
-                    let trunc_sql = format!("DELETE FROM {}", escape_identifier(table, target_type));
+                    let trunc_sql = if target_type == "mysql" {
+                        format!("DELETE FROM `{}`.{}", target_qualifier.replace('`', "``"), escape_identifier(table, target_type))
+                    } else if target_type == "postgresql" || target_type == "oracle" {
+                        format!("DELETE FROM \"{}\".{}", target_qualifier.replace('"', "\"\""), escape_identifier(table, target_type))
+                    } else {
+                        format!("DELETE FROM {}", escape_identifier(table, target_type))
+                    };
                     target.execute_query(&trunc_sql).await.ok();
                 }
 
@@ -4367,7 +4406,7 @@ pub async fn transfer_data(
                         let quoted_cols: Vec<String> = col_names.iter()
                             .map(|c| escape_identifier(c, target_type))
                             .collect();
-                        let quoted_table = format!("\"{}\".{}", opts.target_database.replace('"', "\"\"").to_uppercase(), escape_identifier(table, target_type));
+                        let quoted_table = format!("\"{}\".{}", target_qualifier.replace('"', "\"\"").to_uppercase(), escape_identifier(table, target_type));
                         let col_list = quoted_cols.join(", ");
 
                         // Try OCI array binding first (much faster).
@@ -4472,7 +4511,7 @@ pub async fn transfer_data(
                                 row_obj.get(c).cloned().unwrap_or(serde_json::Value::Null)
                             }).collect()
                         }).collect();
-                        match target.bulk_insert(table, &col_names, &ordered_rows, Some(&opts.target_database), Some(&col_types), &opts.conflict_strategy).await {
+                        match target.bulk_insert(table, &col_names, &ordered_rows, Some(&target_qualifier), Some(&col_types), &opts.conflict_strategy).await {
                             Ok(n) => { rows_transferred += n as i64; }
                             Err(e) => {
                                 errors.push(format!("Insert error in '{}': {}", table, e));
@@ -4494,7 +4533,7 @@ pub async fn transfer_data(
                 if opts.transfer_indexes && opts.mode != types::TransferMode::StructureOnly {
                     logs.push(format!("  Creating indexes for '{}'...", table));
                     for idx in &indexes {
-                        let idx_sql = create_index_sql(table, idx, target_type, Some(&opts.target_database));
+                        let idx_sql = create_index_sql(table, idx, target_type, Some(&target_qualifier));
                         if let Err(e) = target.execute_query(&idx_sql).await {
                             errors.push(format!("Failed to create index '{}' on '{}': {}", idx.name, table, e));
                             check_error_mode!();
@@ -4531,7 +4570,7 @@ pub async fn transfer_data(
         for table in &tables_transferred {
             if let Some(fks) = stored_fks.get(table) {
                 for fk in fks {
-                    let fk_sql = create_foreign_key_sql(table, fk, target_type);
+                    let fk_sql = create_foreign_key_sql(table, fk, target_type, Some(&target_qualifier));
                     if let Err(e) = target.execute_query(&fk_sql).await {
                         errors.push(format!("Failed to create FK on '{}': {}", table, e));
                         if matches!(opts.error_mode, types::ErrorMode::Stop) {
@@ -6731,6 +6770,32 @@ mod tests {
             "value cast should keep the literal. SQL: {}", sql);
         let count_of_default = sql.matches("DEFAULT").count();
         assert_eq!(count_of_default, 1, "only the literal default should remain. SQL: {}", sql);
+    }
+
+    #[test]
+    fn test_create_table_sql_pg_target_uses_schema_not_database() {
+        let cols = vec![
+            types::ColumnInfo {
+                name: "id".into(),
+                data_type: "INT".into(),
+                key: "PRI".into(),
+                default_value: None,
+                nullable: false,
+                extra: "auto_increment".into(),
+            },
+        ];
+        // MySQL -> PostgreSQL/openGauss: qualifier is the target schema
+        // (connection config, default "public"), never the source database
+        // name — otherwise the migration fails with `schema "test" does not exist`.
+        let sql = create_table_sql("abc_newtable_31", &cols, "mysql", "postgresql", Some("public"));
+        assert!(sql.contains("\"public\".\"abc_newtable_31\""),
+            "PG CREATE TABLE should be schema-qualified. SQL: {}", sql);
+        assert!(!sql.contains("test"),
+            "source database name must not appear as a qualifier. SQL: {}", sql);
+
+        let sql2 = create_table_sql("t2", &cols, "mysql", "postgresql", Some("myschema"));
+        assert!(sql2.contains("\"myschema\".\"t2\""),
+            "custom schema should be honored. SQL: {}", sql2);
     }
 
     #[ignore]

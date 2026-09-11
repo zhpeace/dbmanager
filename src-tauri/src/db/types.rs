@@ -205,6 +205,8 @@ pub struct TransferOptions {
     pub source_database: String,
     pub target_id: String,
     pub target_database: String,
+    #[serde(default)]
+    pub target_schema: Option<String>,
     pub tables: Vec<String>,
     #[serde(default)]
     pub mode: TransferMode,
@@ -252,6 +254,7 @@ impl Default for TransferOptions {
             source_database: String::new(),
             target_id: String::new(),
             target_database: String::new(),
+            target_schema: None,
             tables: Vec::new(),
             mode: TransferMode::default(),
             conflict_strategy: ConflictStrategy::default(),

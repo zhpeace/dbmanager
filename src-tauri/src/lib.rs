@@ -2299,6 +2299,7 @@ async fn run_transfer_task(
         source_database: source_database.to_string(),
         target_id: target_id.to_string(),
         target_database: target_database.to_string(),
+        target_schema: None,
         tables: tables.to_vec(),
         mode,
         conflict_strategy,

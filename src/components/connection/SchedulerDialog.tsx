@@ -134,6 +134,7 @@ function TaskForm({ task, connections, onSave, onCancel }: {
         source_database: transferSourceDb,
         target_id: transferTargetId,
         target_database: transferTargetDb,
+        target_schema: connected.find((c) => c.id === transferTargetId)?.config.schema ?? null,
         tables: transferTables,
         mode: transferMode as any,
         conflict_strategy: conflictStrategy as any,
