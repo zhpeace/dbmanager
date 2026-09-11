@@ -70,7 +70,6 @@ export function ResultPanel({ results }: ResultPanelProps) {
       <span>
         {t('resultpanel.duration')}: <span className="font-mono">{fmtDuration(active.duration)}</span>
       </span>
-      {active.error && <span className="ml-auto truncate max-w-[50%] text-destructive" title={active.error}>{active.error.split("\n")[0]}</span>}
     </div>
   )
 
