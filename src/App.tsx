@@ -20,7 +20,7 @@ import { SchedulerDialog } from "@/components/connection/SchedulerDialog"
 import { NewDatabaseDialog } from "@/components/connection/NewDatabaseDialog"
 import { DuplicateDatabaseDialog } from "@/components/connection/DuplicateDatabaseDialog"
 import { cn } from "@/lib/utils"
-import { ChevronLeft, ChevronRight, MoreHorizontal } from "lucide-react"
+import { ChevronLeft, ChevronRight, MoreHorizontal, Plus } from "lucide-react"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -185,6 +185,23 @@ function AppContent() {
   useEffect(() => {
     localStorage.setItem("dbmanager-bottomPanelHeight", String(bottomPanelHeight))
   }, [bottomPanelHeight])
+  // Editor tab shortcuts: Cmd/Ctrl+T new tab, Cmd/Ctrl+W close active tab.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey
+      if (!mod) return
+      const key = e.key.toLowerCase()
+      if (key === "t") {
+        e.preventDefault()
+        openInNewTab("")
+      } else if (key === "w") {
+        e.preventDefault()
+        closeTab(activeTabIdRef.current || tabs[0]?.id || "")
+      }
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [tabs])
   const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [transferResumeRequest, setTransferResumeRequest] = useState<{
@@ -1239,10 +1256,6 @@ function handleDatabaseClick(database: string, connectionId: string) {
     setActiveTabId(id)
   }
 
-  function newTab() {
-    openInNewTab("")
-  }
-
   function closeTab(id: string) {
     setErrorBanner(null)
     setTabs((prev) => {
@@ -1483,6 +1496,13 @@ function handleDatabaseClick(database: string, connectionId: string) {
                       ))}
                     </DropdownMenuContent>
                   </DropdownMenu>
+                  <button
+                    className="h-7 w-7 flex items-center justify-center shrink-0 text-muted-foreground hover:bg-background/60"
+                    onClick={() => openInNewTab("")}
+                    title={t('editor.new_tab')}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
                 </div>
                 {activeBrowse?.table && activeBrowse?.connectionId === activeConnectionId ? (
                   <div className="flex-1 min-h-0">
@@ -1514,7 +1534,6 @@ function handleDatabaseClick(database: string, connectionId: string) {
                         onHistoryRun={handleHistoryRun}
                         onToggleFavorite={handleToggleFavorite}
                         favorites={sqlFavorites}
-                        onNewTab={newTab}
                         onBeginTransaction={handleBeginTransaction}
                         onCommitTransaction={handleCommitTransaction}
                         onRollbackTransaction={handleRollbackTransaction}

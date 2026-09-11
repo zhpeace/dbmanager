@@ -47,7 +47,6 @@ const baseProps = {
   onHistoryRun: vi.fn(),
   onToggleFavorite: vi.fn(),
   favorites: [],
-  onNewTab: vi.fn(),
   onBeginTransaction: vi.fn(),
   onCommitTransaction: vi.fn(),
   onRollbackTransaction: vi.fn(),

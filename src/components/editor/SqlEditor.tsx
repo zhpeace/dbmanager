@@ -2,7 +2,6 @@ import { useCallback, useRef, useEffect, useState } from "react"
 import Editor, { type OnMount } from "@monaco-editor/react"
 import {
   Play,
-  Plus,
   FolderOpen,
   Save,
   History,
@@ -45,7 +44,6 @@ interface SqlEditorProps {
   onHistoryRun: (sql: string) => void
   onToggleFavorite: (sql: string) => void
   favorites: string[]
-  onNewTab: () => void
   onBeginTransaction: () => void
   onCommitTransaction: () => void
   onRollbackTransaction: () => void
@@ -76,7 +74,6 @@ export function SqlEditor({
   onHistoryRun,
   onToggleFavorite,
   favorites,
-  onNewTab,
   onBeginTransaction,
   onCommitTransaction,
   onRollbackTransaction,
@@ -545,9 +542,6 @@ export function SqlEditor({
               </>
             )}
           </div>
-          <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={onNewTab} title={t('editor.new_tab')}>
-            <Plus className="h-3.5 w-3.5" />
-          </Button>
           <div className="relative">
             <Button
               size="sm"
