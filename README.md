@@ -15,7 +15,7 @@ A cross-platform, multi-database management and migration desktop application bu
   - Column mapping (rename, skip, default values)
   - Auto-increment / sequence translation
   - Checkpoint & resume on partial failure
-  - Real-time log streaming; result page collapses table-name chips (preview + expand) and groups per-table logs, with failed tables expanded by default
+  - Real-time log streaming; result page drops redundant table-name chips (per-table stats cover them), groups per-table logs with failed tables expanded by default, and offers a failed-only stats filter
   - PostgreSQL/openGauss targets create tables under the target connection's schema (default `public`) instead of the source database name
 - **Compare & Sync**: Schema comparison between databases, diff viewer, sync SQL generation
 - **Import**: File-based data import into tables

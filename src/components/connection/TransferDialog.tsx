@@ -23,8 +23,7 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
   const { t } = useTranslation()
   const connected = connections.filter((c) => c.connected)
 
-  const [showAllTables, setShowAllTables] = useState(false)
-  const TABLES_PREVIEW = 30
+  const [showFailedOnly, setShowFailedOnly] = useState(false)
 
   async function resolvePassword(conn: Connection): Promise<string> {
     if (conn.config.password) return conn.config.password
@@ -292,9 +291,22 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                   </div>
                   {(result.table_stats?.length ?? 0) > 0 && (
                     <div className="rounded border bg-muted/10 p-2">
-                      <p className="text-xs font-medium mb-1.5">{t('transfer.table_stats')}</p>
-                      <div className="space-y-0.5 max-h-[200px] overflow-y-auto">
-                        {result.table_stats!.map((s, i) => (
+                      <div className="flex items-center justify-between mb-1.5">
+                        <p className="text-xs font-medium">{t('transfer.table_stats')}</p>
+                        {result.table_stats!.some((s) => s.status !== "ok") && (
+                          <button
+                            className="text-xs text-primary hover:underline"
+                            onClick={() => setShowFailedOnly((v) => !v)}
+                          >
+                            {showFailedOnly ? t('transfer.show_all_stats') : t('transfer.show_failed_only')}
+                          </button>
+                        )}
+                      </div>
+                      <div className="space-y-0.5 max-h-[200px] overflow-y-auto" data-testid="transfer-stats">
+                        {(showFailedOnly
+                          ? result.table_stats!.filter((s) => s.status !== "ok")
+                          : result.table_stats!
+                        ).map((s, i) => (
                           <div key={i} className="flex items-center gap-2 text-[10px] font-mono">
                             <span className="truncate min-w-0 flex-1">{s.table}</span>
                             <span className="text-muted-foreground tabular-nums w-16 text-right">{formatCount(s.rows)}</span>
@@ -319,21 +331,6 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                         ))}
                       </div>
                     </div>
-                  )}
-                  <div className="flex flex-wrap gap-1" style={showAllTables ? { maxHeight: 200, overflowY: "auto" } : undefined}>
-                    {(showAllTables ? result.tables_transferred : result.tables_transferred.slice(0, TABLES_PREVIEW)).map((t) => (
-                      <span key={t} className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded">{t}</span>
-                    ))}
-                  </div>
-                  {result.tables_transferred.length > TABLES_PREVIEW && (
-                    <button
-                      className="text-xs text-primary hover:underline"
-                      onClick={() => setShowAllTables((v) => !v)}
-                    >
-                      {showAllTables
-                        ? t('transfer.collapse_tables')
-                        : t('transfer.show_all_tables', { count: result.tables_transferred.length })}
-                    </button>
                   )}
                 </>
               )}

@@ -478,6 +478,6 @@
   "editor.recent": "最近",
   "editor.pin": "收藏",
   "editor.unpin": "取消收藏",
-  "transfer.show_all_tables": "全部 {{count}} 个表",
-  "transfer.collapse_tables": "收起表名"
+  "transfer.show_failed_only": "仅看失败",
+  "transfer.show_all_stats": "显示全部"
 }

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from "@testing-library/react"
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { TransferDialog } from "../TransferDialog"
 import { invoke } from "@tauri-apps/api/core"
@@ -363,7 +363,7 @@ describe("groupLogs", () => {
   })
 })
 
-it("collapses table chips and groups logs on result", async () => {
+it("shows no redundant chips and filters failed stats", async () => {
   const user = userEvent.setup()
   let resolveTransfer: (v: unknown) => void
   vi.mocked(invoke).mockImplementation(async (cmd: string) => {
@@ -384,8 +384,12 @@ it("collapses table chips and groups logs on result", async () => {
   resolveTransfer!({
     tables_transferred: manyTables,
     rows_transferred: 100,
-    errors: [],
+    errors: ["Failed to create table 'broken': error returned from database: nope"],
     duration: "1.2s",
+    table_stats: [
+      { table: "users", rows: 10, size_bytes: 1024, duration_ms: 5, status: "ok" },
+      { table: "broken", rows: 0, size_bytes: 0, duration_ms: 3, status: "error" },
+    ],
     logs: [
       "Starting table: users",
       "Creating table 'users'...",
@@ -397,14 +401,23 @@ it("collapses table chips and groups logs on result", async () => {
   })
 
   await waitFor(() => {
-    expect(screen.getByText(/All 40 tables/)).toBeInTheDocument()
+    expect(screen.getByText(/Transferred 100 rows/)).toBeInTheDocument()
   })
-  // chips: only first 30 visible, no overflow
-  expect(screen.getByText("tbl_0")).toBeInTheDocument()
+
+  // no flat table-name chips (redundant with per-table stats)
+  expect(screen.queryByText("tbl_0")).not.toBeInTheDocument()
   expect(screen.queryByText("tbl_39")).not.toBeInTheDocument()
 
-  // grouped log: one summary per table; success collapsed, failure expanded
-  expect(screen.getByText("users")).toBeInTheDocument()
-  expect(screen.getByText("broken")).toBeInTheDocument()
-  expect(screen.getByText(/error returned from database/)).toBeInTheDocument()
+  // per-table stats include every table
+  const stats = within(screen.getByTestId("transfer-stats"))
+  expect(stats.getByText("users")).toBeInTheDocument()
+  expect(stats.getByText("broken")).toBeInTheDocument()
+
+  // failed-only toggle filters the stats list
+  await user.click(screen.getByText(/Failed only/i))
+  expect(stats.queryByText("users")).not.toBeInTheDocument()
+  expect(stats.getByText("broken")).toBeInTheDocument()
+
+  // grouped log: failure detail visible (error area + expanded failed table)
+  expect(screen.getAllByText(/error returned from database/).length).toBeGreaterThan(0)
 })
