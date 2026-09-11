@@ -3791,7 +3791,11 @@ fn create_table_sql(table: &str, columns: &[ColumnInfo], source_type: &str, targ
             escape_identifier(table, target_type)
         }
     } else if target_type == "postgresql" || target_type == "oracle" {
+        // PostgreSQL/openGauss: the qualifier is a schema; an empty string
+        // must fall back to "public" (a blank schema field would otherwise
+        // produce `"".table` -> zero-length identifier).
         if let Some(db) = database {
+            let db = if db.is_empty() { "public" } else { db };
             format!("\"{}\".{}", db.replace('"', "\"\""), escape_identifier(table, target_type))
         } else {
             escape_identifier(table, target_type)
@@ -3829,7 +3833,11 @@ fn create_index_sql(table: &str, idx: &IndexInfo, target_type: &str, database: O
             escape_identifier(table, target_type)
         }
     } else if target_type == "postgresql" || target_type == "oracle" {
+        // PostgreSQL/openGauss: the qualifier is a schema; an empty string
+        // must fall back to "public" (a blank schema field would otherwise
+        // produce `"".table` -> zero-length identifier).
         if let Some(db) = database {
+            let db = if db.is_empty() { "public" } else { db };
             format!("\"{}\".{}", db.replace('"', "\"\""), escape_identifier(table, target_type))
         } else {
             escape_identifier(table, target_type)
@@ -4184,7 +4192,10 @@ pub async fn transfer_data(
     // - MySQL: qualifier is the target database.
     // - Oracle: qualifier is the target schema (its "database" concept).
     let target_qualifier: String = if target_type == "postgresql" {
-        opts.target_schema.clone().unwrap_or_else(|| "public".to_string())
+        opts.target_schema.as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("public")
+            .to_string()
     } else {
         opts.target_database.clone()
     };
@@ -6796,6 +6807,10 @@ mod tests {
         let sql2 = create_table_sql("t2", &cols, "mysql", "postgresql", Some("myschema"));
         assert!(sql2.contains("\"myschema\".\"t2\""),
             "custom schema should be honored. SQL: {}", sql2);
+
+        let sql3 = create_table_sql("t3", &cols, "mysql", "postgresql", Some(""));
+        assert!(sql3.contains("\"public\".\"t3\""),
+            "empty schema should fall back to public. SQL: {}", sql3);
     }
 
     #[ignore]
