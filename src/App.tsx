@@ -79,10 +79,10 @@ function AppContent() {
   const [tables, setTables] = useState<Record<string, Record<string, TableInfo[]>>>({})
   const [redisScanCursor, setRedisScanCursor] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState<Record<string, boolean>>({})
-  const [tabs, setTabs] = useState<{ id: string; title: string; sql: string; filePath: string | null; browse?: { connectionId: string; database: string; table: string; defaultTab?: string; objectType?: string } | null; database?: Record<string, string | null> }[]>(
-    () => [{ id: crypto.randomUUID(), title: t('editor.tab_query') + " 1", sql: "", filePath: null, database: {} }]
+  const [tabs, setTabs] = useState<{ id: string; title: string; sql: string; filePath: string | null; browse?: { connectionId: string; database: string; table: string; defaultTab?: string; objectType?: string } | null; connectionId?: string | null; database?: Record<string, string | null> }[]>(
+    () => [{ id: crypto.randomUUID(), title: t('editor.tab_query') + " 1", sql: "", filePath: null, connectionId: null, database: {} }]
   )
-  const backendDbRef = useRef<string | null>(null)
+  const backendConnDbRef = useRef<{ id: string; db: string } | null>(null)
   const [activeTabId, setActiveTabId] = useState<string>(() => "")
   const activeTabIdRef = useRef<string>("")
   const lastTabByConnRef = useRef<Record<string, string>>({})
@@ -334,7 +334,7 @@ function AppContent() {
       const dbs: DatabaseInfo[] = await invoke("get_databases", { id: conn.id })
       setDatabases((prev) => ({ ...prev, [conn.id]: dbs }))
       if (conn.config.type === "mysql" || conn.config.type === "postgresql") {
-        backendDbRef.current = conn.config.database || null
+        backendConnDbRef.current = { id: conn.id, db: conn.config.database || "" }
       }
 
       const current = connectionsRef.current
@@ -396,6 +396,15 @@ async function handleSelectConnection(id: string, restoreBrowse = false) {
       const queryTab = tabs.find((t) => !t.browse)
       if (queryTab) {
         setActiveTabId(queryTab.id)
+        // Bind an unbound query tab to the clicked connection so the editor
+        // runs against it immediately (mainstream client behavior).
+        if (!queryTab.connectionId) {
+          setTabs((prev) =>
+            prev.map((tb) =>
+              tb.id === queryTab.id ? { ...tb, connectionId: id } : tb
+            )
+          )
+        }
       } else {
         openInNewTab("")
       }
@@ -479,7 +488,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
           database,
           databaseType: conn.config.type,
         })
-        backendDbRef.current = database
+        backendConnDbRef.current = { id, db: database }
       }
       if (conn?.config.type === "redis") {
         const tabKey = `${id}:${database}`
@@ -648,15 +657,20 @@ function handleDatabaseClick(database: string, connectionId: string) {
   }
 
   async function runSql(sql: string, opts?: { startLine?: number; plan?: boolean }) {
-    if (!activeConnectionId) return
-    const conn = connectionsRef.current.find((c) => c.id === activeConnectionId)
-    const tabDbs = activeTab()?.database
-    const tabDb = tabDbs ? tabDbs[activeConnectionId] : null
+    const tb = activeTab()
+    const connId = tb?.connectionId ?? tb?.browse?.connectionId ?? activeConnectionId
+    if (!connId) {
+      setErrorBanner(t('editor.select_connection_first'))
+      return
+    }
+    const conn = connectionsRef.current.find((c) => c.id === connId)
+    const tabDbs = tb?.database
+    const tabDb = tabDbs ? tabDbs[connId] : null
     const targetDb = tabDb ?? conn?.config.database ?? null
     if (
       conn && targetDb &&
       (conn.config.type === "mysql" || conn.config.type === "postgresql") &&
-      backendDbRef.current !== targetDb
+      (backendConnDbRef.current?.id !== connId || backendConnDbRef.current?.db !== targetDb)
     ) {
       try {
         const password = await resolvePassword(conn)
@@ -669,7 +683,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
           database: targetDb,
           databaseType: conn.config.type,
         })
-        backendDbRef.current = targetDb
+        backendConnDbRef.current = { id: connId, db: targetDb }
       } catch (e: any) {
         setErrorBanner(t('app.connection_failed', { error: String(e) }))
         return
@@ -682,7 +696,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
       .filter(Boolean)
     if (statements.length === 0) return
     const results: ExecResult[] = []
-    const dbType = connDbType(activeConnectionId)
+    const dbType = connDbType(connId)
     setExecuting(true)
     try {
       for (let i = 0; i < statements.length; i++) {
@@ -691,7 +705,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
           : t('resultpanel.result', { n: i + 1 })
         try {
           const r: QueryResult = await invoke("execute_query", {
-            id: activeConnectionId,
+            id: connId,
             query: statements[i],
           })
           results.push({ id: crypto.randomUUID(), title, isPlan: opts?.plan, ...r })
@@ -731,17 +745,19 @@ function handleDatabaseClick(database: string, connectionId: string) {
   }
 
   async function handleCancel() {
-    if (!activeConnectionId) return
+    const connId = activeTabConnectionId()
+    if (!connId) return
     try {
-      await invoke("cancel_query", { id: activeConnectionId })
+      await invoke("cancel_query", { id: connId })
     } catch {}
   }
 
   async function handleBeginTransaction() {
-    if (!activeConnectionId) return
+    const connId = activeTabConnectionId()
+    if (!connId) return
     try {
-      await invoke("begin_transaction", { id: activeConnectionId })
-      setTxActive((prev) => ({ ...prev, [activeConnectionId!]: true }))
+      await invoke("begin_transaction", { id: connId })
+      setTxActive((prev) => ({ ...prev, [connId!]: true }))
     } catch (e: any) {
       setQueryResults([
         {
@@ -758,10 +774,11 @@ function handleDatabaseClick(database: string, connectionId: string) {
   }
 
   async function handleCommitTransaction() {
-    if (!activeConnectionId) return
+    const connId = activeTabConnectionId()
+    if (!connId) return
     try {
-      await invoke("commit_transaction", { id: activeConnectionId })
-      setTxActive((prev) => ({ ...prev, [activeConnectionId!]: false }))
+      await invoke("commit_transaction", { id: connId })
+      setTxActive((prev) => ({ ...prev, [connId!]: false }))
     } catch (e: any) {
       setQueryResults([
         {
@@ -778,10 +795,11 @@ function handleDatabaseClick(database: string, connectionId: string) {
   }
 
   async function handleRollbackTransaction() {
-    if (!activeConnectionId) return
+    const connId = activeTabConnectionId()
+    if (!connId) return
     try {
-      await invoke("rollback_transaction", { id: activeConnectionId })
-      setTxActive((prev) => ({ ...prev, [activeConnectionId!]: false }))
+      await invoke("rollback_transaction", { id: connId })
+      setTxActive((prev) => ({ ...prev, [connId!]: false }))
     } catch (e: any) {
       setQueryResults([
         {
@@ -798,8 +816,9 @@ function handleDatabaseClick(database: string, connectionId: string) {
   }
 
   function handleExplain(sql: string) {
-    if (!activeConnectionId) return
-    const planSql = buildExplainSql(connDbType(activeConnectionId), sql)
+    const connId = activeTabConnectionId()
+    if (!connId) return
+    const planSql = buildExplainSql(connDbType(connId), sql)
     if (!planSql) {
       setQueryResults([
         {
@@ -1083,6 +1102,11 @@ function handleDatabaseClick(database: string, connectionId: string) {
     return tabs.find((tb) => tb.id === activeTabId) || tabs[0]
   }
 
+  function activeTabConnectionId(): string | null {
+    const tb = activeTab()
+    return tb?.connectionId ?? tb?.browse?.connectionId ?? null
+  }
+
   function setActiveTabSql(sql: string) {
     const id = activeTabIdRef.current || tabs[0]?.id
     if (!id) return
@@ -1097,18 +1121,19 @@ function handleDatabaseClick(database: string, connectionId: string) {
 
   function setActiveTabDatabase(database: string | null) {
     const id = activeTabIdRef.current || tabs[0]?.id
-    const connId = activeConnectionId
+    const connId = activeTabConnectionId()
     if (!id || !connId) return
     setTabs((prev) =>
       prev.map((tb) =>
         tb.id === id ? { ...tb, database: { ...(tb.database || {}), [connId]: database } } : tb
       )
     )
-    backendDbRef.current = database
+    backendConnDbRef.current = { id: connId, db: database || "" }
   }
 
   async function handleDatabaseChange(database: string) {
-    const conn = connectionsRef.current.find((c) => c.id === activeConnectionId)
+    const connId = activeTabConnectionId()
+    const conn = connectionsRef.current.find((c) => c.id === connId)
     if (!conn) return
     setActiveTabDatabase(database)
     try {
@@ -1124,6 +1149,28 @@ function handleDatabaseClick(database: string, connectionId: string) {
       })
     } catch (e: any) {
       setErrorBanner(t('app.connection_failed', { error: String(e) }))
+    }
+  }
+
+  // Bind the active query tab to a different connection (DBeaver-style
+  // Active datasource switcher). The tab keeps its SQL text; its database
+  // selection resets to the new connection's default database.
+  function handleTabChangeConnection(id: string) {
+    const tabId = activeTabIdRef.current || tabs[0]?.id
+    if (!tabId) return
+    const conn = connectionsRef.current.find((c) => c.id === id)
+    setTabs((prev) =>
+      prev.map((tb) =>
+        tb.id === tabId
+          ? { ...tb, connectionId: id, database: { ...(tb.database || {}), [id]: conn?.config.database || null } }
+          : tb
+      )
+    )
+    setActiveConnectionId(id)
+    if (conn && !databases[id]?.length) {
+      invoke("get_databases", { id }).then((dbs) => {
+        setDatabases((prev) => ({ ...prev, [id]: dbs as DatabaseInfo[] }))
+      }).catch(() => {})
     }
   }
 
@@ -1156,6 +1203,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
       title: t('editor.tab_query') + " " + n,
       sql,
       filePath: null,
+      connectionId: connId,
       database: connId ? { [connId]: activeConnection?.config.database || null } : {},
     }])
     setActiveTabId(id)
@@ -1171,7 +1219,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
       if (next.length === 0) {
         const nid = crypto.randomUUID()
         setActiveTabId(nid)
-        return [{ id: nid, title: t('editor.tab_query') + " 1", sql: "", filePath: null, database: {} }]
+        return [{ id: nid, title: t('editor.tab_query') + " 1", sql: "", filePath: null, connectionId: activeConnectionId, database: {} }]
       }
       if (id === activeTabId) {
         const idx = prev.findIndex((tb) => tb.id === id)
@@ -1203,8 +1251,13 @@ function handleDatabaseClick(database: string, connectionId: string) {
 
   const activeConnection = connections.find((c) => c.id === activeConnectionId)
   const activeBrowse = activeTab()?.browse
+  const tabConnId = activeTabConnectionId()
   const tabDbs = activeTab()?.database
-  const currentDatabase = (activeConnectionId && tabDbs ? tabDbs[activeConnectionId] : undefined) ?? activeConnection?.config.database ?? null
+  const activeConnForTab = connections.find((c) => c.id === tabConnId)
+  const currentDatabase = (tabConnId && tabDbs ? tabDbs[tabConnId] : undefined) ?? activeConnForTab?.config.database ?? null
+  const connectedConnectionOptions = connections
+    .filter((c) => c.connected)
+    .map((c) => ({ id: c.id, label: `${c.config.host} (${c.config.type})` }))
   const connectionMeta = activeConnection?.config && activeConnection.config.type !== "sqlite"
     ? `${activeConnection.config.user || ""}@${activeConnection.config.host || ""}:${activeConnection.config.port ?? ""}`
     : null
@@ -1433,18 +1486,21 @@ function handleDatabaseClick(database: string, connectionId: string) {
                         onBeginTransaction={handleBeginTransaction}
                         onCommitTransaction={handleCommitTransaction}
                         onRollbackTransaction={handleRollbackTransaction}
-                        txActive={activeConnectionId ? !!txActive[activeConnectionId] : false}
+                        txActive={tabConnId ? !!txActive[tabConnId] : false}
                         executing={executing}
                         lastExec={lastExec}
                         value={activeTab()?.sql || ""}
                         onChange={setActiveTabSql}
-                        connectionId={activeConnectionId}
+                        connectionId={tabConnId}
                         currentDatabase={currentDatabase}
-                        databases={databases[activeConnectionId || ""] || []}
+                        databases={databases[tabConnId || ""] || []}
                         onChangeDatabase={handleDatabaseChange}
-                        dbType={connDbType(activeConnectionId)}
+                        dbType={connDbType(tabConnId)}
                         history={sqlHistory}
                         errorMarker={errorMarker}
+                        connections={connectedConnectionOptions}
+                        boundConnectionId={!activeBrowse ? tabConnId : null}
+                        onChangeConnection={handleTabChangeConnection}
                       />
                     </div>
                     <ResizeHandle

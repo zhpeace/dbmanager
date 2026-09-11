@@ -370,6 +370,8 @@
   "editor.title": "SQL Editor",
   "editor.last_exec": "Last: {{duration}} | {{count}} rows",
   "editor.select_database": "Select database",
+  "editor.select_connection": "Switch connection",
+  "editor.select_connection_first": "Select a connection in the editor toolbar first",
   "editor.run": "Run",
   "editor.stop": "Stop",
   "editor.new_tab": "New Query Tab",

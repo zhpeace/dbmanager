@@ -146,3 +146,30 @@ it("does not render database selector when no connection or no databases", () =>
   render(<SqlEditor {...baseProps} connectionId={null} databases={[]} />)
   expect(screen.queryByTitle("Select database")).not.toBeInTheDocument()
 })
+
+it("renders connection switcher and switches binding", async () => {
+  const user = userEvent.setup()
+  const onChangeConnection = vi.fn()
+  render(
+    <SqlEditor
+      {...baseProps}
+      boundConnectionId="c1"
+      connections={[
+        { id: "c1", label: "127.0.0.1 (mysql)" },
+        { id: "c2", label: "192.168.0.155 (oracle)" },
+      ]}
+      onChangeConnection={onChangeConnection}
+    />
+  )
+  expect(screen.getByTitle("Switch connection")).toBeInTheDocument()
+  expect(screen.getByText("127.0.0.1 (mysql)")).toBeInTheDocument()
+  await user.click(screen.getByTitle("Switch connection"))
+  const oracle = await screen.findByText("192.168.0.155 (oracle)")
+  await user.click(oracle)
+  expect(onChangeConnection).toHaveBeenCalledWith("c2")
+})
+
+it("does not render connection switcher when unbound or no connections", () => {
+  render(<SqlEditor {...baseProps} boundConnectionId={null} connections={[]} />)
+  expect(screen.queryByTitle("Switch connection")).not.toBeInTheDocument()
+})
