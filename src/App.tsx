@@ -492,6 +492,11 @@ function handleDatabaseClick(database: string, connectionId: string) {
   if (!tb) return
   const currentId = activeTabIdRef.current || tabs[0]?.id || ""
   if (tb.browse?.table) return
+  // Activate the connection being browsed, matching the table-click path,
+  // so the top strip / editor context follow the sidebar click.
+  if (connectionId !== activeConnectionId) {
+    handleSelectConnection(connectionId)
+  }
   setTabs((prev) =>
     prev.map((t2) =>
       t2.id === currentId
@@ -1268,7 +1273,9 @@ function handleDatabaseClick(database: string, connectionId: string) {
       sql,
       filePath: null,
       connectionId: connId,
-      database: connId ? { [connId]: activeConnection?.config.database || null } : {},
+      // Inherit the currently selected database (top strip) instead of the
+      // connection's configured default, matching Navicat/DBeaver behavior.
+      database: connId ? { [connId]: currentDatabase } : {},
       error: null,
     }])
     setActiveTabId(id)
