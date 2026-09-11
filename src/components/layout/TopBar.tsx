@@ -12,7 +12,6 @@ interface TopBarProps {
   connectionId?: string | null
   connectionName?: string | null
   currentDatabase?: string | null
-  connectionMeta?: string | null
   dbType?: string
   onOpenErDiagram?: () => void
   onOpenImport?: () => void
@@ -32,7 +31,6 @@ export function TopBar({
   connectionId,
   connectionName,
   currentDatabase,
-  connectionMeta,
   dbType,
   onOpenErDiagram,
   onOpenImport,
@@ -61,7 +59,6 @@ export function TopBar({
         {connectionId && (
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground pl-2 border-l min-w-0">
             {connectionName && <span className="font-medium text-foreground truncate">{connectionName}</span>}
-            {connectionMeta && connectionName && <span className="text-muted-foreground/70 whitespace-nowrap">{connectionMeta}</span>}
             {connectionName && currentDatabase && <span>/</span>}
             {currentDatabase && (
               <span className="font-medium text-foreground truncate">{currentDatabase}</span>

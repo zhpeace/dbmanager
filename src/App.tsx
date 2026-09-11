@@ -84,6 +84,7 @@ function AppContent() {
   )
   const backendConnDbRef = useRef<{ id: string; db: string } | null>(null)
   const [activeTabId, setActiveTabId] = useState<string>(() => "")
+  const [tabMenu, setTabMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const activeTabIdRef = useRef<string>("")
   const lastTabByConnRef = useRef<Record<string, string>>({})
   const activeConnIdRef = useRef<string>("")
@@ -185,7 +186,7 @@ function AppContent() {
   useEffect(() => {
     localStorage.setItem("dbmanager-bottomPanelHeight", String(bottomPanelHeight))
   }, [bottomPanelHeight])
-  // Editor tab shortcuts: Cmd/Ctrl+T new tab, Cmd/Ctrl+W close active tab.
+  // Editor tab shortcuts: Cmd/Ctrl+T new tab, Cmd/Ctrl+W close active tab, Cmd/Ctrl+1..9 jump to tab.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey
@@ -197,6 +198,15 @@ function AppContent() {
       } else if (key === "w") {
         e.preventDefault()
         closeTab(activeTabIdRef.current || tabs[0]?.id || "")
+      } else if (/^[1-9]$/.test(key)) {
+        const tb = tabs[Number(key) - 1]
+        if (!tb) return
+        e.preventDefault()
+        if (tb.browse?.connectionId && tb.browse.connectionId !== activeConnectionId) {
+          handleSelectConnection(tb.browse.connectionId)
+        }
+        setActiveTabId(tb.id)
+        setErrorBanner(null)
       }
     }
     window.addEventListener("keydown", onKeyDown)
@@ -1274,6 +1284,21 @@ function handleDatabaseClick(database: string, connectionId: string) {
     })
   }
 
+  function closeOtherTabs(id: string) {
+    setTabs((prev) => prev.filter((tb) => tb.id === id))
+    setActiveTabId(id)
+  }
+
+  function closeTabsRight(id: string) {
+    const idx = tabs.findIndex((tb) => tb.id === id)
+    if (idx < 0) return
+    const removed = tabs.slice(idx + 1).map((tb) => tb.id)
+    setTabs((prev) => prev.slice(0, idx + 1))
+    if (removed.includes(activeTabIdRef.current)) {
+      setActiveTabId(id)
+    }
+  }
+
   function handleDeleteConnection(id: string) {
     deleteConnectionSecret(id).catch(() => {})
     const updated = connectionsRef.current.filter((c) => c.id !== id)
@@ -1302,9 +1327,6 @@ function handleDatabaseClick(database: string, connectionId: string) {
   const connectedConnectionOptions = connections
     .filter((c) => c.connected)
     .map((c) => ({ id: c.id, label: c.config.name || c.config.host || c.config.type, color: c.config.color }))
-  const connectionMeta = activeConnection?.config && activeConnection.config.type !== "sqlite"
-    ? `${activeConnection.config.user || ""}@${activeConnection.config.host || ""}:${activeConnection.config.port ?? ""}`
-    : null
   const currentTables = (activeConnectionId && tables[activeConnectionId] && currentDatabase)
     ? tables[activeConnectionId][currentDatabase] || []
     : []
@@ -1348,7 +1370,6 @@ function handleDatabaseClick(database: string, connectionId: string) {
         connectionId={activeConnectionId}
         connectionName={activeConnection?.config.name || null}
         currentDatabase={currentDatabase}
-        connectionMeta={connectionMeta}
         dbType={activeConnection?.config.type || undefined}
         onOpenErDiagram={handleOpenErDiagram}
         onOpenImport={handleOpenImport}
@@ -1425,7 +1446,9 @@ function handleDatabaseClick(database: string, connectionId: string) {
                       <ChevronLeft className="h-4 w-4" />
                     </button>
                   )}
-                  <div ref={tabBarRef} className="flex-1 flex items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  <div ref={tabBarRef} className="flex-1 flex items-center overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" onDoubleClick={(e) => {
+                    if (e.target === e.currentTarget) openInNewTab("")
+                  }}>
                     {tabs.map((tb) => (
                       <div
                         key={tb.id}
@@ -1434,7 +1457,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
                           else tabRefs.current.delete(tb.id)
                         }}
                         className={cn(
-                          "flex items-center gap-1 pl-3 pr-2 py-1.5 text-xs border-r cursor-pointer w-[170px] shrink-0 overflow-hidden",
+                          "flex items-center gap-1 pl-3 pr-2 py-1.5 text-xs border-r cursor-pointer min-w-[90px] max-w-[170px] shrink overflow-hidden",
                           tb.id === (activeTabId || tabs[0]?.id)
                             ? "bg-background text-foreground font-medium"
                             : "text-muted-foreground hover:bg-background/60",
@@ -1445,6 +1468,16 @@ function handleDatabaseClick(database: string, connectionId: string) {
                           }
                           setActiveTabId(tb.id)
                           setErrorBanner(null)
+                        }}
+                        onAuxClick={(e) => {
+                          if (e.button === 1) {
+                            e.preventDefault()
+                            closeTab(tb.id)
+                          }
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault()
+                          setTabMenu({ id: tb.id, x: e.clientX, y: e.clientY })
                         }}
                         title={tb.title}
                       >
@@ -1504,6 +1537,38 @@ function handleDatabaseClick(database: string, connectionId: string) {
                     <Plus className="h-4 w-4" />
                   </button>
                 </div>
+                {tabMenu && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setTabMenu(null)}
+                      onContextMenu={(e) => { e.preventDefault(); setTabMenu(null) }}
+                    />
+                    <div
+                      className="fixed z-50 w-44 rounded-md border bg-popover shadow-md py-1"
+                      style={{ left: tabMenu.x, top: tabMenu.y }}
+                    >
+                      <button
+                        className="w-full px-3 py-1.5 text-left text-xs hover:bg-muted/60"
+                        onClick={() => { closeTab(tabMenu.id); setTabMenu(null) }}
+                      >
+                        {t('editor.tab_close')}
+                      </button>
+                      <button
+                        className="w-full px-3 py-1.5 text-left text-xs hover:bg-muted/60"
+                        onClick={() => { closeOtherTabs(tabMenu.id); setTabMenu(null) }}
+                      >
+                        {t('editor.tab_close_others')}
+                      </button>
+                      <button
+                        className="w-full px-3 py-1.5 text-left text-xs hover:bg-muted/60"
+                        onClick={() => { closeTabsRight(tabMenu.id); setTabMenu(null) }}
+                      >
+                        {t('editor.tab_close_right')}
+                      </button>
+                    </div>
+                  </>
+                )}
                 {activeBrowse?.table && activeBrowse?.connectionId === activeConnectionId ? (
                   <div className="flex-1 min-h-0">
                     <TableBrowser
