@@ -134,7 +134,7 @@ async fn transfer_all_parallel(
                 ..Default::default()
             };
             let ts = std::time::Instant::now();
-            let result = db::transfer_data(&src_conn, &tgt_conn, &opts, None).await;
+            let result = db::transfer_data(&src_conn, &tgt_conn, &opts, None, None).await;
             tx.send((table, result, ts.elapsed())).unwrap();
         });
 

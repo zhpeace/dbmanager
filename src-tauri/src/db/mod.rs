@@ -38,6 +38,7 @@ pub struct AppState {
     pub transactions: tokio::sync::Mutex<HashMap<String, DbTransaction>>,
     pub scheduler: scheduler::SchedulerManager,
     pub ssh_tunnels: tokio::sync::Mutex<HashMap<String, tokio::process::Child>>,
+    pub transfer_cancels: tokio::sync::Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 impl AppState {
@@ -49,6 +50,7 @@ impl AppState {
             transactions: tokio::sync::Mutex::new(HashMap::new()),
             scheduler: scheduler::SchedulerManager::new(Vec::new()),
             ssh_tunnels: tokio::sync::Mutex::new(HashMap::new()),
+            transfer_cancels: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -4153,6 +4155,7 @@ pub async fn transfer_data(
     target: &DbConnection,
     opts: &types::TransferOptions,
     log_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<types::TransferResult, String> {
     let start = std::time::Instant::now();
     let mut tables_transferred = Vec::new();
@@ -4216,6 +4219,9 @@ pub async fn transfer_data(
     }
 
     'table_loop: for table in &opts.tables {
+        if cancel.as_ref().is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed)) {
+            return Err("Transfer cancelled".to_string());
+        }
         let table_start = std::time::Instant::now();
         let rows_before = rows_transferred;
         let size_bytes: u64 = source_size_map.get(&table.to_lowercase()).copied().unwrap_or(0);
@@ -4350,6 +4356,9 @@ pub async fn transfer_data(
                 }
 
                 loop {
+                    if cancel.as_ref().is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed)) {
+                        return Err("Transfer cancelled".to_string());
+                    }
                     let data = match source.get_table_data(
                         &opts.source_database, table, page, page_size,
                         None, None,

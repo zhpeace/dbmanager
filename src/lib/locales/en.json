@@ -479,5 +479,20 @@
   "editor.pin": "Pin to favorites",
   "editor.unpin": "Remove from favorites",
   "transfer.show_failed_only": "Failed only",
-  "transfer.show_all_stats": "Show all"
+  "transfer.show_all_stats": "Show all",
+  "transfer.starting": "Starting...",
+  "transfer.conn_busy": "Source or target connection is busy with another transfer. Please wait for it to finish.",
+  "task.title": "Tasks",
+  "task.preparing": "Preparing...",
+  "task.cancel": "Cancel task",
+  "task.cancelling": "Cancelling...",
+  "task.empty": "No tasks yet",
+  "task.history": "History",
+  "task.clear": "Clear",
+  "task.remove": "Remove",
+  "task.more_errors": "{{n}} more errors",
+  "task.summary_success": "Done {{done}}/{{total}} tables",
+  "task.summary_error": "Done {{done}}/{{total}} tables · {{errs}} errors",
+  "task.summary_cancelled": "Cancelled ({{done}}/{{total}})",
+  "task.summary_running": "{{done}}/{{total}} tables"
 }

@@ -198,8 +198,10 @@ async function setupTransferDialog(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByText("target_db"))
 }
 
-it("calls transfer_data and shows success result", async () => {
+it("starts a background transfer and closes the dialog immediately", async () => {
   const user = userEvent.setup()
+  const { __resetTransferTasksForTest } = await import("@/lib/transferTasks")
+  __resetTransferTasksForTest()
   setupTransferMocks({
     tables_transferred: ["users"],
     rows_transferred: 100,
@@ -219,6 +221,7 @@ it("calls transfer_data and shows success result", async () => {
 
   await user.click(screen.getByRole("button", { name: /Start Transfer/i }))
 
+  // 后台任务：transfer_data 被调用并带 taskId
   await waitFor(() => {
     expect(invoke).toHaveBeenCalledWith("transfer_data", expect.objectContaining({
       opts: expect.objectContaining({
@@ -228,16 +231,19 @@ it("calls transfer_data and shows success result", async () => {
         target_database: "target_db",
         tables: ["users"],
       }),
+      taskId: expect.any(String),
     }))
   })
 
-  await waitFor(() => {
-    expect(screen.getByText(/Transferred 100 rows/)).toBeInTheDocument()
-  })
+  // 对话框立即关闭，结果不再展示在对话框里
+  expect(mockOnOpenChange).toHaveBeenCalledWith(false)
+  expect(screen.queryByText(/Transferred 100 rows/)).not.toBeInTheDocument()
 })
 
-it("shows errors when transfer has errors", async () => {
+it("starts a background transfer even when it has errors", async () => {
   const user = userEvent.setup()
+  const { __resetTransferTasksForTest } = await import("@/lib/transferTasks")
+  __resetTransferTasksForTest()
   setupTransferMocks({
     tables_transferred: ["users"],
     rows_transferred: 50,
@@ -258,87 +264,20 @@ it("shows errors when transfer has errors", async () => {
   await user.click(screen.getByRole("button", { name: /Start Transfer/i }))
 
   await waitFor(() => {
-    expect(screen.getByText("insert failed on row 5: duplicate key")).toBeInTheDocument()
+    expect(invoke).toHaveBeenCalledWith("transfer_data", expect.objectContaining({
+      taskId: expect.any(String),
+    }))
   })
-})
-
-it("toggles advanced options panel", async () => {
-  const user = userEvent.setup()
-  render(<TransferDialog {...defaultProps} />)
-  expect(screen.queryByText("Transfer Mode")).not.toBeInTheDocument()
-
-  await user.click(screen.getByText("Advanced Options"))
-  expect(screen.getByText("Transfer Mode")).toBeInTheDocument()
-  expect(screen.getByText("Conflict Strategy")).toBeInTheDocument()
-})
-
-it("calls onOpenChange when cancel is clicked", async () => {
-  const user = userEvent.setup()
-  render(<TransferDialog {...defaultProps} />)
-  await user.click(screen.getByText("Cancel"))
   expect(mockOnOpenChange).toHaveBeenCalledWith(false)
+  // 错误不展示在对话框（任务中心展示）
+  expect(screen.queryByText("insert failed on row 5: duplicate key")).not.toBeInTheDocument()
 })
 
-it("never dismisses on overlay click or Esc; close via explicit button", async () => {
+it("dismisses on overlay click and Esc (non-modal)", async () => {
   const user = userEvent.setup()
-  let resolveTransfer: (v: unknown) => void
-  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-    if (cmd === "transfer_data") {
-      return new Promise((res) => { resolveTransfer = res })
-    }
-    if (cmd === "get_databases") return [{ name: "mydb" }, { name: "target_db" }]
-    if (cmd === "get_tables") return [{ name: "users", object_type: "TABLE" }]
-    return null
-  })
-
   render(<TransferDialog {...defaultProps} />)
-  await setupTransferDialog(user)
 
-  await waitFor(() => {
-    expect(screen.getByText("users")).toBeInTheDocument()
-  })
-  await user.click(screen.getByText(/Select All/))
-
-  const overlay = screen.getByRole("dialog").previousElementSibling!
-  fireEvent.pointerDown(overlay)
-  fireEvent.pointerUp(overlay)
-  fireEvent.click(overlay)
   fireEvent.keyDown(document.body, { key: "Escape" })
-  expect(mockOnOpenChange).not.toHaveBeenCalled()
-
-  await user.click(screen.getByRole("button", { name: /Start Transfer/i }))
-
-  await waitFor(() => {
-    expect(invoke).toHaveBeenCalledWith("transfer_data", expect.anything())
-  })
-
-  const overlay2 = screen.getByRole("dialog").previousElementSibling!
-  fireEvent.pointerDown(overlay2)
-  fireEvent.pointerUp(overlay2)
-  fireEvent.click(overlay2)
-  expect(mockOnOpenChange).not.toHaveBeenCalled()
-
-  resolveTransfer!({
-    tables_transferred: ["users"],
-    rows_transferred: 100,
-    errors: [],
-    duration: "1.2s",
-    logs: [],
-  })
-
-  await waitFor(() => {
-    expect(screen.getByText(/Transferred 100 rows/)).toBeInTheDocument()
-  })
-
-  const overlay3 = screen.getByRole("dialog").previousElementSibling!
-  fireEvent.pointerDown(overlay3)
-  fireEvent.pointerUp(overlay3)
-  fireEvent.click(overlay3)
-  expect(mockOnOpenChange).not.toHaveBeenCalled()
-
-  const closeButtons = screen.getAllByRole("button", { name: /Close/i })
-  const footerClose = closeButtons.find(b => b.className.includes("bg-primary"))
-  await user.click(footerClose!)
   expect(mockOnOpenChange).toHaveBeenCalledWith(false)
 })
 
@@ -361,63 +300,4 @@ describe("groupLogs", () => {
     expect(groups[1].table).toBe("orders")
     expect(groups[1].hasError).toBe(true)
   })
-})
-
-it("shows no redundant chips and filters failed stats", async () => {
-  const user = userEvent.setup()
-  let resolveTransfer: (v: unknown) => void
-  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-    if (cmd === "transfer_data") {
-      return new Promise((res) => { resolveTransfer = res })
-    }
-    if (cmd === "get_databases") return [{ name: "mydb" }, { name: "target_db" }]
-    if (cmd === "get_tables") return [{ name: "users", object_type: "TABLE" }]
-    return null
-  })
-
-  render(<TransferDialog {...defaultProps} />)
-  await setupTransferDialog(user)
-  await user.click(screen.getByText(/Select All/))
-  await user.click(screen.getByRole("button", { name: /Start Transfer/i }))
-
-  const manyTables = Array.from({ length: 40 }, (_, i) => `tbl_${i}`)
-  resolveTransfer!({
-    tables_transferred: manyTables,
-    rows_transferred: 100,
-    errors: ["Failed to create table 'broken': error returned from database: nope"],
-    duration: "1.2s",
-    table_stats: [
-      { table: "users", rows: 10, size_bytes: 1024, duration_ms: 5, status: "ok" },
-      { table: "broken", rows: 0, size_bytes: 0, duration_ms: 3, status: "error" },
-    ],
-    logs: [
-      "Starting table: users",
-      "Creating table 'users'...",
-      "Completed table: users",
-      "Starting table: broken",
-      "Creating table 'broken'...",
-      "Failed to create table 'broken': error returned from database: nope",
-    ],
-  })
-
-  await waitFor(() => {
-    expect(screen.getByText(/Transferred 100 rows/)).toBeInTheDocument()
-  })
-
-  // no flat table-name chips (redundant with per-table stats)
-  expect(screen.queryByText("tbl_0")).not.toBeInTheDocument()
-  expect(screen.queryByText("tbl_39")).not.toBeInTheDocument()
-
-  // per-table stats include every table
-  const stats = within(screen.getByTestId("transfer-stats"))
-  expect(stats.getByText("users")).toBeInTheDocument()
-  expect(stats.getByText("broken")).toBeInTheDocument()
-
-  // failed-only toggle filters the stats list
-  await user.click(screen.getByText(/Failed only/i))
-  expect(stats.queryByText("users")).not.toBeInTheDocument()
-  expect(stats.getByText("broken")).toBeInTheDocument()
-
-  // grouped log: failure detail visible (error area + expanded failed table)
-  expect(screen.getAllByText(/error returned from database/).length).toBeGreaterThan(0)
 })

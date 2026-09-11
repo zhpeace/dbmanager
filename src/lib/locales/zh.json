@@ -479,5 +479,20 @@
   "editor.pin": "收藏",
   "editor.unpin": "取消收藏",
   "transfer.show_failed_only": "仅看失败",
-  "transfer.show_all_stats": "显示全部"
+  "transfer.show_all_stats": "显示全部",
+  "transfer.starting": "启动中...",
+  "transfer.conn_busy": "源或目标连接正在迁移中，请等当前任务完成后再试",
+  "task.title": "任务",
+  "task.preparing": "准备中...",
+  "task.cancel": "取消任务",
+  "task.cancelling": "取消中...",
+  "task.empty": "暂无任务",
+  "task.history": "历史任务",
+  "task.clear": "清空",
+  "task.remove": "移除",
+  "task.more_errors": "还有 {{n}} 条错误",
+  "task.summary_success": "完成 {{done}}/{{total}} 表",
+  "task.summary_error": "完成 {{done}}/{{total}} 表 · {{errs}} 个错误",
+  "task.summary_cancelled": "已取消 ({{done}}/{{total}})",
+  "task.summary_running": "{{done}}/{{total}} 表"
 }

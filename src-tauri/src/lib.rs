@@ -946,6 +946,7 @@ async fn transfer_data(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     opts: TransferOptions,
+    task_id: String,
 ) -> Result<TransferResult, String> {
     crate::license::require_pro(&app)?;
     let (source_conn, target_conn) = {
@@ -975,6 +976,9 @@ async fn transfer_data(
         (s, t)
     };
 
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    state.transfer_cancels.lock().await.insert(task_id.clone(), cancel.clone());
+
     let (log_tx, mut log_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     let app_clone = app.clone();
@@ -984,7 +988,21 @@ async fn transfer_data(
         }
     });
 
-    db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx)).await
+    let result = db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx), Some(cancel)).await;
+    state.transfer_cancels.lock().await.remove(&task_id);
+    result
+}
+
+#[tauri::command]
+async fn cancel_transfer(
+    state: tauri::State<'_, AppState>,
+    task_id: String,
+) -> Result<(), String> {
+    let cancels = state.transfer_cancels.lock().await;
+    if let Some(flag) = cancels.get(&task_id) {
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1124,7 +1142,7 @@ async fn duplicate_database(
                 ..Default::default()
             };
 
-            match db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx.clone())).await {
+            match db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx.clone()), None).await {
                 Ok(r) => {
                     tables_transferred.extend(r.tables_transferred);
                     rows_transferred += r.rows_transferred;
@@ -1187,7 +1205,7 @@ async fn duplicate_database(
         }
     });
 
-    let result = db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx)).await;
+    let result = db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx), None).await;
     if result.is_err() {
         target_conn.drop_database(&target_db).await.ok();
     }
@@ -1987,6 +2005,7 @@ pub fn run() {
         transactions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         scheduler: db::scheduler::SchedulerManager::new(initial_tasks),
         ssh_tunnels: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+        transfer_cancels: tokio::sync::Mutex::new(std::collections::HashMap::new()),
     };
 
     tauri::Builder::default()
@@ -2039,6 +2058,7 @@ pub fn run() {
             list_processes,
             kill_process,
             cancel_query,
+            cancel_transfer,
             begin_transaction,
             commit_transaction,
             rollback_transaction,
@@ -2328,7 +2348,7 @@ async fn run_transfer_task(
         }
     });
 
-    let result = db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx)).await?;
+    let result = db::transfer_data(&source_conn, &target_conn, &opts, Some(log_tx), None).await?;
     Ok(format!("Transfer completed: {} tables, {} rows", result.tables_transferred.len(), result.rows_transferred))
 }
 

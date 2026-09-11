@@ -3,6 +3,7 @@ import { DatanexMark } from "@/components/brand/DatanexMark"
 import { Button } from "@/components/ui/button"
 import { useTheme } from "@/lib/theme"
 import { useTranslation } from "react-i18next"
+import { TaskCenter } from "@/components/layout/TaskCenter"
 
 interface TopBarProps {
   onNewConnection: () => void
@@ -130,6 +131,7 @@ export function TopBar({
             </Button>
           </>
         )}
+        <TaskCenter />
         <Button variant="ghost" size="icon" onClick={toggleTheme}>
           {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </Button>

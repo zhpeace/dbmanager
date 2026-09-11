@@ -1,6 +1,5 @@
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
 import { useTranslation } from "react-i18next"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
@@ -8,10 +7,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
-import { Loader2, ArrowRight, CheckCircle, XCircle, ChevronDown, Plus, Trash2, Undo2 } from "lucide-react"
-import type { Connection, DatabaseInfo, TableInfo, TransferOptions, TransferResult, ColumnMapping, CheckpointState } from "@/lib/db"
-import { saveCheckpoint, getCheckpoint, clearCheckpoint, getConnectionSecret } from "@/lib/db"
-import { formatBytes, formatCount } from "@/lib/utils"
+import { Loader2, ArrowRight, XCircle, ChevronDown, Plus, Trash2, Undo2 } from "lucide-react"
+import type { Connection, DatabaseInfo, TableInfo, TransferOptions, ColumnMapping, CheckpointState } from "@/lib/db"
+import { getCheckpoint, clearCheckpoint, getConnectionSecret } from "@/lib/db"
+import { startTransferTask, isConnectionBusy } from "@/lib/transferTasks"
 
 interface TransferDialogProps {
   open: boolean
@@ -22,8 +21,6 @@ interface TransferDialogProps {
 export function TransferDialog({ open, onOpenChange, connections }: TransferDialogProps) {
   const { t } = useTranslation()
   const connected = connections.filter((c) => c.connected)
-
-  const [showFailedOnly, setShowFailedOnly] = useState(false)
 
   async function resolvePassword(conn: Connection): Promise<string> {
     if (conn.config.password) return conn.config.password
@@ -59,12 +56,8 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
   const [targetDb, setTargetDb] = useState("")
   const [selectedTables, setSelectedTables] = useState<string[]>([])
   const [sourceTables, setSourceTables] = useState<TableInfo[]>([])
-  const [transferring, setTransferring] = useState(false)
-  const [result, setResult] = useState<TransferResult | null>(null)
   const [sourceDbs, setSourceDbs] = useState<DatabaseInfo[]>([])
   const [targetDbs, setTargetDbs] = useState<DatabaseInfo[]>([])
-  const [liveLogs, setLiveLogs] = useState<string[]>([])
-  const logEndRef = useRef<HTMLDivElement>(null)
   const [mode, setMode] = useState<string>("structure_and_data")
   const [conflictStrategy, setConflictStrategy] = useState<string>("error")
   const [dropTarget, setDropTarget] = useState(false)
@@ -83,14 +76,16 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
   const [checkpoint, setCheckpoint] = useState<CheckpointState | null>(null)
   const [columnMappings, setColumnMappings] = useState<ColumnMapping[]>([])
   const [errorMode, setErrorMode] = useState<string>("skip")
+  const [busyError, setBusyError] = useState(false)
+  const [starting, setStarting] = useState(false)
+  const [configError, setConfigError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) {
-      setResult(null)
-      setLiveLogs([])
-      setTransferring(false)
       setCheckpoint(null)
       setColumnMappings([])
+      setBusyError(false)
+      setStarting(false)
     }
   }, [open])
 
@@ -101,18 +96,6 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
       setCheckpoint(null)
     }
   }, [sourceId, sourceDb, targetId, targetDb])
-
-  useEffect(() => {
-    if (!transferring) return
-    const unlisten = listen<string>("migration-log", (event) => {
-      setLiveLogs((prev) => [...prev, event.payload])
-    })
-    return () => { unlisten.then((fn) => fn()) }
-  }, [transferring])
-
-  useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [liveLogs])
 
   const handleSourceChange = async (id: string) => {
     setSourceId(id)
@@ -142,14 +125,9 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
     if (conn) {
       try {
         await ensureDatabase(conn, db)
+        setConfigError(null)
       } catch (e: any) {
-        setResult({
-          tables_transferred: [],
-          rows_transferred: 0,
-          errors: [String(e)],
-          duration: "0ms",
-          logs: [],
-        })
+        setConfigError(String(e))
       }
     }
   }
@@ -162,14 +140,9 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
     if (conn) {
       try {
         await ensureDatabase(conn, db)
+        setConfigError(null)
       } catch (e: any) {
-        setResult({
-          tables_transferred: [],
-          rows_transferred: 0,
-          errors: [String(e)],
-          duration: "0ms",
-          logs: [],
-        })
+        setConfigError(String(e))
         return
       }
     }
@@ -210,58 +183,65 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
 
   const handleTransfer = async (resume = false) => {
     if (!sourceId || !targetId || !sourceDb || !targetDb || selectedTables.length === 0) return
-    setTransferring(true)
-    setResult(null)
-    setLiveLogs([])
+    if (isConnectionBusy(sourceId) || isConnectionBusy(targetId)) {
+      setBusyError(true)
+      return
+    }
+    setBusyError(false)
+    setStarting(true)
 
     const checkpointId = resume && checkpoint
       ? checkpoint.completed_tables.join(",")
       : undefined
 
-    try {
-      const opts: TransferOptions = {
-        source_id: sourceId,
-        source_database: sourceDb,
-        target_id: targetId,
-        target_database: targetDb,
-        target_schema: connected.find((c) => c.id === targetId)?.config.schema || null,
-        tables: selectedTables,
-        mode: mode as 'structure_and_data' | 'structure_only' | 'data_only',
-        conflict_strategy: conflictStrategy as 'error' | 'ignore' | 'replace',
-        drop_target: dropTarget,
-        truncate_target: truncateTarget,
-        where_clause: whereClause || null,
-        row_limit: rowLimit ? parseInt(rowLimit) : null,
-        page_size: parseInt(pageSize) || 2000,
-        parallelism: parseInt(parallelism) || 4,
-        transfer_indexes: transferIndexes,
-        transfer_foreign_keys: transferForeignKeys,
-        transfer_views: transferViews,
-        transfer_routines: transferRoutines,
-        transfer_triggers: transferTriggers,
-        column_mappings: columnMappings.filter(m => m.source_column),
-        checkpoint_id: checkpointId || null,
-        error_mode: errorMode as 'skip' | 'stop' | 'skip_table',
-      }
-      const res: TransferResult = await invoke("transfer_data", { opts })
+    const srcConn = connected.find((c) => c.id === sourceId)
+    const tgtConn = connected.find((c) => c.id === targetId)
+    const sourceLabel = `${srcConn?.config.name || srcConn?.config.host || sourceId} · ${sourceDb}`
+    const targetLabel = `${tgtConn?.config.name || tgtConn?.config.host || targetId} · ${targetDb}`
 
-      if (res.errors.length === 0) {
-        await clearCheckpoint(sourceId, sourceDb, targetId, targetDb)
-      } else {
-        const partialCp = selectedTables.filter(t => res.tables_transferred.includes(t))
-        await saveCheckpoint(sourceId, sourceDb, targetId, targetDb, partialCp, res.rows_transferred)
-      }
-      setResult(res)
-    } catch (e: any) {
-      setResult({
-        tables_transferred: [],
-        rows_transferred: 0,
-        errors: [String(e)],
-        duration: "0ms",
-        logs: [],
+    const opts: TransferOptions = {
+      source_id: sourceId,
+      source_database: sourceDb,
+      target_id: targetId,
+      target_database: targetDb,
+      target_schema: tgtConn?.config.schema || null,
+      tables: selectedTables,
+      mode: mode as 'structure_and_data' | 'structure_only' | 'data_only',
+      conflict_strategy: conflictStrategy as 'error' | 'ignore' | 'replace',
+      drop_target: dropTarget,
+      truncate_target: truncateTarget,
+      where_clause: whereClause || null,
+      row_limit: rowLimit ? parseInt(rowLimit) : null,
+      page_size: parseInt(pageSize) || 2000,
+      parallelism: parseInt(parallelism) || 4,
+      transfer_indexes: transferIndexes,
+      transfer_foreign_keys: transferForeignKeys,
+      transfer_views: transferViews,
+      transfer_routines: transferRoutines,
+      transfer_triggers: transferTriggers,
+      column_mappings: columnMappings.filter(m => m.source_column),
+      checkpoint_id: checkpointId || null,
+      error_mode: errorMode as 'skip' | 'stop' | 'skip_table',
+    }
+
+    const taskId = crypto.randomUUID()
+    onOpenChange(false)
+    try {
+      await startTransferTask({
+        taskId,
+        opts,
+        sourceLabel,
+        targetLabel,
+        checkpoint: { sourceId, sourceDb, targetId, targetDb },
       })
+    } catch (e: any) {
+      if (String(e).includes("connection_busy")) {
+        setBusyError(true)
+      } else {
+        setConfigError(String(e))
+      }
     } finally {
-      setTransferring(false)
+      setStarting(false)
     }
   }
 
@@ -269,114 +249,23 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="max-w-[800px] max-h-[90vh] overflow-y-auto"
-        hideClose={transferring}
-        onInteractOutside={(e) => e.preventDefault()}
-        onEscapeKeyDown={(e) => e.preventDefault()}
       >
         <DialogHeader>
           <DialogTitle>{t('transfer.title')}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
-          {result || (!transferring && liveLogs.length > 0) ? (
-            <div className="space-y-3">
-              {result && (
-                <>
-                  <div className="flex items-center gap-2 text-sm">
-                    {result.errors.length === 0 ? (
-                      <CheckCircle className="h-4 w-4 text-green-500" />
-                    ) : (
-                      <XCircle className="h-4 w-4 text-yellow-500" />
-                    )}
-                    <span>{t('transfer.result', { rows: result.rows_transferred, tables: result.tables_transferred.length, duration: result.duration })}</span>
-                  </div>
-                  {(result.table_stats?.length ?? 0) > 0 && (
-                    <div className="rounded border bg-muted/10 p-2">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <p className="text-xs font-medium">{t('transfer.table_stats')}</p>
-                        {result.table_stats!.some((s) => s.status !== "ok") && (
-                          <button
-                            className="text-xs text-primary hover:underline"
-                            onClick={() => setShowFailedOnly((v) => !v)}
-                          >
-                            {showFailedOnly ? t('transfer.show_all_stats') : t('transfer.show_failed_only')}
-                          </button>
-                        )}
-                      </div>
-                      <div className="space-y-0.5 max-h-[200px] overflow-y-auto" data-testid="transfer-stats">
-                        {(showFailedOnly
-                          ? result.table_stats!.filter((s) => s.status !== "ok")
-                          : result.table_stats!
-                        ).map((s, i) => (
-                          <div key={i} className="flex items-center gap-2 text-[10px] font-mono">
-                            <span className="truncate min-w-0 flex-1">{s.table}</span>
-                            <span className="text-muted-foreground tabular-nums w-16 text-right">{formatCount(s.rows)}</span>
-                            <span className="text-muted-foreground tabular-nums w-14 text-right">{formatBytes(s.size_bytes)}</span>
-                            <span className="text-muted-foreground tabular-nums w-14 text-right">{s.duration_ms}ms</span>
-                            <span className={s.status === "ok" ? "text-green-600" : "text-destructive"}>
-                              {s.status === "ok" ? "✓" : "✕"}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {result.errors.length > 0 && (
-                    <div className="rounded border border-destructive/30 bg-destructive/5 p-2 space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <p className="text-xs font-medium text-destructive">{t('transfer.errors')} ({result.errors.length})</p>
-                      </div>
-                      <div className="space-y-0.5 max-h-[200px] overflow-y-auto">
-                        {result.errors.map((e, i) => (
-                          <p key={i} className="text-[10px] text-destructive/80 font-mono">{e}</p>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-              <details open={transferring}>
-                <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
-                  {transferring
-                    ? `${t('transfer.log_title')} (${liveLogs.length})`
-                    : `${t('transfer.migration_log')} (${result?.logs?.length ?? liveLogs.length} ${t('transfer.log_entries')})`}
-                </summary>
-                <div className="mt-1 max-h-[250px] overflow-y-auto bg-muted/30 rounded p-2 font-mono text-[10px] space-y-0.5">
-                  {transferring ? (
-                    liveLogs.map((line, i) => (
-                      <div key={i} className="text-muted-foreground">{line}</div>
-                    ))
-                  ) : (
-                    groupLogs(result?.logs ?? []).map((g) => (
-                      <details key={g.table} open={g.hasError}>
-                        <summary className="cursor-pointer hover:text-foreground flex items-center gap-1.5">
-                          <span className={g.hasError ? "text-destructive" : "text-green-600"}>
-                            {g.hasError ? "✕" : "✓"}
-                          </span>
-                          <span className={g.hasError ? "text-destructive" : ""}>{g.table}</span>
-                          <span className="text-muted-foreground">({g.lines.length})</span>
-                        </summary>
-                        <div className="pl-4 border-l border-muted ml-1 mt-0.5 space-y-0.5">
-                          {g.lines.map((line, i) => (
-                            <div key={i} className={g.hasError && /(error returned|failed|error)/i.test(line) ? "text-destructive" : "text-muted-foreground"}>
-                              {line}
-                            </div>
-                          ))}
-                        </div>
-                      </details>
-                    ))
-                  )}
-                  <div ref={logEndRef} />
-                </div>
-              </details>
-              {!transferring && (
-                <DialogFooter>
-                  <Button onClick={() => onOpenChange(false)}>{t('transfer.close')}</Button>
-                </DialogFooter>
-              )}
+          {configError && (
+            <div className="rounded border border-destructive/30 bg-destructive/5 p-2">
+              <p className="text-xs text-destructive break-all font-mono">{configError}</p>
             </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-[1fr_auto_1fr] gap-4">
+          )}
+          {busyError && (
+            <div className="flex items-center gap-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
+              <XCircle className="h-3.5 w-3.5 shrink-0" />
+              {t('transfer.conn_busy')}
+            </div>
+          )}
+          <div className="grid grid-cols-[1fr_auto_1fr] gap-4">
                 <div className="space-y-3">
                   <Label>{t('transfer.source')}</Label>
                   <Select value={sourceId} onValueChange={handleSourceChange}>
@@ -454,7 +343,7 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                 </div>
               </div>
 
-              {checkpoint && checkpoint.completed_tables.length > 0 && !transferring && (
+              {checkpoint && checkpoint.completed_tables.length > 0 && (
                 <div className="flex items-center justify-between bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded p-2 text-xs">
                   <div className="flex items-center gap-2">
                     <Undo2 className="h-3 w-3 text-amber-600" />
@@ -476,30 +365,6 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                 </div>
               )}
 
-              {transferring && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-medium truncate">
-                      {liveLogs.filter(l => l.startsWith("Starting table:")).pop()?.replace("Starting table:", "").trim() || t('transfer.preparing')}
-                    </span>
-                    <span className="text-muted-foreground shrink-0 ml-2">
-                      {liveLogs.filter(l => l.startsWith("Completed table:")).length}/{selectedTables.length} {t('transfer.tables_done')}
-                    </span>
-                  </div>
-                  <div className="border rounded bg-muted/20">
-                    <div className="text-xs font-medium px-2 pt-1.5 pb-1 text-muted-foreground flex items-center justify-between">
-                      <span>{t('transfer.log_title')} ({liveLogs.length})</span>
-                    </div>
-                    <div className="max-h-[300px] min-h-[100px] overflow-y-auto font-mono text-[10px] space-y-0.5 px-2 pb-1.5">
-                      {liveLogs.map((line, i) => (
-                        <div key={i} className="text-muted-foreground">{line}</div>
-                      ))}
-                      <div ref={logEndRef} />
-                    </div>
-                  </div>
-                </div>
-              )}
-
               <div className="border-t pt-3">
                 <button
                   type="button"
@@ -510,7 +375,7 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                   {t('transfer.options')}
                 </button>
 
-                {showOptions && !transferring && (
+                {showOptions && (
                   <div className="mt-3 space-y-3">
                     <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1.5">
@@ -683,14 +548,12 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                 <Button variant="outline" onClick={() => onOpenChange(false)}>{t('transfer.cancel')}</Button>
                 <Button
                   onClick={() => handleTransfer(false)}
-                  disabled={!sourceId || !targetId || !sourceDb || !targetDb || selectedTables.length === 0 || transferring}
+                  disabled={!sourceId || !targetId || !sourceDb || !targetDb || selectedTables.length === 0 || starting}
                 >
-                  {transferring ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                  {transferring ? t('transfer.transferring') : t('transfer.start')}
+                  {starting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                  {starting ? t('transfer.starting') : t('transfer.start')}
                 </Button>
               </DialogFooter>
-            </>
-          )}
         </div>
       </DialogContent>
     </Dialog>
