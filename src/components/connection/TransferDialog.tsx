@@ -23,6 +23,9 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
   const { t } = useTranslation()
   const connected = connections.filter((c) => c.connected)
 
+  const [showAllTables, setShowAllTables] = useState(false)
+  const TABLES_PREVIEW = 30
+
   async function resolvePassword(conn: Connection): Promise<string> {
     if (conn.config.password) return conn.config.password
     try {
@@ -317,11 +320,21 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                       </div>
                     </div>
                   )}
-                  <div className="flex flex-wrap gap-1">
-                    {result.tables_transferred.map((t) => (
+                  <div className="flex flex-wrap gap-1" style={showAllTables ? { maxHeight: 200, overflowY: "auto" } : undefined}>
+                    {(showAllTables ? result.tables_transferred : result.tables_transferred.slice(0, TABLES_PREVIEW)).map((t) => (
                       <span key={t} className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded">{t}</span>
                     ))}
                   </div>
+                  {result.tables_transferred.length > TABLES_PREVIEW && (
+                    <button
+                      className="text-xs text-primary hover:underline"
+                      onClick={() => setShowAllTables((v) => !v)}
+                    >
+                      {showAllTables
+                        ? t('transfer.collapse_tables')
+                        : t('transfer.show_all_tables', { count: result.tables_transferred.length })}
+                    </button>
+                  )}
                 </>
               )}
               <details open={transferring}>
@@ -331,9 +344,30 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
                     : `${t('transfer.migration_log')} (${result?.logs?.length ?? liveLogs.length} ${t('transfer.log_entries')})`}
                 </summary>
                 <div className="mt-1 max-h-[250px] overflow-y-auto bg-muted/30 rounded p-2 font-mono text-[10px] space-y-0.5">
-                  {(result?.logs || liveLogs).map((line, i) => (
-                    <div key={i} className="text-muted-foreground">{line}</div>
-                  ))}
+                  {transferring ? (
+                    liveLogs.map((line, i) => (
+                      <div key={i} className="text-muted-foreground">{line}</div>
+                    ))
+                  ) : (
+                    groupLogs(result?.logs ?? []).map((g) => (
+                      <details key={g.table} open={g.hasError}>
+                        <summary className="cursor-pointer hover:text-foreground flex items-center gap-1.5">
+                          <span className={g.hasError ? "text-destructive" : "text-green-600"}>
+                            {g.hasError ? "✕" : "✓"}
+                          </span>
+                          <span className={g.hasError ? "text-destructive" : ""}>{g.table}</span>
+                          <span className="text-muted-foreground">({g.lines.length})</span>
+                        </summary>
+                        <div className="pl-4 border-l border-muted ml-1 mt-0.5 space-y-0.5">
+                          {g.lines.map((line, i) => (
+                            <div key={i} className={g.hasError && /(error returned|failed|error)/i.test(line) ? "text-destructive" : "text-muted-foreground"}>
+                              {line}
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    ))
+                  )}
                   <div ref={logEndRef} />
                 </div>
               </details>
@@ -664,4 +698,27 @@ export function TransferDialog({ open, onOpenChange, connections }: TransferDial
       </DialogContent>
     </Dialog>
   )
+}
+
+interface LogGroup {
+  table: string
+  lines: string[]
+  hasError: boolean
+}
+
+/** 把迁移日志按表聚合：Starting table: X 开启一组，直到下一个 Starting 为止。 */
+export function groupLogs(logs: string[]): LogGroup[] {
+  const groups: LogGroup[] = []
+  let cur: LogGroup | null = null
+  for (const line of logs) {
+    const m = line.match(/^Starting table:\s*(.+)$/)
+    if (m) {
+      cur = { table: m[1].trim(), lines: [line], hasError: false }
+      groups.push(cur)
+    } else if (cur) {
+      cur.lines.push(line)
+      if (/(error returned|failed|error|✕)/i.test(line)) cur.hasError = true
+    }
+  }
+  return groups
 }

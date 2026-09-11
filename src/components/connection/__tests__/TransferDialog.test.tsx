@@ -341,3 +341,24 @@ it("never dismisses on overlay click or Esc; close via explicit button", async (
   await user.click(footerClose!)
   expect(mockOnOpenChange).toHaveBeenCalledWith(false)
 })
+
+describe("groupLogs", () => {
+  it("groups per-table logs and flags errors", async () => {
+    const { groupLogs } = await import("../TransferDialog")
+    const logs = [
+      "Starting table: users",
+      "Creating table 'users'...",
+      "Completed table: users",
+      "Starting table: orders",
+      "Creating table 'orders'...",
+      "Failed to create table 'orders': error returned from database: boom",
+    ]
+    const groups = groupLogs(logs)
+    expect(groups).toHaveLength(2)
+    expect(groups[0].table).toBe("users")
+    expect(groups[0].hasError).toBe(false)
+    expect(groups[0].lines).toHaveLength(3)
+    expect(groups[1].table).toBe("orders")
+    expect(groups[1].hasError).toBe(true)
+  })
+})

@@ -477,5 +477,7 @@
   "editor.favorites": "Favorites",
   "editor.recent": "Recent",
   "editor.pin": "Pin to favorites",
-  "editor.unpin": "Remove from favorites"
+  "editor.unpin": "Remove from favorites",
+  "transfer.show_all_tables": "All {{count}} tables",
+  "transfer.collapse_tables": "Collapse"
 }

@@ -15,7 +15,8 @@ A cross-platform, multi-database management and migration desktop application bu
   - Column mapping (rename, skip, default values)
   - Auto-increment / sequence translation
   - Checkpoint & resume on partial failure
-  - Real-time log streaming
+  - Real-time log streaming; result page collapses table-name chips (preview + expand) and groups per-table logs, with failed tables expanded by default
+  - PostgreSQL/openGauss targets create tables under the target connection's schema (default `public`) instead of the source database name
 - **Compare & Sync**: Schema comparison between databases, diff viewer, sync SQL generation
 - **Import**: File-based data import into tables
 - **Redis Tooling**: Binary-safe value browsing (HEX/ASCII/BASE64 views), wildcard key search (`*` `?` — plain text auto-matches as substring), type-filtered loading with pagination
