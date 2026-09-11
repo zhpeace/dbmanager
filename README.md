@@ -32,7 +32,7 @@ A cross-platform, multi-database management and migration desktop application bu
 - **Scheduled Tasks**: Recurring backup/sync jobs with a scheduler
 - **Default Database / Schema Focus**: connections can carry a default database (and schema for PostgreSQL/Oracle/Dameng); expanding the connection auto-expands and star-marks the configured context
 - **Oracle Schema Filtering**: the Oracle sidebar filters out built-in system schemas (SYS, SYSTEM, XDB, ...) and lists only business schemas; the default schema is matched by the connection username
-- **Session Monitor**: Live connection session overview
+- **Session Monitor**: Live connection session overview for MySQL / PostgreSQL / Oracle / Redis — lists active sessions (ID, user, host, database, state, duration, current query) with per-session terminate; MySQL uses `information_schema.PROCESSLIST` + `KILL`, PostgreSQL uses `pg_stat_activity` + `pg_terminate_backend`, Oracle uses `v$session` + `ALTER SYSTEM KILL SESSION`, Redis uses `CLIENT LIST` + `CLIENT KILL ID`
 - **Find in Table**: Quick value search across table data
 - **Licensing**: Pro activation via offline activation codes; free tier never shows activation dialogs, activated builds show a Pro badge instead of an activate button
 - **Secrets Management**: OS keyring integration (macOS Keychain, Linux Secret Service, Windows Credential Vault)

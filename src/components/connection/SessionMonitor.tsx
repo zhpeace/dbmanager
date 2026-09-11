@@ -27,7 +27,8 @@ export function SessionMonitor({ open, onOpenChange, connectionId }: SessionMoni
     setBusy(true)
     setError(null)
     try {
-      setRows(await listProcesses(connectionId))
+      const r = await listProcesses(connectionId)
+      setRows(r)
     } catch (e) {
       setError(String(e))
       setRows([])

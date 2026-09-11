@@ -1380,7 +1380,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
       <SessionMonitor
         open={sessionsOpen}
         onOpenChange={setSessionsOpen}
-        connectionId={activeConnectionId}
+        connectionId={tabConnId ?? activeConnectionId}
       />
       <div className="h-screen flex flex-col overflow-hidden">
       <TopBar

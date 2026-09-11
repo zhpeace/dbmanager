@@ -1295,8 +1295,8 @@ fn sql_literal(v: &serde_json::Value) -> String {
     }
 }
 
-fn clone_connection(state: &AppState, id: &str) -> Result<DbConnection, String> {
-    let connections = state.connections.blocking_lock();
+async fn clone_connection(state: &AppState, id: &str) -> Result<DbConnection, String> {
+    let connections = state.connections.lock().await;
     connections
         .get(id)
         .ok_or_else(|| "Connection not found".to_string())
@@ -1321,7 +1321,7 @@ async fn export_data(
     file_path: String,
     table: Option<String>,
 ) -> Result<(), String> {
-    let conn = clone_connection(&state, &id)?;
+    let conn = clone_connection(&state, &id).await?;
     let result = conn.execute_query(&query).await?;
     if let Some(err) = result.error {
         return Err(err);
@@ -1430,55 +1430,93 @@ async fn list_processes(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<Vec<ProcessInfo>, String> {
-    let conn = clone_connection(&state, &id)?;
-    let sql = match &conn {
-        DbConnection::MySql(_) => {
-            "SELECT ID AS id, USER AS user, HOST AS host, DB AS db, COMMAND AS command, \
-             STATE AS state, INFO AS info, TIME AS duration FROM information_schema.PROCESSLIST"
-        }
-        DbConnection::Pg(_) => {
-            "SELECT pid::text AS id, usename AS user, coalesce(client_addr::text,'') AS host, \
-             coalesce(datname,'') AS db, coalesce(state,'') AS command, coalesce(state,'') AS state, \
-             coalesce(query,'') AS info, coalesce(extract(epoch from (now()-query_start))::int::text,'') AS duration \
-             FROM pg_stat_activity WHERE pid <> pg_backend_pid()"
-        }
-        _ => return Ok(Vec::new()),
-    };
-    let result = conn.execute_query(sql).await?;
-    if let Some(err) = result.error {
-        return Err(err);
-    }
-    let mut out = Vec::new();
-    for row in &result.rows {
-        let obj = match row.as_object() {
-            Some(o) => o,
-            None => continue,
-        };
-        let get = |k: &str| -> String {
-            match obj.get(k) {
-                Some(serde_json::Value::String(s)) => s.clone(),
-                Some(v) => {
-                    if v.is_null() {
-                        String::new()
-                    } else {
-                        v.to_string()
-                    }
-                }
-                None => String::new(),
+    let conn = clone_connection(&state, &id).await?;
+    match conn {
+        // Redis exposes clients via CLIENT LIST, not a SQL result set.
+        DbConnection::Redis(mut redis_conn) => {
+            let raw: String = redis::cmd("CLIENT")
+                .arg("LIST")
+                .query_async(&mut redis_conn)
+                .await
+                .map_err(|e| format!("Redis CLIENT LIST failed: {}", e))?;
+            let mut out = Vec::new();
+            for line in raw.lines() {
+                let f = |k: &str| -> String {
+                    line.split_whitespace()
+                        .find_map(|tok| tok.strip_prefix(&format!("{}=", k)))
+                        .unwrap_or("")
+                        .to_string()
+                };
+                out.push(ProcessInfo {
+                    id: f("id"),
+                    user: f("user"),
+                    host: f("addr"),
+                    db: f("db"),
+                    command: f("cmd"),
+                    state: f("flags"),
+                    info: f("name"),
+                    duration: f("age"),
+                });
             }
-        };
-        out.push(ProcessInfo {
-            id: get("id"),
-            user: get("user"),
-            host: get("host"),
-            db: get("db"),
-            command: get("command"),
-            state: get("state"),
-            info: get("info"),
-            duration: get("duration"),
-        });
+            Ok(out)
+        }
+        other => {
+            let sql = match &other {
+                DbConnection::MySql(_) => {
+                    "SELECT ID AS id, USER AS user, HOST AS host, DB AS db, COMMAND AS command, \
+                     STATE AS state, INFO AS info, TIME AS duration FROM information_schema.PROCESSLIST"
+                }
+                DbConnection::Pg(_) => {
+                    "SELECT pid::text AS id, usename AS user, coalesce(client_addr::text,'') AS host, \
+                     coalesce(datname,'') AS db, coalesce(state,'') AS command, coalesce(state,'') AS state, \
+                     coalesce(query,'') AS info, coalesce(extract(epoch from (now()-query_start))::int::text,'') AS duration \
+                     FROM pg_stat_activity WHERE pid <> pg_backend_pid()"
+                }
+                DbConnection::Oracle(_) => {
+                    "SELECT s.sid || ',' || s.serial# AS \"id\", s.username AS \"user\", s.machine AS \"host\", \
+                     s.schemaname AS \"db\", s.status AS \"state\", NVL(TO_CHAR(s.sql_id),'') AS \"info\", \
+                     TO_CHAR(s.last_call_et) AS \"duration\", s.type AS \"command\" \
+                     FROM v$session s WHERE s.type = 'USER' AND s.username IS NOT NULL"
+                }
+                _ => return Ok(Vec::new()),
+            };
+            let result = other.execute_query(sql).await?;
+            if let Some(err) = result.error {
+                return Err(err);
+            }
+            let mut out = Vec::new();
+            for row in &result.rows {
+                let obj = match row.as_object() {
+                    Some(o) => o,
+                    None => continue,
+                };
+                let get = |k: &str| -> String {
+                    match obj.get(k) {
+                        Some(serde_json::Value::String(s)) => s.clone(),
+                        Some(v) => {
+                            if v.is_null() {
+                                String::new()
+                            } else {
+                                v.to_string()
+                            }
+                        }
+                        None => String::new(),
+                    }
+                };
+                out.push(ProcessInfo {
+                    id: get("id"),
+                    user: get("user"),
+                    host: get("host"),
+                    db: get("db"),
+                    command: get("command"),
+                    state: get("state"),
+                    info: get("info"),
+                    duration: get("duration"),
+                });
+            }
+            Ok(out)
+        }
     }
-    Ok(out)
 }
 
 #[tauri::command]
@@ -1487,17 +1525,32 @@ async fn kill_process(
     id: String,
     pid: String,
 ) -> Result<(), String> {
-    let conn = clone_connection(&state, &id)?;
-    let sql = match &conn {
-        DbConnection::MySql(_) => format!("KILL {}", pid),
-        DbConnection::Pg(_) => format!("SELECT pg_terminate_backend({}::int)", pid),
-        _ => return Err("该数据库类型不支持终止会话".to_string()),
-    };
-    let result = conn.execute_query(&sql).await?;
-    if let Some(err) = result.error {
-        return Err(err);
+    let conn = clone_connection(&state, &id).await?;
+    match conn {
+        DbConnection::Redis(mut redis_conn) => {
+            let _: redis::Value = redis::cmd("CLIENT")
+                .arg("KILL")
+                .arg("ID")
+                .arg(&pid)
+                .query_async(&mut redis_conn)
+                .await
+                .map_err(|e| format!("Redis CLIENT KILL failed: {}", e))?;
+            Ok(())
+        }
+        other => {
+            let sql = match &other {
+                DbConnection::MySql(_) => format!("KILL {}", pid),
+                DbConnection::Pg(_) => format!("SELECT pg_terminate_backend({}::int)", pid),
+                DbConnection::Oracle(_) => format!("ALTER SYSTEM KILL SESSION '{}'", pid),
+                _ => return Err("该数据库类型不支持终止会话".to_string()),
+            };
+            let result = other.execute_query(&sql).await?;
+            if let Some(err) = result.error {
+                return Err(err);
+            }
+            Ok(())
+        }
     }
-    Ok(())
 }
 
 #[tauri::command]
