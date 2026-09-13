@@ -489,6 +489,47 @@ describe("grid keyboard copy/paste", () => {
     )
   })
 
+  it("selects a region by dragging", async () => {
+    readTextMock.mockResolvedValue("X")
+    const onBulkPaste = vi.fn()
+    render(<DataTable columns={columns} rows={rows} onBulkPaste={onBulkPaste} />)
+    fireEvent.pointerDown(screen.getByText("Alice").closest("td")!)
+    fireEvent.pointerEnter(screen.getByText("bob@test.com").closest("td")!)
+    fireEvent.pointerUp(screen.getByText("bob@test.com").closest("td")!)
+    fireKey("v")
+    await waitFor(() =>
+      expect(onBulkPaste).toHaveBeenCalledWith(0, "name", [
+        ["X", "X"],
+        ["X", "X"],
+      ])
+    )
+  })
+
+  it("does not extend the region when the pointer is released outside the grid", async () => {
+    readTextMock.mockResolvedValue("solo")
+    const onBulkPaste = vi.fn()
+    const onCellEditStart = vi.fn()
+    function Wrapper() {
+      return (
+        <DataTable
+          columns={columns}
+          rows={rows}
+          onBulkPaste={onBulkPaste}
+          onCellEditStart={onCellEditStart}
+        />
+      )
+    }
+    render(<Wrapper />)
+    // click Alice, but release the pointer on window (outside the grid)
+    fireEvent.pointerDown(screen.getByText("Alice").closest("td")!)
+    fireEvent.pointerUp(window)
+    // hovering Bob afterwards must NOT expand a region
+    fireEvent.pointerEnter(screen.getByText("Bob").closest("td")!)
+    fireKey("v")
+    await waitFor(() => expect(onCellEditStart).toHaveBeenCalledWith(0, "name"))
+    expect(onBulkPaste).not.toHaveBeenCalled()
+  })
+
   it("does not copy when no cell is selected", () => {
     render(<DataTable columns={columns} rows={rows} />)
     fireKey("c")

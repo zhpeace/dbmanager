@@ -92,7 +92,8 @@ export function DataTable({
   const [copyCell, setCopyCell] = useState<{ row: number; col: string } | null>(null)
   const [selectedCell, setSelectedCell] = useState<{ row: number; col: string } | null>(null)
   const pasteRef = useRef<string | null>(null)
-  // 区域选择：anchor 为锚点，region 为 Shift+点击扩展出的矩形（行/列区间）
+  const dragRef = useRef(false)
+  // 区域选择：anchor 为锚点，region 为 Shift+点击/拖动扩展出的矩形（行/列区间）
   const [anchorCell, setAnchorCell] = useState<{ row: number; col: string } | null>(null)
   const [region, setRegion] = useState<{ r1: number; c1: string; r2: number; c2: string } | null>(null)
 
@@ -287,6 +288,16 @@ export function DataTable({
     window.addEventListener("keydown", onGridKeyDown)
     return () => window.removeEventListener("keydown", onGridKeyDown)
   }, [selectedCell, editingCell, data, onCellEditStart, onBulkPaste, anchorCell, region, regionSize, columns])
+
+  // 拖动选择结束：任何位置松开鼠标都复位拖动状态，
+  // 避免在表格外（边缘/滚动条）松开导致状态残留、后续悬停误扩展区域。
+  useEffect(() => {
+    const up = () => {
+      dragRef.current = false
+    }
+    window.addEventListener("pointerup", up)
+    return () => window.removeEventListener("pointerup", up)
+  }, [])
 
   const commitEdit = useCallback(
     (rowIdx: number, col: string, original: string, currentValue: string) => {
@@ -513,7 +524,7 @@ export function DataTable({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div ref={scrollRef} className="h-full overflow-auto">
+        <div ref={scrollRef} className="h-full overflow-auto" onPointerUp={() => { dragRef.current = false }}>
           <table className="border-collapse table-fixed" style={{ width: 56 + table.getTotalSize() }}>
             <thead className="sticky top-0 z-10 bg-muted/80 backdrop-blur">
               {table.getHeaderGroups().map((headerGroup) => (
@@ -600,11 +611,24 @@ export function DataTable({
                         <td
                           key={cell.id}
                           className={cn(
-                            "relative h-7 px-3 border-b whitespace-nowrap overflow-hidden text-ellipsis",
+                            "relative h-7 px-3 border-b whitespace-nowrap overflow-hidden text-ellipsis select-none",
                             selectedCell?.row === i && selectedCell?.col === cell.column.id && "bg-accent/50",
                             isInRegion(i, cell.column.id) && "bg-accent/30"
                           )}
                           style={{ width: cell.column.getSize() }}
+                          onPointerDown={(e) => {
+                            if (e.shiftKey) return
+                            dragRef.current = true
+                            setAnchorCell({ row: i, col: cell.column.id })
+                            setSelectedCell({ row: i, col: cell.column.id })
+                            setRegion(null)
+                          }}
+                          onPointerEnter={() => {
+                            if (dragRef.current && anchorCell) {
+                              setSelectedCell({ row: i, col: cell.column.id })
+                              setRegion({ r1: anchorCell.row, c1: anchorCell.col, r2: i, c2: cell.column.id })
+                            }
+                          }}
                           onClick={(e) => {
                             if (e.shiftKey && anchorCell) {
                               setSelectedCell({ row: i, col: cell.column.id })
