@@ -121,12 +121,12 @@ function AppContent() {
     const t = setTimeout(() => saveTabs(tabs), 500)
     return () => clearTimeout(t)
   }, [tabs])
-  // Flush on app close: Tauri close event, with beforeunload as a WebView
-  // fallback so "edit SQL then quit immediately" is never lost.
+  // Flush on app close via the Tauri close event, so "edit SQL then quit
+  // immediately" is never lost. NOTE: a WebView `beforeunload` listener is
+  // deliberately NOT used — on macOS WKWebView it blocks native window close.
   useEffect(() => {
     const flush = () => saveTabs(tabsRef.current)
     let unlisten: (() => void) | undefined
-    window.addEventListener("beforeunload", flush)
     getCurrentWindow()
       .onCloseRequested(() => {
         flush()
@@ -136,7 +136,6 @@ function AppContent() {
       })
       .catch(() => {})
     return () => {
-      window.removeEventListener("beforeunload", flush)
       unlisten?.()
     }
   }, [])
