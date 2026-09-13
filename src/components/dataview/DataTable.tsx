@@ -9,6 +9,7 @@ import {
   type ColumnDef,
   type ColumnSizingState,
 } from "@tanstack/react-table"
+import { useVirtualizer } from "@tanstack/react-virtual"
 import { ArrowUpDown, ChevronUp, ChevronDown, Pencil, CirclePlus, XCircle, Maximize2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { toCsv, toInsert, toUpdate } from "@/lib/sql"
@@ -376,6 +377,26 @@ export function DataTable({
     getSortedRowModel: getSortedRowModel(),
   })
 
+  const rowsForVirtual = table.getRowModel().rows
+  // Virtual scrolling: only render the rows inside the viewport (+ overscan)
+  // instead of materializing every row of large result sets. Small sets render
+  // fully — virtualizing a few hundred rows adds nothing, and the threshold
+  // keeps jsdom tests deterministic (a zero-height scroll container can't be
+  // measured, so small fixtures always render completely).
+  const VIRTUALIZE_MIN_ROWS = 500
+  const shouldVirtualize = rowsForVirtual.length >= VIRTUALIZE_MIN_ROWS
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const rowVirtualizer = useVirtualizer({
+    count: rowsForVirtual.length,
+    enabled: shouldVirtualize,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 28, // h-7 row height
+    overscan: 12,
+  })
+  const virtualRows = shouldVirtualize
+    ? rowVirtualizer.getVirtualItems().map((vi) => ({ row: rowsForVirtual[vi.index], i: vi.index, top: vi.start }))
+    : rowsForVirtual.map((row, i) => ({ row, i, top: i * 28 }))
+
   const rowStateIcon = (state: RowState | undefined) => {
     if (state === "modified") {
       return <Pencil className="h-3 w-3 text-amber-500" />
@@ -412,7 +433,7 @@ export function DataTable({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div className="h-full overflow-auto">
+        <div ref={scrollRef} className="h-full overflow-auto">
           <table className="border-collapse table-fixed" style={{ width: 56 + table.getTotalSize() }}>
             <thead className="sticky top-0 z-10 bg-muted/80 backdrop-blur">
               {table.getHeaderGroups().map((headerGroup) => (
@@ -440,20 +461,21 @@ export function DataTable({
                 </tr>
               ))}
             </thead>
-            <tbody>
-              {table.getRowModel().rows.length === 0 ? (
+            <tbody style={shouldVirtualize ? { height: rowVirtualizer.getTotalSize(), position: "relative" } : undefined}>
+              {rowsForVirtual.length === 0 ? (
                 <tr>
                   <td colSpan={columns.length + 1} className="h-40 text-center align-middle text-sm text-muted-foreground">
                     {t('datatable.no_rows')}
                   </td>
                 </tr>
               ) : (
-                table.getRowModel().rows.map((row, i) => {
+                virtualRows.map(({ row, i, top }) => {
                   const rowState = rowStates?.[i]
                   const isDeleted = rowState === "deleted"
                   return (
                     <tr
                       key={row.id}
+                      style={shouldVirtualize ? { position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${top}px)` } : undefined}
                       className={cn(
                         "hover:bg-accent/30 transition-colors",
                         i % 2 === 0 ? "bg-background" : "bg-muted/20",

@@ -41,6 +41,23 @@ export function ResultPanel({ results }: ResultPanelProps) {
   const [activeIndex, setActiveIndex] = useState(0)
 
   const effective = results && results.length > 0 ? results : null
+  // Lazily mount each result panel the first time it is opened, then keep it
+  // mounted (hidden via display:none) so switching back is instant instead of
+  // rebuilding the whole grid. Reset whenever a new query produces results.
+  const [mounted, setMounted] = useState<Set<number>>(() => new Set([0]))
+  useEffect(() => {
+    setMounted(new Set([0]))
+    setActiveIndex(0)
+  }, [effective])
+  useEffect(() => {
+    setMounted((prev) => {
+      if (prev.has(activeIndex)) return prev
+      const next = new Set(prev)
+      next.add(activeIndex)
+      return next
+    })
+  }, [activeIndex])
+
   useEffect(() => {
     if (effective && activeIndex >= effective.length) {
       setActiveIndex(Math.max(0, effective.length - 1))
@@ -120,17 +137,28 @@ export function ResultPanel({ results }: ResultPanelProps) {
           ))}
         </div>
         {exportBar}
-        <div className="flex-1 min-h-0">
-          {active.isPlan ? (
-            <PlanView columns={active.columns} rows={active.rows} />
-          ) : (
-            <DataTable
-              columns={active.columns}
-              rows={active.rows}
-              error={active.error}
-              rowCount={active.rowCount}
-            />
-          )}
+        <div className="flex-1 min-h-0 relative">
+          {effective.map((r, i) => {
+            if (!mounted.has(i)) return null
+            return (
+              <div
+                key={r.id}
+                className="absolute inset-0"
+                style={{ display: i === activeIndex ? undefined : "none" }}
+              >
+                {r.isPlan ? (
+                  <PlanView columns={r.columns} rows={r.rows} />
+                ) : (
+                  <DataTable
+                    columns={r.columns}
+                    rows={r.rows}
+                    error={r.error}
+                    rowCount={r.rowCount}
+                  />
+                )}
+              </div>
+            )
+          })}
         </div>
         {statusBar}
       </div>
