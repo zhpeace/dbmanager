@@ -395,6 +395,41 @@ it("applies bulk edit to selected rows and saves a merged UPDATE", async () => {
   })
 })
 
+it("bulk-pastes a grid via Cmd+V and saves merged updates", async () => {
+  const user = userEvent.setup()
+  Object.defineProperty(navigator, "clipboard", {
+    value: {
+      writeText: vi.fn().mockResolvedValue(undefined),
+      readText: vi.fn().mockResolvedValue("X\t99\nY\t88"),
+    },
+    configurable: true,
+  })
+  vi.mocked(invoke)
+    .mockResolvedValueOnce(mockTableData)
+    .mockResolvedValueOnce("")
+  render(<TableBrowser {...defaultProps} />)
+  await waitFor(() => {
+    expect(screen.getByText("Alice")).toBeInTheDocument()
+  })
+
+  // anchor Alice (row 0, name) then Shift+click Bob (row 1, name): a 1-column
+  // region. The 2-column clipboard grid is truncated at the region edge.
+  fireEvent.click(screen.getByText("Alice").closest("td")!)
+  fireEvent.click(screen.getByText("Bob").closest("td")!, { shiftKey: true })
+  fireEvent.keyDown(window, { key: "v", metaKey: true })
+  await user.click(screen.getByText("Save"))
+
+  await waitFor(() => {
+    expect(invoke).toHaveBeenCalledWith("execute_batch", {
+      id: "c1",
+      queries: [
+        "UPDATE users SET name = 'X' WHERE id = 1",
+        "UPDATE users SET name = 'Y' WHERE id = 2",
+      ],
+    })
+  })
+})
+
 it("rollback discards buffer and reloads", async () => {  const user = userEvent.setup()
   vi.mocked(invoke)
     .mockResolvedValueOnce(mockTableData)

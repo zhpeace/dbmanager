@@ -22,6 +22,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { isNumericType, toInputValue, fromInputValue, temporalKind, isStructuredTextType } from "@/lib/db"
+import { parseTsvGrid } from "@/lib/bulkEdit"
 
 export type RowState = "modified" | "added" | "deleted"
 
@@ -46,6 +47,7 @@ interface DataTableProps {
   onSelectionChange?: (rowIndex: number, selected: boolean) => void
   onSelectAll?: (select: boolean) => void
   onBulkEdit?: () => void
+  onBulkPaste?: (anchorRow: number, anchorCol: string, grid: string[][]) => void
   tableName?: string
   primaryKeys?: string[]
   copyEnabled?: boolean
@@ -73,6 +75,7 @@ export function DataTable({
   onSelectionChange,
   onSelectAll,
   onBulkEdit,
+  onBulkPaste,
   tableName,
   primaryKeys,
   copyEnabled = true,
@@ -89,6 +92,33 @@ export function DataTable({
   const [copyCell, setCopyCell] = useState<{ row: number; col: string } | null>(null)
   const [selectedCell, setSelectedCell] = useState<{ row: number; col: string } | null>(null)
   const pasteRef = useRef<string | null>(null)
+  // 区域选择：anchor 为锚点，region 为 Shift+点击扩展出的矩形（行/列区间）
+  const [anchorCell, setAnchorCell] = useState<{ row: number; col: string } | null>(null)
+  const [region, setRegion] = useState<{ r1: number; c1: string; r2: number; c2: string } | null>(null)
+
+  const colIndexOf = (col: string) => columns.indexOf(col)
+
+  const isInRegion = (rowIdx: number, col: string): boolean => {
+    if (!region) return false
+    const { r1, c1, r2, c2 } = region
+    const ci1 = colIndexOf(c1)
+    const ci2 = colIndexOf(c2)
+    if (ci1 < 0 || ci2 < 0) return false
+    const rMin = Math.min(r1, r2)
+    const rMax = Math.max(r1, r2)
+    const cMin = Math.min(ci1, ci2)
+    const cMax = Math.max(ci1, ci2)
+    return rowIdx >= rMin && rowIdx <= rMax && colIndexOf(col) >= cMin && colIndexOf(col) <= cMax
+  }
+
+  const regionSize = useMemo(() => {
+    if (!region) return 0
+    const { r1, c1, r2, c2 } = region
+    const ci1 = colIndexOf(c1)
+    const ci2 = colIndexOf(c2)
+    if (ci1 < 0 || ci2 < 0) return 0
+    return (Math.abs(r2 - r1) + 1) * (Math.abs(ci2 - ci1) + 1)
+  }, [region, columns])
 
   const data = useMemo(() => rows, [rows])
 
@@ -188,29 +218,58 @@ export function DataTable({
         const sel = window.getSelection()
         if (sel && sel.toString().length > 0) return
         if (!selectedCell || editingCell) return
+        // Region copy: copy the whole selected rectangle as Excel-style TSV
+        // (rows newline-separated, columns tab-separated).
+        if (region && regionSize > 1) {
+          e.preventDefault()
+          const { r1, c1, r2, c2 } = region
+          const ci1 = colIndexOf(c1)
+          const ci2 = colIndexOf(c2)
+          const rMin = Math.min(r1, r2)
+          const rMax = Math.max(r1, r2)
+          const cMin = Math.min(ci1, ci2)
+          const cMax = Math.max(ci1, ci2)
+          const lines: string[] = []
+          for (let r = rMin; r <= rMax; r++) {
+            const rowData = data[r]
+            if (!rowData) continue
+            lines.push(
+              columns.slice(cMin, cMax + 1).map((c) => cellString(rowData[c])).join("\t")
+            )
+          }
+          void copyText(lines.join("\n"))
+          return
+        }
         e.preventDefault()
         const v = data[selectedCell.row]?.[selectedCell.col]
         void copyText(v === null || v === undefined ? "" : cellString(v))
       } else if (key === "v") {
         if (!selectedCell || editingCell) return
+        const anchor = anchorCell ?? selectedCell
         e.preventDefault()
         void navigator.clipboard
           .readText()
           .then((text) => {
             if (text === null || text === undefined) return
-            pasteRef.current = text
-            onCellEditStart?.(selectedCell.row, selectedCell.col)
+            const grid = parseTsvGrid(text)
+            const multi = grid.length > 1 || (grid[0]?.length ?? 0) > 1
+            if (multi && onBulkPaste) {
+              onBulkPaste(anchor.row, anchor.col, grid)
+            } else {
+              pasteRef.current = text
+              onCellEditStart?.(anchor.row, anchor.col)
+            }
           })
           .catch(() => {
             // Clipboard read denied: fall back to entering edit mode so the
             // user can paste manually.
-            onCellEditStart?.(selectedCell.row, selectedCell.col)
+            onCellEditStart?.(anchor.row, anchor.col)
           })
       }
     }
     window.addEventListener("keydown", onGridKeyDown)
     return () => window.removeEventListener("keydown", onGridKeyDown)
-  }, [selectedCell, editingCell, data, onCellEditStart])
+  }, [selectedCell, editingCell, data, onCellEditStart, onBulkPaste, anchorCell, region, regionSize, columns])
 
   const commitEdit = useCallback(
     (rowIdx: number, col: string, original: string, currentValue: string) => {
@@ -525,10 +584,20 @@ export function DataTable({
                           key={cell.id}
                           className={cn(
                             "relative h-7 px-3 border-b whitespace-nowrap overflow-hidden text-ellipsis",
-                            selectedCell?.row === i && selectedCell?.col === cell.column.id && "bg-accent/50"
+                            selectedCell?.row === i && selectedCell?.col === cell.column.id && "bg-accent/50",
+                            isInRegion(i, cell.column.id) && "bg-accent/30"
                           )}
                           style={{ width: cell.column.getSize() }}
-                          onClick={() => setSelectedCell({ row: i, col: cell.column.id })}
+                          onClick={(e) => {
+                            if (e.shiftKey && anchorCell) {
+                              setSelectedCell({ row: i, col: cell.column.id })
+                              setRegion({ r1: anchorCell.row, c1: anchorCell.col, r2: i, c2: cell.column.id })
+                            } else {
+                              setAnchorCell({ row: i, col: cell.column.id })
+                              setSelectedCell({ row: i, col: cell.column.id })
+                              setRegion(null)
+                            }
+                          }}
                           onContextMenu={() => {
                             if (!copyEnabled) return
                             setCopyCell({ row: i, col: cell.column.id })

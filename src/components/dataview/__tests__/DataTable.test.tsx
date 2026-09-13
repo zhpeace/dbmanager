@@ -450,6 +450,30 @@ describe("grid keyboard copy/paste", () => {
     expect(writeTextMock).toHaveBeenCalledWith("Alice")
   })
 
+  it("copies a selected region as TSV via Cmd+C", () => {
+    render(<DataTable columns={columns} rows={rows} tableName="users" primaryKeys={["id"]} />)
+    // anchor at Alice (row 0, name), Shift+click bob@test.com (row 1, email)
+    fireEvent.click(screen.getByText("Alice").closest("td")!)
+    fireEvent.click(screen.getByText("bob@test.com").closest("td")!, { shiftKey: true })
+    fireKey("c")
+    expect(writeTextMock).toHaveBeenCalledWith("Alice\talice@test.com\nBob\tbob@test.com")
+  })
+
+  it("pastes multi-row TSV into a region via Cmd+V", async () => {
+    readTextMock.mockResolvedValue("张三\tactive\n李四\tinactive")
+    const onBulkPaste = vi.fn()
+    render(<DataTable columns={columns} rows={rows} onBulkPaste={onBulkPaste} />)
+    fireEvent.click(screen.getByText("Alice").closest("td")!)
+    fireEvent.click(screen.getByText("bob@test.com").closest("td")!, { shiftKey: true })
+    fireKey("v")
+    await waitFor(() =>
+      expect(onBulkPaste).toHaveBeenCalledWith(0, "name", [
+        ["张三", "active"],
+        ["李四", "inactive"],
+      ])
+    )
+  })
+
   it("does not copy when no cell is selected", () => {
     render(<DataTable columns={columns} rows={rows} />)
     fireKey("c")

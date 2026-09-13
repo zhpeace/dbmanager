@@ -544,6 +544,26 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
     setEditingCell(null)
   }, [tableData, selectedRows, deletedRows, newRows, rowStates])
 
+  const handleBulkPaste = useCallback((anchorRow: number, anchorCol: string, grid: string[][]) => {
+    if (!tableData) return
+    const cols = tableData.columns.map((c) => c.name)
+    const baseCol = cols.indexOf(anchorCol)
+    if (baseCol < 0) return
+    for (let r = 0; r < grid.length; r++) {
+      const rowIdx = anchorRow + r
+      if (rowIdx >= mergedRows.length) break
+      const line = grid[r]
+      for (let c = 0; c < line.length; c++) {
+        const colIdx = baseCol + c
+        if (colIdx >= cols.length) break
+        const v = line[c]
+        // 空串跳过（不改动），避免误清单元格
+        if (v === "") continue
+        handleCellEdit(rowIdx, cols[colIdx], v)
+      }
+    }
+  }, [tableData, mergedRows, handleCellEdit])
+
   const handleSelectionChange = useCallback((rowIndex: number, selected: boolean) => {
     setSelectedRows((prev) => {
       const next = new Set(prev)
@@ -880,6 +900,7 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
               onSelectionChange={handleSelectionChange}
               onSelectAll={handleSelectAll}
               onBulkEdit={() => setBulkEditOpen(true)}
+              onBulkPaste={handleBulkPaste}
               tableName={table}
               primaryKeys={tableData.primary_keys}
             />

@@ -88,3 +88,18 @@ export function computeBulkValue(orig: unknown, spec: BulkEditApply, seqPos: num
       return { value: spec.value, error: "未知的修改方式" }
   }
 }
+
+/** 解析剪贴板文本为二维网格：行按换行、列按 Tab（Excel 复制格式） */
+export function parseTsvGrid(text: string): string[][] {
+  return text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.split("\t"))
+}
+
+/** 把二维值网格生成 Excel 兼容 TSV（null/undefined → 空串） */
+export function buildTsvGrid(rows: Array<Array<unknown>>): string {
+  return rows
+    .map((cells) => cells.map((v) => (v === null || v === undefined ? "" : String(v))).join("\t"))
+    .join("\n")
+}

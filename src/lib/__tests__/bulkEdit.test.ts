@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { computeBulkValue, evalBulkExpression, type BulkEditApply } from "../bulkEdit"
+import { computeBulkValue, evalBulkExpression, parseTsvGrid, buildTsvGrid, type BulkEditApply } from "../bulkEdit"
 
 function spec(partial: Partial<BulkEditApply>): BulkEditApply {
   return { column: "name", mode: "constant", value: "", seqStart: 1, seqStep: 1, ...partial }
@@ -49,5 +49,26 @@ describe("computeBulkValue", () => {
   it("sequence starts at seqStart and steps per position", () => {
     expect(computeBulkValue(null, spec({ mode: "sequence", seqStart: 10, seqStep: 5 }), 0)).toEqual({ value: 10 })
     expect(computeBulkValue(null, spec({ mode: "sequence", seqStart: 10, seqStep: 5 }), 2)).toEqual({ value: 20 })
+  })
+})
+
+describe("TSV grid helpers", () => {
+  it("parses Excel-style TSV (rows newline, cols tab)", () => {
+    expect(parseTsvGrid("张三\tactive\n李四\tinactive")).toEqual([
+      ["张三", "active"],
+      ["李四", "inactive"],
+    ])
+  })
+
+  it("handles CRLF and trailing empty line", () => {
+    expect(parseTsvGrid("a\tb\r\nc\td\n")).toEqual([
+      ["a", "b"],
+      ["c", "d"],
+      [""],
+    ])
+  })
+
+  it("builds TSV with null/undefined as empty cells", () => {
+    expect(buildTsvGrid([[1, null], ["x", undefined]])).toBe("1\t\nx\t")
   })
 })
