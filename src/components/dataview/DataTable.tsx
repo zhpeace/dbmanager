@@ -121,6 +121,30 @@ export function DataTable({
     return (Math.abs(r2 - r1) + 1) * (Math.abs(ci2 - ci1) + 1)
   }, [region, columns])
 
+  // 区域边缘格的内联 boxShadow（Excel 式选区边框），任意值无法用 Tailwind 动态生成
+  const regionEdgeStyle = useCallback(
+    (rowIdx: number, col: string): React.CSSProperties | undefined => {
+      if (!region) return undefined
+      const { r1, c1, r2, c2 } = region
+      const ci1 = colIndexOf(c1)
+      const ci2 = colIndexOf(c2)
+      if (ci1 < 0 || ci2 < 0) return undefined
+      const rMin = Math.min(r1, r2)
+      const rMax = Math.max(r1, r2)
+      const cMin = Math.min(ci1, ci2)
+      const cMax = Math.max(ci1, ci2)
+      const ci = colIndexOf(col)
+      const edge = "1.5px solid hsl(var(--accent-foreground))"
+      const shadows: string[] = []
+      if (rowIdx === rMin) shadows.push(`inset 0 1.5px 0 0 ${edge}`)
+      if (rowIdx === rMax) shadows.push(`inset 0 -1.5px 0 0 ${edge}`)
+      if (ci === cMin) shadows.push(`inset 1.5px 0 0 0 ${edge}`)
+      if (ci === cMax) shadows.push(`inset -1.5px 0 0 0 ${edge}`)
+      return shadows.length > 0 ? { boxShadow: shadows.join(",") } : undefined
+    },
+    [region, columns]
+  )
+
   const data = useMemo(() => rows, [rows])
 
   const cellString = (v: unknown): string => {
@@ -612,10 +636,10 @@ export function DataTable({
                           key={cell.id}
                           className={cn(
                             "relative h-7 px-3 border-b whitespace-nowrap overflow-hidden text-ellipsis select-none",
-                            selectedCell?.row === i && selectedCell?.col === cell.column.id && "bg-accent/50",
-                            isInRegion(i, cell.column.id) && "bg-accent/30"
+                            selectedCell?.row === i && selectedCell?.col === cell.column.id && "bg-accent/60",
+                            isInRegion(i, cell.column.id) && "bg-accent/50"
                           )}
-                          style={{ width: cell.column.getSize() }}
+                          style={{ width: cell.column.getSize(), ...regionEdgeStyle(i, cell.column.id) }}
                           onPointerDown={(e) => {
                             if (e.shiftKey) return
                             dragRef.current = true
