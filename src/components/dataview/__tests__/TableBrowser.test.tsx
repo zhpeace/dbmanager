@@ -357,7 +357,8 @@ it("marks deleted row and issues DELETE on save", async () => {
   })
 
   const checkboxes = screen.getAllByRole("checkbox")
-  await user.click(checkboxes[0])
+  // checkboxes[0] is the header "select all"; [1] is the first row checkbox
+  await user.click(checkboxes[1])
   await user.click(screen.getByText("Delete"))
   await user.click(screen.getByText("Save"))
 
@@ -369,8 +370,32 @@ it("marks deleted row and issues DELETE on save", async () => {
   })
 })
 
-it("rollback discards buffer and reloads", async () => {
+it("applies bulk edit to selected rows and saves a merged UPDATE", async () => {
   const user = userEvent.setup()
+  vi.mocked(invoke)
+    .mockResolvedValueOnce(mockTableData)
+    .mockResolvedValueOnce("")
+  render(<TableBrowser {...defaultProps} />)
+  await waitFor(() => {
+    expect(screen.getByText("Alice")).toBeInTheDocument()
+  })
+
+  // select all rows via the header checkbox (index 0)
+  await user.click(screen.getAllByRole("checkbox")[0])
+  await user.click(screen.getByText("Bulk edit"))
+  await user.type(screen.getByPlaceholderText("Enter new value"), "99")
+  await user.click(screen.getByText(/^Apply/))
+  await user.click(screen.getByText("Save"))
+
+  await waitFor(() => {
+    expect(invoke).toHaveBeenCalledWith("execute_batch", {
+      id: "c1",
+      queries: ["UPDATE users SET id = 99 WHERE id = 1 OR id = 2"],
+    })
+  })
+})
+
+it("rollback discards buffer and reloads", async () => {  const user = userEvent.setup()
   vi.mocked(invoke)
     .mockResolvedValueOnce(mockTableData)
     .mockResolvedValueOnce("")

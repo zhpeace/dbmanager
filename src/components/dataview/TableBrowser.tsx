@@ -11,6 +11,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { DataTable, type RowState } from "./DataTable"
 import { ValueEditorDialog } from "./ValueEditorDialog"
 import { BinaryEditorDialog } from "./BinaryEditorDialog"
+import { BulkEditDialog } from "./BulkEditDialog"
+import { computeBulkValue, type BulkEditApply } from "@/lib/bulkEdit"
 import { RedisValuePanel } from "./RedisValuePanel"
 import { ExportDialog } from "@/components/connection/ExportDialog"
 import type { TableData, DatabaseType, ColumnDef, IndexInfo, ForeignKeyInfo, ColumnInfo } from "@/lib/db"
@@ -74,10 +76,11 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
   const [binaryEditCell, setBinaryEditCell] = useState<{ row: number; col: string } | null>(null)
   const [exportOpen, setExportOpen] = useState(false)
 
-  const [dirtyRows, setDirtyRows] = useState<Map<number, Record<string, string>>>(new Map())
+  const [dirtyRows, setDirtyRows] = useState<Map<number, Record<string, string | number | null>>>(new Map())
   const [newRows, setNewRows] = useState<NewRow[]>([])
   const [deletedRows, setDeletedRows] = useState<Set<number>>(new Set())
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set())
+  const [bulkEditOpen, setBulkEditOpen] = useState(false)
 
   // --- 结构维护（列/索引/外键）：本地编辑 + 「应用」统一提交 ALTER ---
   const [structColumns, setStructColumns] = useState<EditableColumn[]>([])
@@ -442,6 +445,9 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
     if (!tableData || !hasUnsaved) return
     const sql: string[] = []
 
+    // 批量修改列/合并保存：同一列同一值的多行合并为一条 UPDATE
+    // （WHERE cond1 OR cond2 ...），避免逐行发 N 条。
+    const updateGroups = new Map<string, { col: string; lit: string; conds: string[] }>()
     for (const [rowIdx, cells] of dirtyRows) {
       const handle = tableData.row_handles[rowIdx] ?? {}
       const { where, error: whereErr } = buildWhereClause(handle)
@@ -449,10 +455,17 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
         setError(whereErr)
         return
       }
+      const cond = where.replace(/^WHERE\s+/i, "")
       for (const [col, val] of Object.entries(cells)) {
         const lit = binaryColumns.includes(col) ? binaryLiteral(val) : escapeVal(val, numericColumns.has(col))
-        sql.push(`UPDATE ${qualified} SET ${quoteId(col)} = ${lit} ${where}`)
+        const key = `${col}\u0000${lit}`
+        const g = updateGroups.get(key) ?? { col, lit, conds: [] }
+        g.conds.push(cond)
+        updateGroups.set(key, g)
       }
+    }
+    for (const g of updateGroups.values()) {
+      sql.push(`UPDATE ${qualified} SET ${quoteId(g.col)} = ${g.lit} WHERE ${g.conds.join(" OR ")}`)
     }
 
     for (const row of newRows) {
@@ -539,6 +552,53 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
       return next
     })
   }, [])
+
+  const handleSelectAll = useCallback((select: boolean) => {
+    if (!tableData) return
+    setSelectedRows(select ? new Set(tableData.rows.map((_, i) => i)) : new Set())
+  }, [tableData])
+
+  /** 批量修改列：对选中行计算新值并写入脏标记（复用编辑缓冲，统一由「保存」提交） */
+  const handleBulkEditApply = useCallback((apply: BulkEditApply) => {
+    setBulkEditOpen(false)
+    if (!tableData || selectedRows.size === 0) return
+    const idxs = [...selectedRows].sort((a, b) => a - b)
+    let changed = false
+    for (let pos = 0; pos < idxs.length; pos++) {
+      const rowIdx = idxs[pos]
+      const row = mergedRows[rowIdx]
+      if (!row) continue
+      const orig = row[apply.column]
+      const res = computeBulkValue(orig, apply, pos)
+      if (res.error) {
+        setError(res.error)
+        return
+      }
+      const rowState = rowStates[rowIdx]
+      if (rowState === "deleted") continue
+      const same =
+        res.value === null
+          ? orig === null || orig === undefined
+          : String(orig ?? "") === String(res.value)
+      if (same) continue
+      if (rowState === "added") {
+        const addedIndex = rowIdx - tableData.rows.length
+        if (addedIndex < 0) continue
+        setNewRows((prev) =>
+          prev.map((r, i) => (i === addedIndex ? { ...r, [apply.column]: res.value } : r))
+        )
+      } else {
+        setDirtyRows((prev) => {
+          const next = new Map(prev)
+          const cells = next.get(rowIdx) ?? {}
+          next.set(rowIdx, { ...cells, [apply.column]: res.value })
+          return next
+        })
+      }
+      changed = true
+    }
+    if (changed) setSelectedRows(new Set())
+  }, [tableData, selectedRows, mergedRows, rowStates])
 
   const handleMoveNext = useCallback((rowIndex: number, columnName: string, direction: "down" | "right") => {
     if (!tableData) return
@@ -671,6 +731,10 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
           <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={handleDeleteSelected} disabled={selectedRows.size === 0}>
             <Trash2 className="h-3 w-3 mr-1" />
             {t('tablebrowser.delete_row')}
+          </Button>
+          <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => setBulkEditOpen(true)} disabled={selectedRows.size === 0 || !editable}>
+            <Wand2 className="h-3 w-3 mr-1" />
+            {t('tablebrowser.bulk_edit')}
           </Button>
           <Button size="sm" variant="ghost" className="h-6 px-2 text-xs text-amber-600 dark:text-amber-400" onClick={handleSave} disabled={!hasUnsaved || loading}>
             <Save className="h-3 w-3 mr-1" />
@@ -814,6 +878,8 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
               rowStates={rowStates}
               selectedRows={selectedRows}
               onSelectionChange={handleSelectionChange}
+              onSelectAll={handleSelectAll}
+              onBulkEdit={() => setBulkEditOpen(true)}
               tableName={table}
               primaryKeys={tableData.primary_keys}
             />
@@ -1259,6 +1325,14 @@ export function TableBrowser({ connectionId, database, table, dbType, onClose, e
           setBinaryEditCell(null)
         }}
         onClose={() => setBinaryEditCell(null)}
+      />
+      <BulkEditDialog
+        open={bulkEditOpen}
+        columns={tableData ? tableData.columns.map((c) => c.name) : []}
+        columnTypes={columnTypes}
+        selectedCount={selectedRows.size}
+        onApply={handleBulkEditApply}
+        onClose={() => setBulkEditOpen(false)}
       />
       <ExportDialog
         open={exportOpen}

@@ -10,7 +10,7 @@ import {
   type ColumnSizingState,
 } from "@tanstack/react-table"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { ArrowUpDown, ChevronUp, ChevronDown, Pencil, CirclePlus, XCircle, Maximize2 } from "lucide-react"
+import { ArrowUpDown, ChevronUp, ChevronDown, Pencil, CirclePlus, XCircle, Maximize2, Wand2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { toCsv, toInsert, toUpdate } from "@/lib/sql"
 import { ErrorBlock } from "./ErrorBlock"
@@ -44,6 +44,8 @@ interface DataTableProps {
   rowStates?: Array<RowState | undefined>
   selectedRows?: Set<number>
   onSelectionChange?: (rowIndex: number, selected: boolean) => void
+  onSelectAll?: (select: boolean) => void
+  onBulkEdit?: () => void
   tableName?: string
   primaryKeys?: string[]
   copyEnabled?: boolean
@@ -69,6 +71,8 @@ export function DataTable({
   rowStates,
   selectedRows,
   onSelectionChange,
+  onSelectAll,
+  onBulkEdit,
   tableName,
   primaryKeys,
   copyEnabled = true,
@@ -439,7 +443,17 @@ export function DataTable({
               {table.getHeaderGroups().map((headerGroup) => (
                 <tr key={headerGroup.id}>
                   <th className="w-14 h-8 px-2 border-b text-xs text-muted-foreground text-center bg-muted/80">
-                    {t('datatable.rownum')}
+                    {onSelectAll && rows.length > 0 ? (
+                      <input
+                        type="checkbox"
+                        className="h-3 w-3 accent-primary"
+                        checked={selectedRows != null && selectedRows.size === rows.length}
+                        onChange={(e) => onSelectAll(e.target.checked)}
+                        aria-label={t('datatable.select_all')}
+                      />
+                    ) : (
+                      t('datatable.rownum')
+                    )}
                   </th>
                   {headerGroup.headers.map((header) => (
                     <th
@@ -480,10 +494,18 @@ export function DataTable({
                         "hover:bg-accent/30 transition-colors",
                         i % 2 === 0 ? "bg-background" : "bg-muted/20",
                         isDeleted && "opacity-50 bg-red-50/40 dark:bg-red-950/20",
-                        rowState === "added" && "bg-green-50/40 dark:bg-green-950/20"
+                        rowState === "added" && "bg-green-50/40 dark:bg-green-950/20",
+                        selectedRows?.has(i) && "bg-primary/10"
                       )}
                     >
-                      <td className="w-14 h-7 px-2 border-b text-xs text-muted-foreground text-center">
+                      <td
+                        className="w-14 h-7 px-2 border-b text-xs text-muted-foreground text-center"
+                        onClick={() => {
+                          if (onSelectionChange) {
+                            onSelectionChange(i, !(selectedRows?.has(i) ?? false))
+                          }
+                        }}
+                      >
                         <div className="flex items-center justify-center gap-1">
                           {onSelectionChange && (
                             <input
@@ -544,6 +566,15 @@ export function DataTable({
             </ContextMenuItem>
             <ContextMenuItem onSelect={() => handleCopy("update")}>
               {t('datatable.copy_row_update')}
+            </ContextMenuItem>
+          </>
+        )}
+        {onBulkEdit && (selectedRows?.size ?? 0) > 0 && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => onBulkEdit()}>
+              <Wand2 className="h-3 w-3 mr-1.5" />
+              {t('datatable.bulk_edit', { count: selectedRows?.size ?? 0 })}
             </ContextMenuItem>
           </>
         )}
