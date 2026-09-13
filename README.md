@@ -38,7 +38,7 @@ A cross-platform, multi-database management and migration desktop application bu
 - **Secrets Management**: OS keyring integration (macOS Keychain, Linux Secret Service, Windows Credential Vault)
 - **Themes**: Dark / Light mode toggle
 - **i18n**: English and Chinese locales
-- **Minimal macOS menu bar**: only the app menu (About / Quit) remains; the default Edit/File/View/Window/Help menus are removed
+- **Minimal macOS menu bar**: only the app menu (About / Quit) plus the standard Edit menu (Undo / Redo / Cut / Copy / Paste / Select All) remain; the File/View/Window/Help menus are removed. The Edit menu is required on macOS because WKWebView routes Cmd+C/V/X/A in native inputs through the menu's first-responder chain — without it, inline grid editing loses native copy/paste
 
 ## Quick Start
 

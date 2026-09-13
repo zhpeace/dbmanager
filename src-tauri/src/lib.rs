@@ -2083,7 +2083,10 @@ pub fn run() {
     tauri::Builder::default()
         .manage(app_state)
         .menu(|app| {
-            // Minimal macOS menu bar: only the app menu (About / Quit) remains.
+            // macOS menu bar: app menu + standard Edit menu.
+            // The Edit menu is REQUIRED on macOS: WKWebView routes Cmd+C/V/X/A
+            // (copy:/paste:/cut:/selectAll:) through the menu's first-responder
+            // chain. Without it, inline inputs lose native copy/paste entirely.
             use tauri::menu::{Menu, PredefinedMenuItem, Submenu};
             let app_menu = Submenu::with_items(
                 app,
@@ -2095,7 +2098,21 @@ pub fn run() {
                     &PredefinedMenuItem::quit(app, None)?,
                 ],
             )?;
-            Menu::with_items(app, &[&app_menu])
+            let edit_menu = Submenu::with_items(
+                app,
+                "编辑",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app, Some("撤销"))?,
+                    &PredefinedMenuItem::redo(app, Some("重做"))?,
+                    &PredefinedMenuItem::separator(app)?,
+                    &PredefinedMenuItem::cut(app, Some("剪切"))?,
+                    &PredefinedMenuItem::copy(app, Some("复制"))?,
+                    &PredefinedMenuItem::paste(app, Some("粘贴"))?,
+                    &PredefinedMenuItem::select_all(app, Some("全选"))?,
+                ],
+            )?;
+            Menu::with_items(app, &[&app_menu, &edit_menu])
         })
         .setup(|app| {
             if cfg!(debug_assertions) {
