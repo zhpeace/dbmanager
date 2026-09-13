@@ -252,9 +252,26 @@ export function DataTable({
           .then((text) => {
             if (text === null || text === undefined) return
             const grid = parseTsvGrid(text)
-            const multi = grid.length > 1 || (grid[0]?.length ?? 0) > 1
-            if (multi && onBulkPaste) {
-              onBulkPaste(anchor.row, anchor.col, grid)
+            const single = grid.length === 1 && (grid[0]?.length ?? 0) === 1
+            if (region && regionSize > 1) {
+              if (single) {
+                // 纯文本 + 多格选中：把该值填充到区域内所有单元格
+                const value = grid[0][0] ?? ""
+                const ci1 = colIndexOf(region.c1)
+                const ci2 = colIndexOf(region.c2)
+                const fillRows = Math.abs(region.r2 - region.r1) + 1
+                const fillCols = Math.abs(ci2 - ci1) + 1
+                const fillGrid = Array.from({ length: fillRows }, () =>
+                  Array.from({ length: fillCols }, () => value)
+                )
+                onBulkPaste?.(
+                  Math.min(region.r1, region.r2),
+                  columns[Math.min(ci1, ci2)],
+                  fillGrid
+                )
+              } else {
+                onBulkPaste?.(anchor.row, anchor.col, grid)
+              }
             } else {
               pasteRef.current = text
               onCellEditStart?.(anchor.row, anchor.col)

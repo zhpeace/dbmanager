@@ -474,6 +474,21 @@ describe("grid keyboard copy/paste", () => {
     )
   })
 
+  it("fills the whole region with a plain-text value via Cmd+V", async () => {
+    readTextMock.mockResolvedValue("TBD")
+    const onBulkPaste = vi.fn()
+    render(<DataTable columns={columns} rows={rows} onBulkPaste={onBulkPaste} />)
+    fireEvent.click(screen.getByText("Alice").closest("td")!)
+    fireEvent.click(screen.getByText("bob@test.com").closest("td")!, { shiftKey: true })
+    fireKey("v")
+    await waitFor(() =>
+      expect(onBulkPaste).toHaveBeenCalledWith(0, "name", [
+        ["TBD", "TBD"],
+        ["TBD", "TBD"],
+      ])
+    )
+  })
+
   it("does not copy when no cell is selected", () => {
     render(<DataTable columns={columns} rows={rows} />)
     fireKey("c")
