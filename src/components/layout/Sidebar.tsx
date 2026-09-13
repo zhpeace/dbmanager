@@ -496,6 +496,7 @@ function ConnectionItem({
   }
 
   function toggleDb(dbName: string) {
+    setSelectedObjKey(dbName)
     setExpandedDbs((prev) => {
       const next = new Set(prev)
       if (next.has(dbName)) {
@@ -505,7 +506,9 @@ function ConnectionItem({
       }
       return next
     })
-    // Selecting a database name switches the active database immediately.
+    // Selecting a database name updates the global selection context (what a
+    // new query tab inherits). It must NOT rewrite any open tab's binding —
+    // single clicks are pure selection, matching mainstream clients.
     onDatabaseClick(dbName, connId)
     if (!expandedDbs.has(dbName) && !tables[dbName] && !tableLoading[`${connId}:${dbName}`]) {
       onLoadTables(dbName)
@@ -906,7 +909,9 @@ function ConnectionItem({
                     <div
                       className={cn(
                         "flex items-center gap-1.5 rounded px-2 py-1 text-xs cursor-pointer hover:bg-sidebar-accent/50",
-                        isDbExpanded && "bg-sidebar-accent/30"
+                        selectedObjKey === db.name
+                          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                          : isDbExpanded && "bg-sidebar-accent/30"
                       )}
                       onClick={() => toggleDb(db.name)}
                     >

@@ -79,6 +79,11 @@ function AppContent() {
   // changed by explicit context switches (double-click, database/table click,
   // top strip selector, tab shortcuts, opening tables).
   const [selectedConnectionId, setSelectedConnectionId] = useState<string>("")
+  // Global "selection" context from sidebar clicks (connection + database).
+  // Sidebar single-clicks only update these (highlight + inherit for new
+  // query tabs) and NEVER touch any open tab's binding — aligning with
+  // Navicat/DataGrip/DBeaver where a single click is pure selection.
+  const [selectedDatabase, setSelectedDatabase] = useState<string | null>(null)
   useEffect(() => {
     setSelectedConnectionId(activeConnectionId || "")
   }, [activeConnectionId])
@@ -509,28 +514,15 @@ async function handleSelectConnection(id: string, restoreBrowse = false) {
   }
 
 function handleDatabaseClick(database: string, connectionId: string) {
-  const currentId = activeTabIdRef.current || tabs[0]?.id || ""
-  // Activate the connection being browsed, matching the table-click path,
-  // so the top strip / editor context follow the sidebar click.
-  if (connectionId !== activeConnectionId) {
-    handleSelectConnection(connectionId)
-  }
-  setTabs((prev) =>
-    prev.map((t2) =>
-      t2.id === currentId
-        ? {
-            ...t2,
-            // Keep the currently browsed table (if any); only sync the
-            // connection/database so a single sidebar click never turns a
-            // data-browse tab into a SQL editor.
-            browse: t2.browse ? { ...t2.browse, connectionId, database } : undefined,
-            // Keep the tab's per-connection database map in sync so the
-            // top bar / editor reflect the database picked in the sidebar.
-            database: { ...t2.database, [connectionId]: database },
-          }
-        : t2
-    )
-  )
+  // Sidebar single-click on a database/object: pure selection.
+  // Update the global selection context only (sidebar highlight + what a NEW
+  // query tab inherits). Never rewrite any open tab's binding — the previous
+  // behavior set the active browse tab's database here, which broke the
+  // currently browsed table when clicking a table of another database
+  // ("Table 'x.y' doesn't exist"). Mainstream clients never mutate open tabs
+  // on a single click.
+  setSelectedConnectionId(connectionId)
+  setSelectedDatabase(database)
 }
 
   async function handleLoadTables(id: string, database: string) {
@@ -1286,7 +1278,10 @@ function handleDatabaseClick(database: string, connectionId: string) {
   function openInNewTab(sql: string) {
     const id = crypto.randomUUID()
     const n = tabs.length + 1
-    const connId = activeConnectionId
+    // Inherit the sidebar *selection* (not the active tab's context): a new
+    // query tab picks up what the user last selected in the sidebar, which is
+    // the mainstream behavior for "click something, then open a new query".
+    const connId = selectedConnectionId || activeConnectionId
     setErrorBanner(null)
     setTabs((prev) => [...prev, {
       id,
@@ -1294,9 +1289,9 @@ function handleDatabaseClick(database: string, connectionId: string) {
       sql,
       filePath: null,
       connectionId: connId,
-      // Inherit the currently selected database (top strip) instead of the
-      // connection's configured default, matching Navicat/DBeaver behavior.
-      database: connId ? { [connId]: currentDatabase } : {},
+      // Inherit the currently selected database (sidebar selection) instead
+      // of the connection's configured default, matching Navicat/DBeaver.
+      database: connId ? { [connId]: selectedDatabase || activeConnection?.config.database || "" } : {},
       error: null,
     }])
     setActiveTabId(id)
@@ -1309,7 +1304,7 @@ function handleDatabaseClick(database: string, connectionId: string) {
       if (next.length === 0) {
         const nid = crypto.randomUUID()
         setActiveTabId(nid)
-        return [{ id: nid, title: t('editor.tab_query') + " 1", sql: "", filePath: null, connectionId: activeConnectionId, database: {}, error: null }]
+        return [{ id: nid, title: t('editor.tab_query') + " 1", sql: "", filePath: null, connectionId: selectedConnectionId || activeConnectionId, database: {}, error: null }]
       }
       if (id === activeTabId) {
         const idx = prev.findIndex((tb) => tb.id === id)
