@@ -1470,7 +1470,11 @@ function handleDatabaseClick(database: string, connectionId: string) {
               </button>
             </div>
           )}
-          {activeConnection?.connected ? (
+          {/* A query tab always exists (created on startup), so show the tab
+              bar + SQL editor even before any connection is active — the
+              editor renders unbound ("no connection") and the welcome page is
+              only a fallback if tabs somehow become empty. */}
+          {tabs.length > 0 ? (
             showErDiagram ? (
               <ErDiagram connectionId={activeConnectionId!} database={currentDatabase || ""} />
             ) : (
