@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { X, Wand2 } from "lucide-react"
-import type { BulkEditApply, BulkEditMode } from "@/lib/bulkEdit"
+import type { BulkEditApply } from "@/lib/bulkEdit"
 
 interface BulkEditDialogProps {
   open: boolean
@@ -23,6 +23,7 @@ interface BulkEditDialogProps {
   onClose: () => void
 }
 
+type UiMode = "constant" | "expression" | "function"
 type FnMode = "now" | "uuid" | "null" | "sequence"
 
 export function BulkEditDialog({
@@ -35,7 +36,7 @@ export function BulkEditDialog({
 }: BulkEditDialogProps) {
   const { t } = useTranslation()
   const [column, setColumn] = useState(columns[0] ?? "")
-  const [mode, setMode] = useState<BulkEditMode>("constant")
+  const [mode, setMode] = useState<UiMode>("constant")
   const [value, setValue] = useState("")
   const [fn, setFn] = useState<FnMode>("now")
   const [seqStart, setSeqStart] = useState("1")
@@ -56,7 +57,7 @@ export function BulkEditDialog({
     if (!column) return
     const apply: BulkEditApply = {
       column,
-      mode,
+      mode: mode === "function" ? fn : mode,
       value,
       seqStart: Number(seqStart) || 0,
       seqStep: Number(seqStep) || 1,
@@ -93,7 +94,7 @@ export function BulkEditDialog({
 
           <div className="grid gap-1.5">
             <Label className="text-xs text-muted-foreground">{t('bulk_edit.mode')}</Label>
-            <Select value={mode} onValueChange={(v) => setMode(v as BulkEditMode)}>
+            <Select value={mode} onValueChange={(v) => setMode(v as UiMode)}>
               <SelectTrigger className="h-8 text-xs">
                 <SelectValue />
               </SelectTrigger>
