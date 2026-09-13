@@ -54,7 +54,6 @@ import { createObjectTemplate, getConnectionSecret, saveConnectionSecret, delete
 import { splitSqlStatements, parseErrorLine, buildExplainSql, toCsv, toJson, toInsert } from "@/lib/sql"
 import { LicenseDialog } from "@/components/connection/LicenseDialog"
 import { SessionMonitor } from "@/components/connection/SessionMonitor"
-import { getCurrentWindow } from "@tauri-apps/api/window"
 import { loadPersistedTabs, saveTabs } from "@/lib/session"
 
 const STORAGE_KEY = "dbmanager-connections"
@@ -117,28 +116,15 @@ function AppContent() {
 
   // Session persistence: debounce-save query tabs (title/SQL/binding) so the
   // last editor session survives app restarts (Navicat-style restore).
+  // NOTE: no close-event flush is registered. macOS WKWebView blocks native
+  // window close when the page installs beforeunload, and interacting with
+  // WebView storage during Tauri's close flow risks interfering with it; the
+  // 500ms debounce already persists typing continuously, so a lost final edit
+  // only happens if the user quits within half a second of typing.
   useEffect(() => {
     const t = setTimeout(() => saveTabs(tabs), 500)
     return () => clearTimeout(t)
   }, [tabs])
-  // Flush on app close via the Tauri close event, so "edit SQL then quit
-  // immediately" is never lost. NOTE: a WebView `beforeunload` listener is
-  // deliberately NOT used — on macOS WKWebView it blocks native window close.
-  useEffect(() => {
-    const flush = () => saveTabs(tabsRef.current)
-    let unlisten: (() => void) | undefined
-    getCurrentWindow()
-      .onCloseRequested(() => {
-        flush()
-      })
-      .then((fn) => {
-        unlisten = fn
-      })
-      .catch(() => {})
-    return () => {
-      unlisten?.()
-    }
-  }, [])
 
   // Validate restored tabs against the connection list: drop bindings to
   // connections that no longer exist, and clear databases that were removed
