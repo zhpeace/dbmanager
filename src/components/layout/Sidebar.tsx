@@ -138,7 +138,13 @@ function getTypeLabel(t: (key: string) => string, type: string): string {
 interface SidebarProps {
   connections: Connection[]
   activeConnectionId: string | null
+  // Highlight source for the sidebar. Decoupled from activeConnectionId: a
+  // single click expands + highlights without switching the editor context;
+  // double click (onSelectConnection) performs the full context restore.
+  selectedConnectionId?: string
   onSelectConnection: (id: string) => void
+  // Called on single click (expand) — connect-if-needed, no editor switching.
+  onExpandConnection?: (id: string) => void
   onDisconnect: (id: string) => void
   onRefresh: (id: string) => void
   onEditConnection: (id: string) => void
@@ -172,7 +178,9 @@ interface SidebarProps {
 export function Sidebar({
   connections,
   activeConnectionId,
+  selectedConnectionId,
   onSelectConnection,
+  onExpandConnection,
   onDisconnect,
   onRefresh,
   onEditConnection,
@@ -257,8 +265,9 @@ export function Sidebar({
             <ConnectionItem
               key={conn.id}
               connection={conn}
-              isActive={conn.id === activeConnectionId}
+              isActive={conn.id === (selectedConnectionId ?? activeConnectionId ?? "")}
               onSelect={() => onSelectConnection(conn.id)}
+              onExpand={() => onExpandConnection?.(conn.id)}
               onDisconnect={() => onDisconnect(conn.id)}
                onRefresh={() => onRefresh(conn.id)}
                onEditConnection={() => onEditConnection(conn.id)}
@@ -313,6 +322,7 @@ function ConnectionItem({
   connection,
   isActive,
   onSelect,
+  onExpand,
   onDisconnect,
   onRefresh,
   onEditConnection,
@@ -348,6 +358,7 @@ function ConnectionItem({
   connection: Connection
   isActive: boolean
   onSelect: () => void
+  onExpand: () => void
   onDisconnect: () => void
   onRefresh: () => void
   onEditConnection: () => void
@@ -391,6 +402,9 @@ function ConnectionItem({
   const isRedis = connection.config.type === "redis"
   const locatedRef = useRef<string | null>(null)
   const locatedSchemaRef = useRef<string | null>(null)
+  // Single-click expand runs on a short delay so a double click (which fires
+  // two clicks first) cancels it and performs the full context restore once.
+  const expandTimer = useRef<number | undefined>(undefined)
 
   // The database the app treats as the connection's default context.
   // Oracle has no database concept: the expanded list is schemas (usernames)
@@ -777,7 +791,20 @@ function ConnectionItem({
               isActive ? "bg-sidebar-accent text-sidebar-accent-foreground" : "hover:bg-sidebar-accent/50"
             )}
             onClick={() => {
-              setExpanded(!expanded)
+              // Single click: expand/collapse + highlight only (delayed so a
+              // double click wins). Never switches the editor context.
+              if (expandTimer.current) window.clearTimeout(expandTimer.current)
+              expandTimer.current = window.setTimeout(() => {
+                setExpanded((prev) => !prev)
+                onExpand()
+              }, 250)
+            }}
+            onDoubleClick={() => {
+              // Double click: full context restore (browse tab / bind editor
+              // to this connection) — mainstream "open connection" behavior.
+              if (expandTimer.current) window.clearTimeout(expandTimer.current)
+              expandTimer.current = undefined
+              setExpanded(true)
               onSelect()
             }}
           >

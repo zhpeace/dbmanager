@@ -26,6 +26,13 @@ function makeConnection(overrides: Partial<Connection> = {}): Connection {
 
 const noop = () => {}
 
+// Single-click connection expansion runs on a 250ms delay (so a double click
+// can win). Helpers that expand via single click must wait for the timer.
+async function expandConnection() {
+  await userEvent.click(screen.getByText("Test DB"))
+  await new Promise((r) => setTimeout(r, 300))
+}
+
 const defaultProps = {
   connections: [] as Connection[],
   activeConnectionId: null as string | null,
@@ -90,7 +97,8 @@ it("shows green dot for connected and gray for disconnected", () => {
 
 // ── Interaction: expand connection ──
 
-it("calls onSelectConnection when connection name is clicked", async () => {
+it("single click expands + highlights via onExpandConnection, without onSelectConnection", async () => {
+  const onExpandConnection = vi.fn()
   const onSelectConnection = vi.fn()
   const conn = makeConnection()
   render(
@@ -98,10 +106,31 @@ it("calls onSelectConnection when connection name is clicked", async () => {
       {...defaultProps}
       connections={[conn]}
       onSelectConnection={onSelectConnection}
+      onExpandConnection={onExpandConnection}
     />
   )
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
+  await waitFor(() => expect(onExpandConnection).toHaveBeenCalledWith("c1"))
+  expect(onSelectConnection).not.toHaveBeenCalled()
+})
+
+it("double click performs the full context restore via onSelectConnection", async () => {
+  const onSelectConnection = vi.fn()
+  const onExpandConnection = vi.fn()
+  const conn = makeConnection()
+  render(
+    <Sidebar
+      {...defaultProps}
+      connections={[conn]}
+      onSelectConnection={onSelectConnection}
+      onExpandConnection={onExpandConnection}
+    />
+  )
+  await userEvent.dblClick(screen.getByText("Test DB"))
   expect(onSelectConnection).toHaveBeenCalledWith("c1")
+  // The two clicks of the double click must not also fire the expand handler.
+  await new Promise((r) => setTimeout(r, 300))
+  expect(onExpandConnection).not.toHaveBeenCalled()
 })
 
 // ── Database rendering ──
@@ -121,7 +150,7 @@ it("shows databases when connection is expanded", async () => {
 
   expect(screen.queryByText("sales_db")).not.toBeInTheDocument()
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
 
   expect(screen.getByText("sales_db")).toBeInTheDocument()
   expect(screen.getByText("analytics_db")).toBeInTheDocument()
@@ -142,7 +171,7 @@ it("calls onDatabaseClick when database is clicked", async () => {
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   await userEvent.click(screen.getByText("mydb"))
 
   expect(onDatabaseClick).toHaveBeenCalledWith("mydb", "c1")
@@ -169,7 +198,7 @@ it("renders tables grouped by type after expanding database", async () => {
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   await userEvent.click(screen.getByText("mydb"))
 
   expect(screen.getByText("users")).toBeInTheDocument()
@@ -200,7 +229,7 @@ it("single click selects a table, double click opens it (DBeaver-style)", async 
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   await userEvent.click(screen.getByText("mydb"))
   const tableEl = screen.getByText("users")
 
@@ -227,7 +256,7 @@ it("shows drop and duplicate in database context menu for mysql", async () => {
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   const dbEl = screen.getByText("mydb")
   fireEvent.contextMenu(dbEl)
 
@@ -250,7 +279,7 @@ it("hides drop_database in database context menu for sqlite", async () => {
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   const dbEl = screen.getByText("mydb")
   fireEvent.contextMenu(dbEl)
 
@@ -274,7 +303,7 @@ it("calls onDropObject when drop_database menu item clicked", async () => {
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   const dbEl = screen.getByText("mydb")
   fireEvent.contextMenu(dbEl)
 
@@ -300,7 +329,7 @@ it("calls onDuplicateDatabase when duplicate menu item clicked", async () => {
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   const dbEl = screen.getByText("mydb")
   fireEvent.contextMenu(dbEl)
 
@@ -332,7 +361,7 @@ it("calls onDropObject when drop_table menu item clicked", async () => {
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   await userEvent.click(screen.getByText("mydb"))
 
   const tableEl = screen.getByText("users")
@@ -363,7 +392,7 @@ it("opens license dialog when duplicate_database clicked in free mode", async ()
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   const dbEl = screen.getByText("mydb")
   fireEvent.contextMenu(dbEl)
 
@@ -391,7 +420,7 @@ it("auto-expands and marks the configured default database", async () => {
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
 
   // prod is auto-expanded and carries the default-database star
   await waitFor(() => {
@@ -422,7 +451,7 @@ it("auto-expands default schema and loads its tables for postgres", async () => 
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
 
   // public schema auto-expanded and marked; its tables visible
   await waitFor(() => {
@@ -450,7 +479,7 @@ it("loads the default database first, then drills into the schema when its data 
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
 
   // default database expanded even though its content is not loaded yet,
   // and a content load was requested so schema data can arrive
@@ -496,7 +525,7 @@ it("re-locates when the configured default database changes", async () => {
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   await waitFor(() => {
     expect(screen.getByTitle("Default schema")).toBeInTheDocument()
   })
@@ -518,8 +547,8 @@ it("re-locates when the configured default database changes", async () => {
   )
 
   // collapse + re-expand the connection: the new default database is located
-  await userEvent.click(screen.getByText("Test DB"))
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
+  await expandConnection()
   await waitFor(() => {
     expect(onLoadTables).toHaveBeenCalledWith("c1", "other")
   })
@@ -544,15 +573,15 @@ it("re-locates when the connection is collapsed and re-expanded", async () => {
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   await waitFor(() => {
     expect(onLoadTables).toHaveBeenCalledWith("c1", "mydb")
   })
   onLoadTables.mockClear()
 
   // collapse the connection, then re-expand: locate should run again
-  await userEvent.click(screen.getByText("Test DB"))
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
+  await expandConnection()
   await waitFor(() => {
     expect(onLoadTables).toHaveBeenCalledWith("c1", "mydb")
   })
@@ -573,7 +602,7 @@ it("expands immediately while the connection is loading (shows loading state)", 
 
   expect(screen.queryByText("sales_db")).not.toBeInTheDocument()
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
 
   // While connecting, the expanded area renders with a loading indicator
   // instead of waiting for `connected` to become true.
@@ -595,7 +624,7 @@ it("collapses the row when the connection is disconnected, so the next click exp
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   expect(screen.getByText("sales_db")).toBeInTheDocument()
 
   // Disconnect: the row should collapse (expanded resets), not stay "open"
@@ -621,7 +650,7 @@ it("collapses the row when the connection is disconnected, so the next click exp
   )
   expect(screen.queryByText("sales_db")).not.toBeInTheDocument()
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   expect(screen.getByText("sales_db")).toBeInTheDocument()
 })
 
@@ -646,7 +675,7 @@ it("locates the user-named database for PostgreSQL when database is empty", asyn
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   await waitFor(() => {
     expect(onLoadTables).toHaveBeenCalledWith("c1", "oushutest")
   })
@@ -673,7 +702,7 @@ it("does not fall back to username for non-PostgreSQL connections", async () => 
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   await waitFor(() => {
     expect(onLoadTables).not.toHaveBeenCalledWith("c1", "root")
   })
@@ -698,7 +727,7 @@ it("locates by username for Oracle even when the database field holds a service 
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   await waitFor(() => {
     expect(onLoadTables).toHaveBeenCalledWith("c1", "SCOTT")
   })
@@ -723,7 +752,7 @@ it("locates by username for Oracle when database is empty", async () => {
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
   await waitFor(() => {
     expect(onLoadTables).toHaveBeenCalledWith("c1", "SCOTT")
   })
@@ -747,7 +776,7 @@ it("marks the user-named schema with the default-database star for Oracle", asyn
     />
   )
 
-  await userEvent.click(screen.getByText("Test DB"))
+  await expandConnection()
 
   // The star follows the locate logic (username for Oracle), so it sits on SCOTT
   await waitFor(() => {

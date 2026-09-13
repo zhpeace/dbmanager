@@ -73,6 +73,15 @@ function AppContent() {
   connectionsRef.current = connections
 
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null)
+  // Sidebar selection highlight, decoupled from activeConnectionId: a single
+  // click on a connection expands/highlights only and must NOT switch the
+  // editor context (mainstream client behavior). activeConnectionId is only
+  // changed by explicit context switches (double-click, database/table click,
+  // top strip selector, tab shortcuts, opening tables).
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string>("")
+  useEffect(() => {
+    setSelectedConnectionId(activeConnectionId || "")
+  }, [activeConnectionId])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [databases, setDatabases] = useState<Record<string, DatabaseInfo[]>>({})
   const [schemas, setSchemas] = useState<Record<string, Record<string, DatabaseInfo[]>>>({})
@@ -396,6 +405,18 @@ function AppContent() {
     saveConnections(updated)
     setActiveConnectionId(connection.id)
     await connectToDatabase(connection)
+  }
+
+  // Single click on a sidebar connection: expand/collapse + highlight only.
+  // It must NOT touch the active tab, the editor's connection binding, or the
+  // query results — those are switched explicitly (double-click, database /
+  // table click, top strip selector, opening a table). Connecting on first
+  // expand is fine (the tree needs the database list).
+  async function handleExpandConnection(id: string) {
+    setSelectedConnectionId(id)
+    const conn = connectionsRef.current.find((c) => c.id === id)
+    if (!conn) return
+    if (!conn.connected) await connectToDatabase(conn)
   }
 
 async function handleSelectConnection(id: string, restoreBrowse = false) {
@@ -1408,7 +1429,9 @@ function handleDatabaseClick(database: string, connectionId: string) {
         <Sidebar
           connections={connections}
           activeConnectionId={activeConnectionId}
+          selectedConnectionId={selectedConnectionId}
           onSelectConnection={(id) => handleSelectConnection(id, true)}
+          onExpandConnection={handleExpandConnection}
           onDisconnect={handleDisconnect}
           onRefresh={handleRefresh}
           onEditConnection={handleEditConnection}
