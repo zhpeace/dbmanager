@@ -54,6 +54,8 @@ import { createObjectTemplate, getConnectionSecret, saveConnectionSecret, delete
 import { splitSqlStatements, parseErrorLine, buildExplainSql, toCsv, toJson, toInsert } from "@/lib/sql"
 import { LicenseDialog } from "@/components/connection/LicenseDialog"
 import { SessionMonitor } from "@/components/connection/SessionMonitor"
+import { getCurrentWindow } from "@tauri-apps/api/window"
+import { loadPersistedTabs, saveTabs } from "@/lib/session"
 
 const STORAGE_KEY = "dbmanager-connections"
 
@@ -72,7 +74,9 @@ function AppContent() {
   const connectionsRef = useRef(connections)
   connectionsRef.current = connections
 
-  const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null)
+  const [activeConnectionId, setActiveConnectionId] = useState<string | null>(
+    () => loadPersistedTabs()[0]?.connectionId ?? null
+  )
   // Sidebar selection highlight, decoupled from activeConnectionId: a single
   // click on a connection expands/highlights only and must NOT switch the
   // editor context (mainstream client behavior). activeConnectionId is only
@@ -94,7 +98,13 @@ function AppContent() {
   const [redisScanCursor, setRedisScanCursor] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState<Record<string, boolean>>({})
   const [tabs, setTabs] = useState<{ id: string; title: string; sql: string; filePath: string | null; browse?: { connectionId: string; database: string; table: string; defaultTab?: string; objectType?: string } | null; connectionId?: string | null; database?: Record<string, string | null>; error?: string | null }[]>(
-    () => [{ id: crypto.randomUUID(), title: t('editor.tab_query') + " 1", sql: "", filePath: null, connectionId: null, database: {}, error: null }]
+    () => {
+      // Restore the previous session's query tabs (Navicat-style); fall back
+      // to a single fresh "查询 1" when nothing was persisted.
+      const persisted = loadPersistedTabs()
+      if (persisted.length > 0) return persisted
+      return [{ id: crypto.randomUUID(), title: t('editor.tab_query') + " 1", sql: "", filePath: null, connectionId: null, database: {}, error: null }]
+    }
   )
   const backendConnDbRef = useRef<{ id: string; db: string } | null>(null)
   const [activeTabId, setActiveTabId] = useState<string>(() => "")
@@ -102,6 +112,62 @@ function AppContent() {
   const activeTabIdRef = useRef<string>("")
   const lastTabByConnRef = useRef<Record<string, string>>({})
   const activeConnIdRef = useRef<string>("")
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
+
+  // Session persistence: debounce-save query tabs (title/SQL/binding) so the
+  // last editor session survives app restarts (Navicat-style restore).
+  useEffect(() => {
+    const t = setTimeout(() => saveTabs(tabs), 500)
+    return () => clearTimeout(t)
+  }, [tabs])
+  // Flush on app close: Tauri close event, with beforeunload as a WebView
+  // fallback so "edit SQL then quit immediately" is never lost.
+  useEffect(() => {
+    const flush = () => saveTabs(tabsRef.current)
+    let unlisten: (() => void) | undefined
+    window.addEventListener("beforeunload", flush)
+    getCurrentWindow()
+      .onCloseRequested(() => {
+        flush()
+      })
+      .then((fn) => {
+        unlisten = fn
+      })
+      .catch(() => {})
+    return () => {
+      window.removeEventListener("beforeunload", flush)
+      unlisten?.()
+    }
+  }, [])
+
+  // Validate restored tabs against the connection list: drop bindings to
+  // connections that no longer exist, and clear databases that were removed
+  // (checked only once the database list for that connection is loaded).
+  useEffect(() => {
+    let changed = false
+    const next = tabs.map((tb) => {
+      const connId = tb.connectionId
+      if (!connId) return tb
+      const conn = connections.find((c) => c.id === connId)
+      if (!conn) {
+        changed = true
+        return { ...tb, connectionId: null, database: {} }
+      }
+      const db = tb.database?.[connId]
+      const dbList = databases[connId]
+      if (db && dbList && dbList.length > 0 && !dbList.some((d) => d.name === db)) {
+        changed = true
+        return { ...tb, database: { ...tb.database, [connId]: null } }
+      }
+      return tb
+    })
+    if (changed) setTabs(next)
+    if (activeConnectionId && !connections.some((c) => c.id === activeConnectionId)) {
+      setActiveConnectionId(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connections, databases])
   useEffect(() => {
     activeTabIdRef.current = activeTabId || tabs[0]?.id || ""
     const tb = tabs.find((x) => x.id === (activeTabId || tabs[0]?.id || ""))
