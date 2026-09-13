@@ -78,9 +78,12 @@ export function DataTable({
   const isExternalSort = !!onSort
 
   const [editValue, setEditValue] = useState("")
+  const editRef = useRef<HTMLInputElement>(null)
   const commitHandled = useRef(false)
 
   const [copyCell, setCopyCell] = useState<{ row: number; col: string } | null>(null)
+  const [selectedCell, setSelectedCell] = useState<{ row: number; col: string } | null>(null)
+  const pasteRef = useRef<string | null>(null)
 
   const data = useMemo(() => rows, [rows])
 
@@ -140,28 +143,83 @@ export function DataTable({
   useEffect(() => {
     commitHandled.current = false
     if (editingCell) {
-      const row = data[editingCell.row]
-      const v = row ? row[editingCell.col] : undefined
-      const type = columnTypes?.[editingCell.col]
-      setEditValue(
-        v === null || v === undefined ? "" : temporalKind(type) ? toInputValue(type, v) : String(v)
-      )
+      // Cmd/Ctrl+V on a selected (non-editing) cell pastes straight into the
+      // editor: use the pasted text instead of the cell's original value.
+      // pasteRef is a ref so consuming it never re-runs this effect (which
+      // would reset the initial value back to the cell's original content).
+      if (pasteRef.current !== null) {
+        setEditValue(pasteRef.current)
+        pasteRef.current = null
+      } else {
+        const row = data[editingCell.row]
+        const v = row ? row[editingCell.col] : undefined
+        const type = columnTypes?.[editingCell.col]
+        setEditValue(
+          v === null || v === undefined ? "" : temporalKind(type) ? toInputValue(type, v) : String(v)
+        )
+      }
     }
   }, [editingCell, data, columnTypes])
 
+  // Grid keyboard copy/paste (DataGrip/Navicat style): Cmd/Ctrl+C copies the
+  // selected cell; Cmd/Ctrl+V pastes into it by entering edit mode. While the
+  // inline editor or any other text control has focus, the system handles
+  // copy/paste natively and we must not intercept it.
+  useEffect(() => {
+    function onGridKeyDown(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey
+      if (!mod) return
+      const key = e.key.toLowerCase()
+      if (key !== "c" && key !== "v") return
+      const ae = document.activeElement
+      const typing =
+        !!ae &&
+        (ae.tagName === "INPUT" ||
+          ae.tagName === "TEXTAREA" ||
+          (ae as HTMLElement).isContentEditable)
+      if (typing) return
+      if (key === "c") {
+        // A real text selection in the grid should go through the system copy.
+        const sel = window.getSelection()
+        if (sel && sel.toString().length > 0) return
+        if (!selectedCell || editingCell) return
+        e.preventDefault()
+        const v = data[selectedCell.row]?.[selectedCell.col]
+        void copyText(v === null || v === undefined ? "" : cellString(v))
+      } else if (key === "v") {
+        if (!selectedCell || editingCell) return
+        e.preventDefault()
+        void navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (text === null || text === undefined) return
+            pasteRef.current = text
+            onCellEditStart?.(selectedCell.row, selectedCell.col)
+          })
+          .catch(() => {
+            // Clipboard read denied: fall back to entering edit mode so the
+            // user can paste manually.
+            onCellEditStart?.(selectedCell.row, selectedCell.col)
+          })
+      }
+    }
+    window.addEventListener("keydown", onGridKeyDown)
+    return () => window.removeEventListener("keydown", onGridKeyDown)
+  }, [selectedCell, editingCell, data, onCellEditStart])
+
   const commitEdit = useCallback(
-    (rowIdx: number, col: string, original: string) => {
+    (rowIdx: number, col: string, original: string, currentValue: string) => {
       if (commitHandled.current) return
       commitHandled.current = true
-      if (editValue !== original) {
+      if (currentValue !== original) {
         const type = columnTypes?.[col]
-        const out = temporalKind(type) && editValue !== "" ? fromInputValue(type, editValue) : editValue
+        const out = temporalKind(type) && currentValue !== "" ? fromInputValue(type, currentValue) : currentValue
         onCellEdit?.(rowIdx, col, out)
       } else {
         onCellEditStart?.(-1, "")
       }
     },
-    [editValue, onCellEdit, onCellEditStart, columnTypes]
+    [onCellEdit, onCellEditStart, columnTypes]
   )
 
   const cols = useMemo<ColumnDef<Record<string, unknown>>[]>(() => {
@@ -218,24 +276,26 @@ export function DataTable({
               ? toInputValue(type, value)
               : String(value)
           const inputType = kind === "date" ? "date" : kind === "time" ? "time" : kind === "datetime" ? "datetime-local" : "text"
+          const currentValue = () => editRef.current?.value ?? ""
           return (
             <input
+              key={`${rowIdx}:${col}`}
+              ref={editRef}
               type={inputType}
               className="w-full min-w-0 bg-transparent text-xs outline-none border border-primary rounded px-1"
-              value={editValue}
-              onChange={(e) => setEditValue(e.target.value)}
-              onBlur={() => commitEdit(rowIdx, col, original)}
+              defaultValue={editValue}
+              onBlur={() => commitEdit(rowIdx, col, original, currentValue())}
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   commitHandled.current = true
                   onCellEditStart?.(-1, "")
                 } else if (e.key === "Enter") {
                   e.preventDefault()
-                  commitEdit(rowIdx, col, original)
+                  commitEdit(rowIdx, col, original, currentValue())
                   onMoveNext?.(rowIdx, col, "down")
                 } else if (e.key === "Tab") {
                   e.preventDefault()
-                  commitEdit(rowIdx, col, original)
+                  commitEdit(rowIdx, col, original, currentValue())
                   onMoveNext?.(rowIdx, col, "right")
                 }
               }}
@@ -419,8 +479,12 @@ export function DataTable({
                       {row.getVisibleCells().map((cell) => (
                         <td
                           key={cell.id}
-                          className="relative h-7 px-3 border-b whitespace-nowrap overflow-hidden text-ellipsis"
+                          className={cn(
+                            "relative h-7 px-3 border-b whitespace-nowrap overflow-hidden text-ellipsis",
+                            selectedCell?.row === i && selectedCell?.col === cell.column.id && "bg-accent/50"
+                          )}
                           style={{ width: cell.column.getSize() }}
+                          onClick={() => setSelectedCell({ row: i, col: cell.column.id })}
                           onContextMenu={() => {
                             if (!copyEnabled) return
                             setCopyCell({ row: i, col: cell.column.id })

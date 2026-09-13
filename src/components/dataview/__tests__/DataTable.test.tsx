@@ -1,4 +1,5 @@
-import { render, screen, fireEvent } from "@testing-library/react"
+import { render, screen, fireEvent, waitFor } from "@testing-library/react"
+import { useState } from "react"
 import userEvent from "@testing-library/user-event"
 import { DataTable } from "../DataTable"
 
@@ -399,5 +400,79 @@ describe("context menu copy", () => {
     fireEvent.contextMenu(screen.getByText("Alice").closest("td")!)
     expect(screen.queryByText("Copy as INSERT")).not.toBeInTheDocument()
     expect(screen.queryByText("Copy as UPDATE")).not.toBeInTheDocument()
+  })
+})
+
+describe("grid keyboard copy/paste", () => {
+  let writeTextMock: ReturnType<typeof vi.fn>
+  let readTextMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    writeTextMock = vi.fn().mockResolvedValue(undefined)
+    readTextMock = vi.fn().mockResolvedValue("pasted-text")
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: writeTextMock, readText: readTextMock },
+      configurable: true,
+    })
+  })
+
+  function renderGrid(onCellEditStart = vi.fn()) {
+    function Wrapper() {
+      const [editing, setEditing] = useState<{ row: number; col: string } | null>(null)
+      return (
+        <DataTable
+          columns={columns}
+          rows={rows}
+          tableName="users"
+          primaryKeys={["id"]}
+          editingCell={editing}
+          onCellEditStart={(r, c) => {
+            if (r < 0) setEditing(null)
+            else setEditing({ row: r, col: c })
+            onCellEditStart(r, c)
+          }}
+        />
+      )
+    }
+    render(<Wrapper />)
+    // single-click selects the cell (grid copy/paste target)
+    fireEvent.click(screen.getByText("Alice").closest("td")!)
+    return onCellEditStart
+  }
+
+  function fireKey(key: string) {
+    fireEvent.keyDown(window, { key, metaKey: true })
+  }
+
+  it("copies the selected cell via Cmd+C", () => {
+    renderGrid()
+    fireKey("c")
+    expect(writeTextMock).toHaveBeenCalledWith("Alice")
+  })
+
+  it("does not copy when no cell is selected", () => {
+    render(<DataTable columns={columns} rows={rows} />)
+    fireKey("c")
+    expect(writeTextMock).not.toHaveBeenCalled()
+  })
+
+  it("pastes into the selected cell via Cmd+V by entering edit mode", async () => {
+    const onCellEditStart = renderGrid()
+    fireKey("v")
+    await waitFor(() => expect(readTextMock).toHaveBeenCalled())
+    await waitFor(() => expect(onCellEditStart).toHaveBeenCalledWith(0, "name"))
+    // the inline editor shows the pasted text as its initial value
+    const input = await screen.findByDisplayValue("pasted-text")
+    expect(input).toBeInTheDocument()
+  })
+
+  it("does not intercept copy when a text control has focus", () => {
+    renderGrid()
+    const td = screen.getByText("Alice").closest("td")!
+    const input = document.createElement("input")
+    td.appendChild(input)
+    input.focus()
+    fireKey("c")
+    expect(writeTextMock).not.toHaveBeenCalled()
   })
 })

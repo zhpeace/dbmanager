@@ -499,7 +499,10 @@ function handleDatabaseClick(database: string, connectionId: string) {
       t2.id === currentId
         ? {
             ...t2,
-            browse: { connectionId, database, table: "" },
+            // Keep the currently browsed table (if any); only sync the
+            // connection/database so a single sidebar click never turns a
+            // data-browse tab into a SQL editor.
+            browse: t2.browse ? { ...t2.browse, connectionId, database } : undefined,
             // Keep the tab's per-connection database map in sync so the
             // top bar / editor reflect the database picked in the sidebar.
             database: { ...t2.database, [connectionId]: database },
